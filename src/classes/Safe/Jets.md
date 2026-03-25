@@ -275,6 +275,15 @@ with a `paymentToken`, it independently checks the payer's balance using the
 same config path before serving. This prevents a compromised Jet from
 forwarding invalid tokens.
 
+**Balance checks are advisory, not atomic with on-chain execution.** The Jet's
+pre-check and the Drop's pre-check are both snapshots — neither is atomic with
+`paymentsExecute()`. A payer may pass both checks and then drain their balance
+before the claim is submitted. Drops and Jets rely on economic reputation and
+repeated interactions to mitigate payment failures: a payer whose claims
+consistently fail is excluded from future service. The graduated SafeBux lockup
+means payers always have residual slashable stake even if liquid balances are
+drained.
+
 ---
 
 ### 1.6 Anonymous Drops — identity without Users accounts
@@ -286,6 +295,14 @@ The Jet accepts both authenticated and anonymous connections on `/Safe`.
 **Drop identity is stable within a session** via `dropId` derived from
 `Q.clientId()` (sessionStorage). Same tab + session = same `dropId` across
 reconnects.
+
+**Sybil resistance via stake weighting.** Anonymous Drops require no account,
+so nothing prevents an attacker from registering many Drop identities. Sybil
+mitigation is handled at the `Safe.Router` layer: Drop selection is weighted
+by `stakedSafebux × reliability × availableStorage`. Zero-stake Drops receive
+near-zero routing weight and earn nothing. Capturing significant routing share
+requires proportional SafeBux stake across all Sybil Drops — the attack scales
+linearly in cost with the share captured.
 
 **Drop keypair for payments:** On first registration, a P-256 keypair is
 generated locally and stored in IndexedDB (not sessionStorage — must survive
@@ -407,14 +424,102 @@ its stored CIDs in `Safe/drop/announce` (`bloomFilter` field). Compact:
 
 ### 1.11 Proof-of-storage challenges
 
-The Jet periodically issues `Safe/drop/challenge` to random Drops:
+The primary proof-of-storage mechanism is **anonymous paid spot-checks** —
+`Safe/drop/get` requests issued by the Jet for randomly selected CIDs,
+indistinguishable from real Cloud-originated retrieval requests. Each such
+request includes a micropayment token (same as any other retrieval). The Drop
+cannot tell a spot-check from legitimate traffic and must serve correctly
+regardless.
+
+**Why anonymous paid requests, not explicit signed challenges:**
+
+The previous design (`proof = sign(keccak256(cid + nonce))`) proves only key
+possession, not data possession. A malicious Drop could pass every challenge
+by signing the hash without ever storing a single byte. This is a fundamental
+design flaw — the system would become "proof of key ownership" not proof of
+storage.
+
+The correct approach is to ask the Drop to return the actual chunk. The Jet
+then verifies data integrity using the CID as ground truth:
 ```js
-payload:  { cid: String, nonce: String }
-response: { cid, nonce, proof: String }  // proof = sign(keccak256(cid + nonce))
+SHA-256(returned_ciphertext || returned_tag) === requested_cid
+```
+This verification is self-contained — the CID is its own ground truth. The
+Jet does not need to hold the chunk locally to verify it; it only needs the CID
+(which it has in `_cidIndex`). A Drop returning garbage, a wrong chunk, or null
+for a CID its Prolly root claims it holds fails this check immediately.
+
+**Spot-check scheduling:** Poisson-distributed, unpredictable. The Jet
+schedules spot-checks using a Poisson timer per connected Drop:
+```js
+// Mean interval: Q.Config.get(['Safe', 'drop', 'challengeIntervalMs'], 60000)
+// CID sampled uniformly at random from the Drop's announced Prolly root
 ```
 
-On challenge failure: emit `dropChallengeFail`, notify PHP for stake slashing.
-v1: `proof` is a placeholder (chunk IV). Full OCP signing is v2.
+**The explicit `Safe/drop/challenge` event** is retained as a lightweight
+direct ping for cases where the Jet needs to verify a specific CID without
+routing it through the full `get` pipeline. It returns the actual chunk data
+(not a hash-based proof). The Jet verifies via CID recomputation.
+
+```js
+// event: 'Safe/drop/challenge'  (Jet → Drop)
+{ cid: String }          // no nonce — the chunk itself is the proof
+
+// ack: (err, { cid, iv, ciphertext, tag } | null)
+// null = Drop does not have the chunk
+```
+
+The nonce is removed. A nonce-based challenge (`sign(keccak256(cid+nonce))`)
+proves nothing about data possession. The returned chunk bytes are the proof.
+
+**Nonce uniqueness is irrelevant** in this model because the Drop does not
+sign anything in response to a challenge — it simply returns the chunk or null.
+Replay of a previous challenge response is impossible because there is no
+signed proof to replay; only actual chunk bytes.
+
+**Verification by the Jet:**
+1. Compute `SHA-256(fromBase64(ciphertext) || fromBase64(tag))`
+2. Compare to the requested `cid`
+3. If mismatch: log failed spot-check against this Drop's reliability score
+4. If null (Drop says it doesn't have it): check whether the Drop's current
+   signed Prolly root implies it should — if yes, log failure
+
+**What constitutes a slashable pattern:**
+A single null or mismatched response is NOT slashable — transient errors,
+recent evictions not yet announced, and network hiccups are all legitimate.
+A slashable pattern requires **at least N=3 independent failed retrievals**
+(default `Q.Config.get(['Safe', 'drop', 'minSlashFailures'], 3)`) within a
+bounded time window (`Q.Config.get(['Safe', 'drop', 'slashWindowMs'], 3600000)`,
+default 1 hour) with no corresponding eviction announce sent between the last
+announce and the failures:
+- Drop's signed announce claims its Prolly root implies CID X is present
+- ≥ N `get` requests for CID X return null or CID-mismatched data
+- No eviction announce was sent removing CID X within the slash window
+
+The threshold N and time window must be consistent across all honest Jets —
+otherwise different Jets may reach different slashing conclusions for the same
+Drop, making CoC adjudication contentious. N=3 and 1 hour are the protocol
+defaults; operators MUST NOT configure per-instance values that diverge from
+network consensus.
+
+**Spot-check coverage is probabilistic.** Uniform random sampling over the
+Drop's Prolly root does not guarantee all CIDs are checked within any finite
+period. A Drop that stores a popular subset of chunks and silently evicts the
+rest may pass checks for some time — popular chunks are requested more often
+and thus sampled more. The detection probability for a given missing CID
+increases with the number of spot-checks issued. Over time, repeated sampling
+converges toward full coverage verification. Future versions may use
+weighted sampling (favour rarely-accessed CIDs) or burst audits to improve
+detection speed for selective partial storage.
+
+This pattern constitutes a self-contained CoC: signed announce (commitment to
+CID X) + ≥ N failed serves within the window = contradiction without external
+context. The Jet accumulates this evidence silently. The announce-before-evict
+requirement (see Drops.md §1.4) ensures honest Drops never accidentally
+produce this pattern.
+
+On reaching the threshold: emit `dropChallengeFail`, notify PHP via
+`POST /Q/node { 'Q/method': 'Safe/drop/slash' }` for stake slashing.
 
 ---
 
@@ -1106,9 +1211,19 @@ ack: (err, { chunks: Array<{ cid, iv, ciphertext, tag }|null> })
 
 **`Safe/drop/challenge`**
 ```js
-{ cid: String, nonce: String }
-ack: (err, { cid: String, nonce: String, proof: String })
+// Jet → Drop: request a specific chunk as proof of storage
+{ cid: String }
+// No nonce — the chunk bytes are the proof, not a signature over a nonce.
+// A nonce-based signed response proves only key possession, not data possession.
+
+// Drop ack:
+(err, { cid: String, iv: String, ciphertext: String, tag: String } | null)
+// null = Drop does not have the chunk (not a slashable offense if eviction
+// announce was already sent removing this CID from the Prolly root)
 ```
+
+The Jet verifies: `SHA-256(fromBase64(ciphertext) || fromBase64(tag)) === cid`.
+This is self-verifying from the CID alone — no local copy of the chunk needed.
 
 **`Safe/drop/slashed`**
 ```js
@@ -1364,7 +1479,9 @@ Wired at module load time (bottom of Jets.js). Preserve from existing stub:
 
 **`onDropPut`**: deserialise chunk data base64->ArrayBuffer -> `Q.Safe.Drops.put` -> ack.
 **`onDropGet`**: `Q.Safe.Drops.get` -> serialise ArrayBuffer->base64 -> ack.
-**`onDropChallenge`**: `Q.Safe.Drops.get([cid])` -> v1 placeholder proof (chunk IV).
+**`onDropChallenge`**: `Q.Safe.Drops.get([cid])` → return chunk bytes directly.
+Jet verifies `SHA-256(ciphertext || tag) === cid`. No nonce, no signing.
+See Drops.md §5 `onDropChallenge` for the full handler pipeline.
 
 ---
 
@@ -1516,6 +1633,12 @@ Retrieves the ordered CID array from `_cidIndex[rootCid]` (populated during
 for each requested chunk. If `_cidIndex[rootCid]` is missing (Jet restart):
 returns null proofs — Cloud retries.
 
+Jets SHOULD prioritize rebuilding `_cidIndex` before serving requests after a
+restart (e.g. by requiring at least one `Safe/subtree/put` to repopulate the
+index, or by persisting the index to disk). Serving without Merkle proofs is
+a temporary fallback for restarts, not a steady-state mode — clients that
+receive null proofs will retry on a Jet that has the index.
+
 Returns `Array< Array<{ hex, side }> >`, one proof per requested chunk.
 
 ---
@@ -1597,7 +1720,8 @@ repeat calls).
   5. `buildMerkleProofs(rootCid, fetchedCids)`
   6. Forward `paymentToken` to each serving Drop
   7. Ack `{ chunks: [...] }` — null entries for unavailable (not a 403)
-- `Safe/chunk/challenge` — `selectDrops([cid])` -> `callDrop(Safe/drop/challenge)` -> ack
+- `Safe/chunk/challenge` — `selectDrops([cid])` -> `callDrop(Safe/drop/challenge)` ->
+  verify `SHA-256(ciphertext||tag) === cid`; log failure to reliability score on mismatch/null
 - `Safe/peer/connect` — v1 stub: log and ack null
 - `disconnect` — mark `drop.offlineSince = Date.now()`, emit `dropOffline`
 
@@ -1687,7 +1811,7 @@ Each step only calls things already above it in this list.
 24. `Q.Safe.Jets.dropClaimPayments(payload, callback)` — claimPayments emit
 25. Default `onDropPut` handler — wires to `Q.Safe.Drops.put`
 26. Default `onDropGet` handler — wires to `Q.Safe.Drops.get`
-27. Default `onDropChallenge` handler — v1 placeholder proof
+27. Default `onDropChallenge` handler — returns chunk bytes; Jet verifies CID
 
 ---
 
