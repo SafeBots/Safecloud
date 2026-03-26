@@ -1,4 +1,4 @@
-# Q.Safe.Drops — Implementation Design Document
+# Q.Safecloud.Drops — Implementation Design Document
 
 ## Table of Contents
 
@@ -16,15 +16,15 @@
   - [1.11 IndexedDB wipe — honest reset](#111-indexeddb-wipe--honest-reset)
   - [1.12 Pristine environment assumption](#112-pristine-environment-assumption)
 - [Part 2 — External interfaces called by Drops](#part-2--external-interfaces-called-by-drops)
-  - [Q.Safe.Jets.dropRegister](#qsafejetsdroppregister)
-  - [Q.Safe.Jets.dropAnnounce](#qsafejetsdroppannounce)
-  - [Q.Safe.Jets.dropDisconnect](#qsafejetsdroppddisconnect)
-  - [Q.Safe.Jets.dropClaimPayments](#qsafejetsdroppclaimPayments)
+  - [Q.Safecloud.Jets.dropRegister](#qsafejetsdroppregister)
+  - [Q.Safecloud.Jets.dropAnnounce](#qsafejetsdroppannounce)
+  - [Q.Safecloud.Jets.dropDisconnect](#qsafejetsdroppddisconnect)
+  - [Q.Safecloud.Jets.dropClaimPayments](#qsafejetsdroppclaimPayments)
   - [Q.Crypto.delegate](#qcryptodelegateoptions)
   - [Q.Data.Prolly](#qdataprolly)
   - [Q.Data.Bloom](#qdatabloom)
   - [ethers.js (browser)](#ethersjs-browser)
-  - [Q.Safe.Drops Events (inbound from Jets.js client)](#qsafedrops-events-inbound-from-jetsjs-client)
+  - [Q.Safecloud.Drops Events (inbound from Jets.js client)](#qsafedrops-events-inbound-from-jetsjs-client)
 - [Part 3 — _internal.js helpers](#part-3--_internaljs-helpers)
   - [_.DB_NAME, _.STORES](#_db_name-_stores)
   - [_.openDB()](#_opendb)
@@ -39,14 +39,14 @@
   - [_.buildBloom(cids)](#_buildbloomcids)
   - [_.balanceCacheKey(evmAddress)](#_balancecachekeyevmaddress)
 - [Part 4 — Public API](#part-4--public-api)
-  - [Q.Safe.Drops.init(options)](#qsafedropsinitioptions)
-  - [Q.Safe.Drops.put(chunks, options, callback)](#qsafedropsputchunks-options-callback)
-  - [Q.Safe.Drops.get(cids, options, callback)](#qsafedropsgetcids-options-callback)
-  - [Q.Safe.Drops.getProllyRoot(callback)](#qsafedropsgetprollyrootcallback)
-  - [Q.Safe.Drops.getBloomFilter(callback)](#qsafedropsgetbloomfiltercallback)
-  - [Q.Safe.Drops.announce(reason, callback)](#qsafedropsannouncereason-callback)
-  - [Q.Safe.Drops.claimPayments(options, callback)](#qsafedropsclaimpaymentsoptions-callback)
-  - [Q.Safe.Drops.reset(callback)](#qsafedropsresetcallback)
+  - [Q.Safecloud.Drops.init(options)](#qsafedropsinitioptions)
+  - [Q.Safecloud.Drops.put(chunks, options, callback)](#qsafedropsputchunks-options-callback)
+  - [Q.Safecloud.Drops.get(cids, options, callback)](#qsafedropsgetcids-options-callback)
+  - [Q.Safecloud.Drops.getProllyRoot(callback)](#qsafedropsgetprollyrootcallback)
+  - [Q.Safecloud.Drops.getBloomFilter(callback)](#qsafedropsgetbloomfiltercallback)
+  - [Q.Safecloud.Drops.announce(reason, callback)](#qsafedropsannouncereason-callback)
+  - [Q.Safecloud.Drops.claimPayments(options, callback)](#qsafedropsclaimpaymentsoptions-callback)
+  - [Q.Safecloud.Drops.reset(callback)](#qsafedropsresetcallback)
 - [Part 5 — Inbound event handlers (wired by Jets.js client)](#part-5--inbound-event-handlers-wired-by-jetsjs-client)
   - [onDropPut(payload, ack)](#ondroppputpayload-ack)
   - [onDropGet(payload, ack)](#ondropgetpayload-ack)
@@ -57,7 +57,7 @@
 
 ---
 
-This document is the authoritative spec for an LLM to implement `Q.Safe.Drops`
+This document is the authoritative spec for an LLM to implement `Q.Safecloud.Drops`
 function by function, bottom-up. Every decision that could have gone another way
 is explained. Read `Protocol.md` and `Jets.md` first for the broader
 architecture. Read `Cloud.md` to understand what the chunks Drops store actually
@@ -69,7 +69,7 @@ contain (encrypted ciphertext — Drops never see plaintext).
 
 ### 1.1 Responsibilities: Drops vs Jets vs Cloud
 
-**Q.Safe.Drops** (this file) is responsible for:
+**Q.Safecloud.Drops** (this file) is responsible for:
 - Storing encrypted chunks in IndexedDB, keyed by CID
 - Serving encrypted chunks on request from Jets (via the Jets client socket)
 - Maintaining an LRU eviction index to manage storage quota
@@ -77,31 +77,31 @@ contain (encrypted ciphertext — Drops never see plaintext).
 - Maintaining the append-only Prolly diff log (the forensic accountability record)
 - Building and serialising a Bloom filter over stored CIDs for cold handshakes
 - Accumulating OCP Role B payment tokens from Jets and initiating claims
-- Verifying Jet SafeBux balances before serving (independent check)
+- Verifying Jet Safebux balances before serving (independent check)
 - Responding to proof-of-storage challenges from Jets
 - Announcing inventory changes to Jets after every put/evict
 
-**Q.Safe.Jets** (the socket client, `web/js/Safe/Jets.js`) is responsible for:
+**Q.Safecloud.Jets** (the socket client, `web/js/Safecloud/Jets.js`) is responsible for:
 - The socket.io connection to the Jet server
-- Routing incoming `Safe/drop/*` push events to Q.Safe.Drops handlers
+- Routing incoming `Safecloud/drop/*` push events to Q.Safecloud.Drops handlers
 - Sending `dropRegister`, `dropAnnounce`, `dropDisconnect`, `dropClaimPayments`
   messages on behalf of Drops
 
-**Q.Safe.Cloud** is responsible for all encryption and decryption. Drops
+**Q.Safecloud.Client** is responsible for all encryption and decryption. Drops
 never see plaintext. The chunks stored in IndexedDB are opaque ciphertext bytes.
 
 **The key boundary rule:** Drops store and serve ciphertext. They verify that
-they are being paid (SafeBux balance check) and that their inventory commitments
+they are being paid (Safebux balance check) and that their inventory commitments
 are honest (signed Prolly diffs). They never decrypt anything.
 
 ---
 
 ### 1.2 IndexedDB schema — three object stores
 
-All persistent state lives in one IndexedDB database: `Q.Safe.Drops`.
+All persistent state lives in one IndexedDB database: `Q.Safecloud.Drops`.
 
 ```
-Database: Q.Safe.Drops  (version 1)
+Database: Q.Safecloud.Drops  (version 1)
   ├── chunks        — ciphertext storage
   │     key:   CID string (e.g. 'bafy...')
   │     value: { cid, iv, ciphertext, tag, size, storedAt }
@@ -166,7 +166,7 @@ Drop must evict least-recently-used chunks before storing new ones.
 
 **The announce-before-evict invariant is a protocol requirement:**
 
-A Drop MUST append a log entry and send a `Safe/drop/announce` with its
+A Drop MUST append a log entry and send a `Safecloud/drop/announce` with its
 new Prolly root (removing the evicted CIDs from the diff) BEFORE deleting
 the evicted chunks from IndexedDB. If the Drop crashes between eviction and
 announce, the old Prolly root remains in place — the next reconnect will
@@ -181,7 +181,7 @@ To avoid this race, the sequence is strictly:
 1. Compute which CIDs to evict (LRU order, enough to free the required space)
 2. Compute new Prolly root after eviction (without deleting yet)
 3. Append log entry (prevRoot = current, newRoot = post-eviction, diff = evictions)
-4. Sign and send Safe/drop/announce with the new root
+4. Sign and send Safecloud/drop/announce with the new root
 5. Wait for ack from Jet
 6. ONLY THEN delete evicted chunks from IndexedDB and LRU store
 ```
@@ -275,7 +275,7 @@ Drops maintain two keypairs, both stored in IndexedDB as non-extractable
 - Derived via `Q.Crypto.delegate` from the wallet signature during the
   `Q.Crypto.delegate` ceremony
 - Used for: signing Prolly diff log entries and announce messages
-- Public key sent in `Safe/drop/register` as `delegation.stm.sessionKeyES256`
+- Public key sent in `Safecloud/drop/register` as `delegation.stm.sessionKeyES256`
 - Non-extractable: stored as `CryptoKey` in IndexedDB using the Web Crypto API
   `extractable: false` flag
 
@@ -283,14 +283,14 @@ Drops maintain two keypairs, both stored in IndexedDB as non-extractable
 - Also derived via `Q.Crypto.delegate` from the same wallet signature
 - Used for: payment token claiming (on-chain EIP-712 signatures)
 - EVM address derived as `last 20 bytes of keccak256(pubkey[1:])` = `dropEVMAddress`
-- Sent as `evmAddress` in `Safe/drop/register`
+- Sent as `evmAddress` in `Safecloud/drop/register`
 - Non-extractable: stored as `CryptoKey` in IndexedDB
 
 **The delegation claim:**
 Both session keypairs are established in a single interactive `Q.Crypto.delegate`
 ceremony when the user first sets up their Drop. The resulting OCP
 `safecloud:session-delegation` claim is stored in IndexedDB and sent in every
-`Safe/drop/register` message. It expires after
+`Safecloud/drop/register` message. It expires after
 `Q.Config.get(['Safe', 'drop', 'sessionExpDays'], 30) * 86400` seconds.
 On expiry, the Drop prompts the user for a new interactive wallet signature.
 
@@ -305,7 +305,7 @@ reference implementation only signs protocol-correct messages. See section 1.12.
 
 ### 1.8 Payment token accumulation and claiming
 
-As the Drop serves chunks in response to `Safe/drop/get` events, each response
+As the Drop serves chunks in response to `Safecloud/drop/get` events, each response
 includes a `paymentToken` (OCP Role B envelope signed by the Jet). The Drop
 accumulates these tokens in the `tokens` IndexedDB store.
 
@@ -313,7 +313,7 @@ accumulates these tokens in the `tokens` IndexedDB store.
 Re-receiving a token that was already stored is a no-op (idempotent insert).
 
 **Claim trigger:** When accumulated unredeemed value exceeds
-`Q.Config.get(['Safe', 'drop', 'claimThresholdSafebux'], '100000')` SafeBux
+`Q.Config.get(['Safe', 'drop', 'claimThresholdSafebux'], '100000')` Safebux
 wei, or when the user explicitly requests a claim, the Drop initiates
 `claimPayments()`.
 
@@ -330,7 +330,7 @@ via ethers.js. For each accumulated token, the Drop passes:
 - `incomeContract = address(0)` (direct ERC-20 transferFrom)
 
 *Relay path (no gas):*
-The Drop sends `Safe/drop/claimPayments` to the Jet with the accumulated
+The Drop sends `Safecloud/drop/claimPayments` to the Jet with the accumulated
 tokens and its EVM address. The Jet relays to PHP → Assets plugin →
 `paymentsExecute()`. The Drop may be charged a small fee for gas coverage.
 
@@ -351,8 +351,8 @@ for protocol correctness. Redeemed tokens do not affect payment or CoC logic.
 
 ### 1.9 Balance verification before serving
 
-Before serving any chunk in response to `Safe/drop/get`, the Drop independently
-verifies that the Jet's SafeBux balance is sufficient to cover the request.
+Before serving any chunk in response to `Safecloud/drop/get`, the Drop independently
+verifies that the Jet's Safebux balance is sufficient to cover the request.
 
 The payment token's `stm.payer` is the Jet's EVM address. The Drop checks:
 ```js
@@ -367,7 +367,7 @@ while actually pocketing the tokens. By independently querying BSC, the Drop
 ensures it is not serving for free regardless of what the Jet reports.
 
 **This check is advisory, not definitive.** It prevents obvious underfunded
-requests (Jet with zero SafeBux cannot plausibly pay). The definitive
+requests (Jet with zero Safebux cannot plausibly pay). The definitive
 enforcement occurs on-chain during `paymentsExecute()` — `transferFrom` either
 succeeds or reverts. A Drop that serves a request which later fails on-chain
 simply doesn't get paid for that batch; this is an economic risk the Drop
@@ -393,7 +393,7 @@ lie), and caching full chunks on the Jet defeats the purpose of distributed
 storage.
 
 **The silent spot-check model:**
-Jets periodically issue `Safe/drop/get` requests for randomly selected CIDs
+Jets periodically issue `Safecloud/drop/get` requests for randomly selected CIDs
 from the Drop's announced Prolly root, indistinguishable from real retrieval
 requests. The Drop must return the correct chunk. The Jet verifies:
 
@@ -412,8 +412,8 @@ to stay honest not because it fears a single dramatic slash, but because any
 random request could be a test, and patterns of failure deprioritize it in
 routing.
 
-**The explicit `Safe/drop/challenge` event:**
-The `Safe/drop/challenge` event is retained as a lightweight explicit ping for
+**The explicit `Safecloud/drop/challenge` event:**
+The `Safecloud/drop/challenge` event is retained as a lightweight explicit ping for
 cases where the Jet wants to verify a specific CID without paying for it.
 The Drop responds with the actual chunk data (not a hash-based proof). The
 Jet verifies via CID recomputation.
@@ -437,7 +437,7 @@ announce entries and the get failure records (timestamped) as evidence.
 
 **v1 challenge-response format (simplified):**
 ```js
-// event: 'Safe/drop/challenge' { cid: String }
+// event: 'Safecloud/drop/challenge' { cid: String }
 // ack: { cid: String, iv: String, ciphertext: String, tag: String } | null
 ```
 
@@ -454,10 +454,10 @@ announce for that CID, the null is consistent — not a failure.
 ### 1.11 IndexedDB wipe — honest reset
 
 If the browser's storage is cleared (user clears site data, browser evicts
-storage under pressure, `Q.Safe.Drops.reset()` is called explicitly), all
+storage under pressure, `Q.Safecloud.Drops.reset()` is called explicitly), all
 chunk data and the diff log are lost.
 
-The Drop MUST immediately send `Safe/drop/announce` with:
+The Drop MUST immediately send `Safecloud/drop/announce` with:
 ```js
 {
   reason: "reset",
@@ -475,10 +475,10 @@ Bloom filter on the next non-null announce.
 a stale Prolly root IS slashable (the subsequent challenge failure contradicts
 the claimed root). The reference implementation detects the wipe at startup
 (IndexedDB open returns empty database) and immediately sends a reset announce
-before accepting any new `Safe/drop/put` requests.
+before accepting any new `Safecloud/drop/put` requests.
 
 **Detection:** On `init()`, the Drop opens the database and reads the most
-recent log entry. If the log is empty but `Q.Safe.Drops._sessionData` indicates
+recent log entry. If the log is empty but `Q.Safecloud.Drops._sessionData` indicates
 a prior session had a non-null Prolly root (stored in sessionStorage as a hint),
 the Drop infers a wipe and sends a reset announce.
 
@@ -523,7 +523,7 @@ listed here before implementation.
 
 ---
 
-### `Q.Safe.Jets.dropRegister(info, callback)` → Promise
+### `Q.Safecloud.Jets.dropRegister(info, callback)` → Promise
 
 ```
 info: {
@@ -535,12 +535,12 @@ info: {
   bloomFilter: String|null   // base64; sent when prollyRoot is null or Jet is cold
 }
 Returns: Promise<{ dropId: String, cold: Boolean, minStake: String }>
-Called by: Q.Safe.Drops.init(), after session keypair ceremony
+Called by: Q.Safecloud.Drops.init(), after session keypair ceremony
 ```
 
 ---
 
-### `Q.Safe.Jets.dropAnnounce(info, callback)` → Promise
+### `Q.Safecloud.Jets.dropAnnounce(info, callback)` → Promise
 
 ```
 info: {
@@ -554,20 +554,20 @@ info: {
   signature:  String         // base64 P-256 sig over canonical JSON of announce
 }
 Returns: Promise
-Called by: Q.Safe.Drops.announce()
+Called by: Q.Safecloud.Drops.announce()
 ```
 
 ---
 
-### `Q.Safe.Jets.dropDisconnect(callback)` → Promise
+### `Q.Safecloud.Jets.dropDisconnect(callback)` → Promise
 
 ```
-Called by: Q.Safe.Drops.shutdown()
+Called by: Q.Safecloud.Drops.shutdown()
 ```
 
 ---
 
-### `Q.Safe.Jets.dropClaimPayments(payload, callback)` → Promise
+### `Q.Safecloud.Jets.dropClaimPayments(payload, callback)` → Promise
 
 ```
 payload: {
@@ -576,7 +576,7 @@ payload: {
   signature:     String    // base64 OCP claim signed with Drop EIP-712 session key
 }
 Returns: Promise<{ txHash: String|null }>
-Called by: Q.Safe.Drops.claimPayments() (relay path)
+Called by: Q.Safecloud.Drops.claimPayments() (relay path)
 ```
 
 ---
@@ -589,7 +589,7 @@ options.label:      String       — 'safecloud.session'
 options.context:    String       — JSON: { exp: Number }
 options.format:     ['ES256', 'EIP712']
 Returns: OCP safecloud:session-delegation claim
-Called by: Q.Safe.Drops.init() on first run or session expiry
+Called by: Q.Safecloud.Drops.init() on first run or session expiry
 ```
 
 Used once per session (30-day default) to establish the Drop's two session
@@ -669,20 +669,20 @@ await ocpContract.paymentsExecute(payment, recipients, sig, recipient, amount, Z
 
 ---
 
-### Q.Safe.Drops Events (inbound from Jets.js client)
+### Q.Safecloud.Drops Events (inbound from Jets.js client)
 
-The Jets client (`web/js/Safe/Jets.js`) registers these on `Q.Safe.Jets`:
+The Jets client (`web/js/Safecloud/Jets.js`) registers these on `Q.Safecloud.Jets`:
 
 ```js
-Q.Safe.Jets.onDropPut       = new Q.Event()  // (payload, ack)
-Q.Safe.Jets.onDropGet       = new Q.Event()  // (payload, ack)
-Q.Safe.Jets.onDropChallenge = new Q.Event()  // (payload, ack)
-Q.Safe.Jets.onDropSlashed   = new Q.Event()  // (payload)
+Q.Safecloud.Jets.onDropPut       = new Q.Event()  // (payload, ack)
+Q.Safecloud.Jets.onDropGet       = new Q.Event()  // (payload, ack)
+Q.Safecloud.Jets.onDropChallenge = new Q.Event()  // (payload, ack)
+Q.Safecloud.Jets.onDropSlashed   = new Q.Event()  // (payload)
 ```
 
 The handlers for these events are defined in Drops.js (Part 5) and wired
 to the events in the default handler setup section of Jets.js. Drops.js does
-not call Q.Safe.Jets.on() directly — the wiring is Jets.js's responsibility.
+not call Q.Safecloud.Jets.on() directly — the wiring is Jets.js's responsibility.
 Drops.js exports the handler functions; Jets.js registers them.
 
 ---
@@ -697,7 +697,7 @@ Shared helpers passed as `_` to all Drops method files. Only call
 ### `_.DB_NAME`, `_.STORES`
 
 ```js
-_.DB_NAME = 'Q.Safe.Drops'
+_.DB_NAME = 'Q.Safecloud.Drops'
 _.STORES = {
     chunks: 'chunks',   // { cid, iv, ciphertext, tag, size, storedAt }
     lru:    'lru',      // { cid, size, lastAccessed }
@@ -880,16 +880,16 @@ These are the methods callable by Jets.js (via event handlers), Cloud.js
 
 ---
 
-### `Q.Safe.Drops.init(options, callback)` → Promise
+### `Q.Safecloud.Drops.init(options, callback)` → Promise
 
 ```
 Calls (in order):
   _.openDB
   read most recent log entry (detect wipe)
   Q.Crypto.delegate (if no delegation claim or expired)
-  Q.Safe.Jets.dropRegister
-  [if cold: _.buildBloom, Q.Safe.Jets.dropAnnounce with bloom]
-Called by: application startup, Q.Safe.Drops module load
+  Q.Safecloud.Jets.dropRegister
+  [if cold: _.buildBloom, Q.Safecloud.Jets.dropAnnounce with bloom]
+Called by: application startup, Q.Safecloud.Drops module load
 ```
 
 Initialises the Drop. Opens IndexedDB, rehydrates in-memory Prolly state
@@ -915,21 +915,21 @@ with the Jet.
    - If missing or `stm.exp` expired: run `Q.Crypto.delegate` ceremony
      (one interactive wallet signature) and store result
    - Else: load cached delegation claim and session keypairs
-5. `Q.Safe.Jets.dropRegister({ evmAddress, delegation, publicKey, storage, prollyRoot, bloomFilter: null })`
+5. `Q.Safecloud.Jets.dropRegister({ evmAddress, delegation, publicKey, storage, prollyRoot, bloomFilter: null })`
 6. If ack `cold: true`: build Bloom filter (`_.buildBloom(allCids)`) and
-   send `Q.Safe.Jets.dropAnnounce` with the bloom filter and current root
+   send `Q.Safecloud.Jets.dropAnnounce` with the bloom filter and current root
 7. Store `_dropId` from ack in sessionStorage
 
 **Wipe detection:** Between steps 2 and 3, if sessionStorage has a hint that
-a prior session had a non-null Prolly root (stored as `Q.Safe.Drops.lastRoot`)
+a prior session had a non-null Prolly root (stored as `Q.Safecloud.Drops.lastRoot`)
 but the log is empty, send a reset announce before registration:
 ```js
-await Q.Safe.Jets.dropAnnounce({ reason: 'reset', prollyRoot: null, diff: null, ... });
+await Q.Safecloud.Jets.dropAnnounce({ reason: 'reset', prollyRoot: null, diff: null, ... });
 ```
 
 ---
 
-### `Q.Safe.Drops.put(chunks, options, callback)` → Promise
+### `Q.Safecloud.Drops.put(chunks, options, callback)` → Promise
 
 ```
 chunks:  Array<{ iv: String, ciphertext: String, tag: String, size: Number, tags: Array }>
@@ -952,7 +952,7 @@ if needed, and announces after each batch.
 3. Check quota:
    - `usedBytes + chunk.size > maxBytes` → trigger LRU eviction before storing
    - Eviction: compute which CIDs to remove (LRU order), update Prolly root via
-     `_.applyDiff`, append log entry, send `Safe/drop/announce` with evictions,
+     `_.applyDiff`, append log entry, send `Safecloud/drop/announce` with evictions,
      await ack, then delete from `chunks` and `lru` stores
 4. Write chunk to `chunks` store: `{ cid, iv, ciphertext, tag, size, storedAt: nowSec() }`
 5. Write LRU record: `{ cid, size, lastAccessed: nowSec() }`
@@ -961,7 +961,7 @@ if needed, and announces after each batch.
 After all chunks in the batch are processed (success or skip):
 7. `newRoot = _.applyDiff(currentRoot, batchDiff)`
 8. Append log entry: `{ seq: auto, timestamp: nowSec(), prevRoot: currentRoot, newRoot, diff: batchDiff, reason: 'stored', signature: await _.signAnnounce(...) }`
-9. `Q.Safe.Jets.dropAnnounce({ prollyRoot: newRoot, diff: batchDiff, reason: 'stored', ... })`
+9. `Q.Safecloud.Jets.dropAnnounce({ prollyRoot: newRoot, diff: batchDiff, reason: 'stored', ... })`
 10. Update `currentRoot = newRoot`
 
 Return `{ results: [...] }` where each entry is `{ cid, iv, size }` on
@@ -969,7 +969,7 @@ success or `false` on failure.
 
 ---
 
-### `Q.Safe.Drops.get(cids, options, callback)` → Promise
+### `Q.Safecloud.Drops.get(cids, options, callback)` → Promise
 
 ```
 cids:    Array<String>
@@ -1002,11 +1002,11 @@ stale — acceptable since LRU ordering is approximate anyway.
 
 ---
 
-### `Q.Safe.Drops.getProllyRoot(callback)` → Promise\<String|null\>
+### `Q.Safecloud.Drops.getProllyRoot(callback)` → Promise\<String|null\>
 
 ```
 Returns: current Prolly root from in-memory state (no DB read needed)
-Called by: Q.Safe.Jets.dropRegister (via Jets.js client), Q.Safe.Jets.dropAnnounce
+Called by: Q.Safecloud.Jets.dropRegister (via Jets.js client), Q.Safecloud.Jets.dropAnnounce
 ```
 
 Returns `_state.prollyRoot` — the `newRoot` of the most recent log entry
@@ -1014,12 +1014,12 @@ held in memory. O(1). Does not read IndexedDB.
 
 ---
 
-### `Q.Safe.Drops.getBloomFilter(callback)` → Promise\<String|null\>
+### `Q.Safecloud.Drops.getBloomFilter(callback)` → Promise\<String|null\>
 
 ```
 Calls: _.buildBloom (if _bloomFilter is null or stale)
 Returns: base64 Bloom filter string, or null if no chunks stored
-Called by: Q.Safe.Jets.dropRegister (on cold contact)
+Called by: Q.Safecloud.Jets.dropRegister (on cold contact)
 ```
 
 Returns the in-memory Bloom filter if available. If the filter was
@@ -1033,11 +1033,11 @@ The filter is held in `_state.bloomFilter` (in-memory). It is:
 
 ---
 
-### `Q.Safe.Drops.announce(reason, callback)` → Promise
+### `Q.Safecloud.Drops.announce(reason, callback)` → Promise
 
 ```
 reason: 'stored'|'eviction'|'reset'
-Calls:  _.signAnnounce, Q.Safe.Jets.dropAnnounce
+Calls:  _.signAnnounce, Q.Safecloud.Jets.dropAnnounce
 Called by: put.js (after batch store), LRU eviction path, reset.js
 ```
 
@@ -1050,7 +1050,7 @@ May be called manually by the application to force a sync with the Jet
 
 ---
 
-### `Q.Safe.Drops.claimPayments(options, callback)` → Promise
+### `Q.Safecloud.Drops.claimPayments(options, callback)` → Promise
 
 ```
 options.direct: Boolean   // true = call OpenClaiming directly; false = relay via Jet
@@ -1058,11 +1058,11 @@ options.force:  Boolean   // true = claim even if below threshold
 Calls:
   db.transaction('tokens').getAll (filter redeemed: false)
   [direct path:] ethers.Wallet.signMessage, ocpContract.paymentsExecute
-  [relay path:]  Q.Safe.Jets.dropClaimPayments
+  [relay path:]  Q.Safecloud.Jets.dropClaimPayments
 Called by: application UI, threshold check in onDropGet
 ```
 
-Initiates a SafeBux claim for all unredeemed accumulated payment tokens.
+Initiates a Safebux claim for all unredeemed accumulated payment tokens.
 
 **Direct path pipeline:**
 
@@ -1080,22 +1080,22 @@ Initiates a SafeBux claim for all unredeemed accumulated payment tokens.
 
 1. Load all tokens with `redeemed: false`
 2. Build OCP claim signed with Drop's EIP-712 session key
-3. `Q.Safe.Jets.dropClaimPayments({ dropId, paymentTokens, signature })`
+3. `Q.Safecloud.Jets.dropClaimPayments({ dropId, paymentTokens, signature })`
 4. On ack with `txHash`: mark tokens as redeemed
 
 ---
 
-### `Q.Safe.Drops.reset(callback)` → Promise
+### `Q.Safecloud.Drops.reset(callback)` → Promise
 
 ```
 Calls: _.openDB, IDBDatabase.deleteObjectStore (or clear all stores),
-       Q.Safe.Jets.dropAnnounce (reset)
+       Q.Safecloud.Jets.dropAnnounce (reset)
 Called by: application UI, init.js (on detected wipe)
 ```
 
 Clears all IndexedDB data, resets in-memory state, and announces a reset
 to the Jet. Does NOT clear the delegation claim or session keypairs —
-those are in a separate IndexedDB store (`Q.Safe.Drops.session`) and must
+those are in a separate IndexedDB store (`Q.Safecloud.Drops.session`) and must
 survive resets to avoid forcing a new interactive wallet signature.
 
 After reset, the Drop is in a fresh state: empty `chunks`, `lru`, `log`,
@@ -1107,7 +1107,7 @@ re-register with the Jet as a new cold Drop.
 ## Part 5 — Inbound event handlers (wired by Jets.js client)
 
 These functions are exported from Drops.js and registered by Jets.js as
-handlers on `Q.Safe.Jets.onDropPut`, `onDropGet`, `onDropChallenge`, and
+handlers on `Q.Safecloud.Jets.onDropPut`, `onDropGet`, `onDropChallenge`, and
 `onDropSlashed`. They are not public methods — they are the socket event
 response functions.
 
@@ -1118,10 +1118,10 @@ response functions.
 ```
 payload: { chunks: Array<{ cid, iv, ciphertext, tag, size, tags }>, options: Object }
 ack:     function({ results: Array<{ cid, stored: Boolean }> })
-Calls:   Q.Safe.Drops.put
+Calls:   Q.Safecloud.Drops.put
 ```
 
-Routes incoming `Safe/drop/put` events to `put()`. Converts the ack format:
+Routes incoming `Safecloud/drop/put` events to `put()`. Converts the ack format:
 `put()` returns `Array<{ cid, iv, size }|false>`; this handler converts to
 `Array<{ cid, stored: Boolean }>` for the Jet's ack format.
 
@@ -1132,10 +1132,10 @@ Routes incoming `Safe/drop/put` events to `put()`. Converts the ack format:
 ```
 payload: { cids: Array<String>, options: Object, paymentToken: Object|null }
 ack:     function({ chunks: Array<{ cid, iv, ciphertext, tag }|null> })
-Calls:   Q.Safe.Drops.get
+Calls:   Q.Safecloud.Drops.get
 ```
 
-Routes incoming `Safe/drop/get` events to `get()`. If `paymentToken` is
+Routes incoming `Safecloud/drop/get` events to `get()`. If `paymentToken` is
 present and balance check fails, acks with all-null chunks rather than an
 error — the Jet handles null entries as "unavailable" and tries another Drop.
 
@@ -1177,11 +1177,11 @@ eviction announces, form the evidentiary basis for a CoC. See section 1.10.
 
 ```
 payload: { reason: String }
-Calls:   Q.Safe.Drops Events: 'slashed'
+Calls:   Q.Safecloud.Drops Events: 'slashed'
 ```
 
 Receives notification that this Drop's stake has been slashed. In the
-reference implementation: fires `Q.Safe.Drops.emit('slashed', payload)`,
+reference implementation: fires `Q.Safecloud.Drops.emit('slashed', payload)`,
 logs the reason, and optionally displays a warning in the UI. The Drop
 does not automatically stop operating — the application layer decides
 whether to cease offering storage (typical: stop, prompt user to review).
@@ -1204,18 +1204,18 @@ Each step only calls things already listed above it.
 10. `_.buildBloom(cids)` — calls `Q.Data.Bloom.fromElements`
 11. `_.signAnnounce(entry, sessionKey)` — calls `_.canonicalJSON`, `crypto.subtle.sign`
 12. `_.verifyAnnounce(entry)` — calls `_.canonicalJSON`, `crypto.subtle.verify`
-13. `Q.Safe.Drops.getProllyRoot()` — O(1) in-memory read
-14. `Q.Safe.Drops.getBloomFilter()` — calls `_.buildBloom` if needed
-15. `Q.Safe.Drops.announce(reason)` — calls `_.signAnnounce`, `Q.Safe.Jets.dropAnnounce`
-16. `Q.Safe.Drops.put(chunks, options)` — calls `_.openDB`, `_.cidFromData`, `_.applyDiff`, `announce`
-17. `Q.Safe.Drops.get(cids, options)` — calls `_.openDB`, balance check (ethers.js)
-18. `onDropPut(payload, ack)` — calls `Q.Safe.Drops.put`
-19. `onDropGet(payload, ack)` — calls `Q.Safe.Drops.get`
+13. `Q.Safecloud.Drops.getProllyRoot()` — O(1) in-memory read
+14. `Q.Safecloud.Drops.getBloomFilter()` — calls `_.buildBloom` if needed
+15. `Q.Safecloud.Drops.announce(reason)` — calls `_.signAnnounce`, `Q.Safecloud.Jets.dropAnnounce`
+16. `Q.Safecloud.Drops.put(chunks, options)` — calls `_.openDB`, `_.cidFromData`, `_.applyDiff`, `announce`
+17. `Q.Safecloud.Drops.get(cids, options)` — calls `_.openDB`, balance check (ethers.js)
+18. `onDropPut(payload, ack)` — calls `Q.Safecloud.Drops.put`
+19. `onDropGet(payload, ack)` — calls `Q.Safecloud.Drops.get`
 20. `onDropChallenge(payload, ack)` — calls `_.openDB` only (returns chunk, no signing)
 21. `onDropSlashed(payload)` — event emit only
-22. `Q.Safe.Drops.claimPayments(options)` — calls `_.openDB`, ethers.js
-23. `Q.Safe.Drops.reset()` — calls `_.openDB`, `announce` (reset)
-24. `Q.Safe.Drops.init(options)` — calls all of the above; registers with Jet
+22. `Q.Safecloud.Drops.claimPayments(options)` — calls `_.openDB`, ethers.js
+23. `Q.Safecloud.Drops.reset()` — calls `_.openDB`, `announce` (reset)
+24. `Q.Safecloud.Drops.init(options)` — calls all of the above; registers with Jet
 
 ---
 
@@ -1239,7 +1239,7 @@ Each step only calls things already listed above it.
 
 - **Socket.io connection management** — Jets.js client only. Drops do not
   manage socket connections directly; all socket communication goes through
-  `Q.Safe.Jets.*` methods.
+  `Q.Safecloud.Jets.*` methods.
 
 - **Prolly tree building on the Jet side** — Jets server maintains its own
   Prolly trees per Drop. Drops build their own Prolly tree over their own
@@ -1251,13 +1251,13 @@ Each step only calls things already listed above it.
   at `paymentsExecute()` time.
 
 - **Content routing** — selecting which Drop stores or serves which CID is
-  the Jet's responsibility (`Safe.Router`). Drops respond to requests; they
+  the Jet's responsibility (`Q.Safecloud.Router`). Drops respond to requests; they
   don't decide what they store beyond accepting or rejecting based on quota.
 
 - **Hyperswarm or Jet-to-Jet communication** — Drops communicate only with
   their connected Jet via socket.io. Peer discovery, DHT, and Jet relay are
   entirely outside the Drops layer.
 
-- **SafeBux token contract deployment or management** — Drops only read
+- **Safebux token contract deployment or management** — Drops only read
   balances and execute payment claims. Token governance, minting, and the
-  graduation lockup schedule are in the SafeBux ERC-20 contract on BSC.
+  graduation lockup schedule are in the Safebux ERC-20 contract on BSC.

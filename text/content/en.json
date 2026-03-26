@@ -1,0 +1,57 @@
+{
+    "drop": {
+        "pageTitle": "Safecloud Drop",
+        "Tagline": "Drop Node Dashboard",
+        "JetUrlPlaceholder": "Jet server URL (e.g. https://jet.example.com)",
+        "ConnectButton": "Connect to Safecloud",
+        "ClaimButton": "Claim Safebux",
+        "InitialisingWebAuthn": "Initialising WebAuthn PRF\u2026",
+        "PluginNotLoaded": "Safecloud plugin not loaded. Load this page through your Qbix app.",
+        "Connected": "Connected",
+        "EvmAddress": "EVM Address",
+        "DropId": "Drop ID",
+        "Stored": "Stored",
+        "Served": "Served",
+        "Safebux": "Safebux Earned",
+        "Uptime": "Uptime",
+        "ProllyRoot": "Prolly Root",
+        "ClaimThreshold": "Need {{amount}} more SBUX to claim",
+        "ClaimReady": "{{amount}} SBUX ready to claim",
+        "ClaimedSuccess": "Claimed {{count}} tokens."
+    },
+    "upload": {
+        "DropLabel": "Drop a file here or click to upload",
+        "DropSub": "Encrypted with AES-256-GCM \u00b7 Stored on Safecloud Drops",
+        "Preparing": "Preparing\u2026",
+        "Encrypting": "Encrypting\u2026",
+        "Uploading": "Uploading\u2026",
+        "Uploaded": "Uploaded",
+        "UploadFailed": "Upload failed",
+        "WaitingForDrop": "Waiting for storage node\u2026"
+    },
+    "video": {
+        "Starting": "Starting stream\u2026",
+        "Buffering": "Buffering\u2026",
+        "Error": "Playback error",
+        "NoManifest": "No content loaded",
+        "PasteManifest": "Paste the manifest JSON to play this file"
+    },
+    "demo": {
+        "pageTitle": "Safecloud Demo",
+        "Heading": "Safecloud Encrypted Storage",
+        "Subheading": "Upload a file. It is encrypted in your browser, stored across decentralised Drop nodes, and streamed back only to you.",
+        "ShareLabel": "Share this file:",
+        "CopyButton": "Copy link",
+        "Copied": "Copied!",
+        "ManifestPrompt": "Paste the manifest JSON to play this file:",
+        "PlayButton": "Play"
+    },
+    "errors": {
+        "NoDropsAvailable": "No storage nodes available. Please open the Drop dashboard in another tab.",
+        "ServiceUnavailable": "Service unavailable \u2014 please try again shortly.",
+        "NotAuthorized": "Not authorised to access this content.",
+        "PaymentRequired": "Payment required to access this content.",
+        "NotFound": "Content not found on this Jet.",
+        "ManifestInvalid": "Invalid manifest JSON."
+    }
+}

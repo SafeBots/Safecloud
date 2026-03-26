@@ -1,6 +1,6 @@
-# SafeCloud — Attack Surface and Security Analysis
+# Safecloud — Attack Surface and Security Analysis
 
-This document catalogs every attack class identified against the SafeCloud
+This document catalogs every attack class identified against the Safecloud
 protocol: identity attacks, storage accountability attacks, payment exploits,
 routing manipulation, CoC abuse, network-level attacks, economic game-theory
 attacks, and cryptographic edge cases. Each entry states the attacker's goal,
@@ -41,7 +41,7 @@ effect. Ratings: 🔴 High risk, 🟡 Medium risk, 🟢 Low risk / resolved.
 
 **Goal:** Mallory registers as Bob's EVM address without Bob's private key.
 
-**Mechanism:** Mallory sends `Safe/drop/register` or `safecloud.jet.hello`
+**Mechanism:** Mallory sends `Safecloud/drop/register` or `safecloud.jet.hello`
 with `evmAddress = Bob` and a fabricated delegation claim.
 
 **Outcome:** Fails. The `safecloud:session-delegation` OCP claim must be
@@ -142,7 +142,7 @@ BSC is controlled by someone else.
 high stake at `0xABCD...` on BSC but Mallory controls `0xABCD...` on Ethereum,
 Mallory could try to use Ethereum-signed claims to impersonate BSC-Alice.
 
-**Outcome:** Fails. All OCP claims in SafeCloud include chain-specific domain
+**Outcome:** Fails. All OCP claims in Safecloud include chain-specific domain
 separation in EIP-712 signatures (`chainId` in the domain separator). A
 signature valid on Ethereum's `eip155:1` does not verify against BSC's
 `eip155:56`. The protocol is BSC-canonical for identity and stake; Ethereum
@@ -180,7 +180,7 @@ Drop2 to LRU-evict legitimate previously-announced chunks. Mallory then
 challenges Drop2 for an evicted chunk to manufacture a CoC.
 
 **Mechanism:**
-1. MalloryJet sends large volume of `Safe/drop/put` requests
+1. MalloryJet sends large volume of `Safecloud/drop/put` requests
 2. Drop2's storage fills; LRU evicts old chunks
 3. If Drop2 evicts without re-announcing (violating the announce-before-evict rule),
    Mallory can file a CoC: old announce claims CID Y present, challenge fails
@@ -200,7 +200,7 @@ be the most recent announce as of challenge time.
 without announcing is genuinely vulnerable. Jets should rate-limit `put`
 requests per Drop to slow flooding attacks.
 
-**Recommendation:** Jets MUST rate-limit `Safe/drop/put` per connected Drop
+**Recommendation:** Jets MUST rate-limit `Safecloud/drop/put` per connected Drop
 (e.g. `Q.Config.get(['Safe', 'drop', 'maxPutRatePerSec'], 10)`). This bounds
 the storage flooding surface.
 
@@ -244,7 +244,7 @@ some valuable content, but the `ciphertext || tag` bytes are garbage.
 
 **Outcome:** Fails as an attack against Drop2. The protocol does not require
 Drops to verify CID correctness on put — they are not trusted to compute
-cryptographic proofs. However, the `Safe/drop/challenge` response returns the
+cryptographic proofs. However, the `Safecloud/drop/challenge` response returns the
 actual chunk bytes, and the receiving Jet verifies `SHA-256(ciphertext || tag)
 == cid`. Garbage chunks fail CID verification. This damages the Jet's
 reliability record for routing, not Drop2's stake.
@@ -320,13 +320,13 @@ finding a preimage requires breaking SHA-256. This is a non-attack.
 ### 3.1 Jet balance drain before claim 🟡
 
 **Goal:** MalloryJet issues valid OCP Role B payment tokens to Drop, Drop
-serves chunks, then MalloryJet drains its SafeBux balance before Drop
+serves chunks, then MalloryJet drains its Safebux balance before Drop
 submits the claim. `paymentsExecute()` fails; Drop served for free.
 
 **Mechanism:**
 1. MalloryJet accumulates a large debt to Drop via valid payment tokens
 2. Before Drop reaches the claim threshold, MalloryJet transfers all its
-   SafeBux to another address (or spends it on other claims)
+   Safebux to another address (or spends it on other claims)
 3. Drop submits claim; `transferFrom` reverts because balance is zero
 
 **Outcome:** Partial. The Drop's pre-service balance check catches this for
@@ -352,7 +352,7 @@ window. `claimThresholdSafebux` should be set conservatively.
 
 **Economic constraint:** The graduated lockup means a Jet cannot drain its
 entire balance instantly — only the unlocked fraction is transferable. A Jet
-that has earned and locked SafeBux has a persistently slashable stake,
+that has earned and locked Safebux has a persistently slashable stake,
 reducing the incentive for this attack.
 
 ---
@@ -360,7 +360,7 @@ reducing the incentive for this attack.
 ### 3.2 Payment token replay (Drop overclaims) 🟢
 
 **Goal:** Drop calls `paymentsExecute()` more times than justified, claiming
-more SafeBux than the actual service provided.
+more Safebux than the actual service provided.
 
 **Mechanism:** Payment tokens have no nonce and are reusable until `stm.max`
 is exhausted via accumulated `spent`. Drop calls `paymentsExecute(amount)` in
@@ -375,7 +375,7 @@ Over-claiming is capped by the token ceiling.
 unboundedly from the payer's balance (capped only by the payer's actual
 balance and `ERC20.allowance`). Jets MUST set `stm.max` to a finite value
 equal to the expected cost of the services covered by that token. `stm.max = 0`
-should never be used in SafeCloud payment tokens.
+should never be used in Safecloud payment tokens.
 
 ---
 
@@ -420,7 +420,7 @@ payment token in the relay request, receiving Jet B's service for free.
 or provides a token with an insufficient balance.
 
 **Outcome:** Partial. Jet B performs the same balance pre-check on Jet A
-as a Drop performs on a Jet. If Jet A's SafeBux balance is insufficient, Jet
+as a Drop performs on a Jet. If Jet A's Safebux balance is insufficient, Jet
 B returns 402 and does not serve. If Jet A's balance passes pre-check but
 the token is undervalued, Jet B serves and the claim for underpayment may
 be disputed — Jet B earns less than expected.
@@ -451,7 +451,7 @@ may fail or extract less than expected.
 construct a valid `recipients` array). More critically: the token's `recipient`
 field must match the Drop's address — Mallory cannot redirect the payment to
 herself. The worst outcome is that Mallory "claims on behalf of" the Drop —
-the SafeBux still goes to the Drop, just slightly earlier than the Drop intended.
+the Safebux still goes to the Drop, just slightly earlier than the Drop intended.
 This is not economically harmful to the Drop.
 
 **Residual concern:** If the token is structured so that part of the payment
@@ -557,11 +557,11 @@ deprioritized by Cloud's routing configuration.
 majority of routing decisions from Jet1.
 
 **Mechanism:** Mallory creates N Drop identities (each a different EVM address
-and session keypair), all with zero SafeBux stake.
+and session keypair), all with zero Safebux stake.
 
 **Outcome:** Fails at scale. Routing weight = `stakedSafebux × reliability ×
 availableStorage`. Zero-stake Drops receive near-zero weight. To capture
-significant routing share, Mallory must stake real SafeBux across all her Drops.
+significant routing share, Mallory must stake real Safebux across all her Drops.
 Each unit of routing share requires proportional stake — Sybil attacks require
 Mallory to lock real economic value.
 
@@ -626,7 +626,7 @@ Drops.
 
 **Goal:** Mallory (as a Jet operator or rogue Cloud client) triggers many
 simultaneous requests for the same CID to exploit the inflight coalescing map
-in `Safe.Router`, causing the coalesced promise to be resolved with attacker-
+in `Q.Safecloud.Router`, causing the coalesced promise to be resolved with attacker-
 controlled content.
 
 **Mechanism:** Mallory issues N concurrent requests for CID X. The Router
@@ -659,7 +659,7 @@ time verifying invalid claims.
 evidence to all peer Jets.
 
 **Outcome:** Limited. Each CoC requires a deposit of `minClaimantStake`
-SafeBux that is lost if the CoC is adjudicated as frivolous. Spam is
+Safebux that is lost if the CoC is adjudicated as frivolous. Spam is
 economically bounded by Mallory's stake. Peer Jets verify CoC evidence
 before forwarding — non-validating CoCs are dropped immediately and do not
 propagate further.
@@ -781,7 +781,7 @@ actively harm Jet1's existing Drops (which connect outbound to Jet1, not
 through the DHT).
 
 **Defense:** Hyperswarm provides some eclipse resistance via the DHT's
-routing table diversity. Beyond that: SafeCloud operators can hardcode known
+routing table diversity. Beyond that: Safecloud operators can hardcode known
 trusted Jet peer addresses as fallback bootstrap nodes
 (`Q.Config.get(['Safe', 'router', 'bootstrapPeers'], [])`). Multiple bootstrap
 sources reduce eclipse risk.
@@ -810,7 +810,7 @@ message would fail Noise decryption/authentication.
 
 ### 6.3 Challenge flood (DoS) 🟡
 
-**Goal:** MalloryJet floods Drop2 with `Safe/drop/challenge` events, consuming
+**Goal:** MalloryJet floods Drop2 with `Safecloud/drop/challenge` events, consuming
 Drop2's CPU and IndexedDB read bandwidth.
 
 **Mechanism:** MalloryJet sends hundreds or thousands of challenge events per
@@ -837,7 +837,7 @@ configured node dishonestly, returning inflated balances for Mallory's
 addresses.
 
 **Outcome:** Partial. If Mallory controls the RPC endpoint, she can make
-Drops believe her Jets have sufficient SafeBux balance even when they don't.
+Drops believe her Jets have sufficient Safebux balance even when they don't.
 Drops serve her requests; claims later fail on the real chain.
 
 **Defense:** Drops SHOULD use multiple independent RPC providers and require
@@ -850,7 +850,7 @@ that trust assumption.
 
 ### 6.5 Network partition exploitation 🟡
 
-**Goal:** Mallory partitions the SafeCloud Jet network during a CoC gossip
+**Goal:** Mallory partitions the Safecloud Jet network during a CoC gossip
 event, ensuring that the CoC propagates to only part of the network. Half the
 network slashes Alice; the other half doesn't — Alice operates in the un-slashed
 partition.
@@ -877,12 +877,12 @@ submitting it on-chain when Alice's claim transaction is visible in the mempool.
 
 ### 7.1 Free-rider (serve without staking) 🟡
 
-**Goal:** Alice operates a Drop with zero SafeBux stake, earns payment for
+**Goal:** Alice operates a Drop with zero Safebux stake, earns payment for
 serving, and never builds stake — enjoying the network's benefits without
 contributing collateral.
 
 **Mechanism:** Alice connects to Jets, serves chunks, earns payment tokens,
-claims them, immediately transfers unlocked SafeBux out of her address.
+claims them, immediately transfers unlocked Safebux out of her address.
 
 **Outcome:** Partial. The graduated lockup means Alice cannot instantly
 liquidate earnings — a percentage is locked per period. Over time, as she
@@ -900,7 +900,7 @@ nothing until they stake something first.
 
 ### 7.2 Jet margin squeeze (underpaying Drops) 🟡
 
-**Goal:** MalloryJet earns SafeBux from Cloud at the standard rate but pays
+**Goal:** MalloryJet earns Safebux from Cloud at the standard rate but pays
 Drops far below the market rate, maximizing its margin. Drops are economically
 coerced because MalloryJet is the only Jet in the local network.
 
@@ -949,12 +949,12 @@ advantage is self-limiting.
 
 ### 7.4 Graduated lockup gaming 🟡
 
-**Goal:** Mallory earns SafeBux honestly for a period, building a large locked
+**Goal:** Mallory earns Safebux honestly for a period, building a large locked
 stake. She then immediately starts behaving corruptly (false announces, etc.),
 knowing it will take time for a CoC to be filed and her stake to be slashed.
 She races to unlock and transfer as much as possible before the slash.
 
-**Mechanism:** Mallory accumulates locked SafeBux. At time T, she turns
+**Mechanism:** Mallory accumulates locked Safebux. At time T, she turns
 corrupt. The lockup rate is, say, 10%/day. She can unlock 10% per day for
 the next N days before a CoC catches up with her.
 
@@ -976,10 +976,10 @@ transfer attempts (locked tokens cannot be transferred).
 ### 7.5 Stake concentration and routing monopoly 🟡
 
 **Goal:** A well-funded actor (Mallory or an institution) accumulates massive
-SafeBux stake across many Drops, capturing the majority of routing weight and
+Safebux stake across many Drops, capturing the majority of routing weight and
 effectively controlling content availability and prices.
 
-**Mechanism:** Mallory buys a dominant fraction of the SafeBux supply and
+**Mechanism:** Mallory buys a dominant fraction of the Safebux supply and
 distributes it across her Drop infrastructure.
 
 **Outcome:** Partial. This is a resource-intensive attack with no protocol
@@ -989,24 +989,24 @@ are desirable). If she uses her routing dominance to censor content or
 overcharge, alternative Jets can route around her Drops, and new low-cost
 Drops from other operators compete.
 
-**Systemic concern:** SafeBux supply concentration is a tokenomics concern,
+**Systemic concern:** Safebux supply concentration is a tokenomics concern,
 not a protocol attack. The protocol itself is neutral — high-stake actors who
 serve honestly are beneficial; the same actors who serve dishonestly face
 CoC and slash. The market and tokenomics design need to address distribution.
 
 ---
 
-### 7.6 SafeBux price manipulation 🟡
+### 7.6 Safebux price manipulation 🟡
 
-**Goal:** Mallory manipulates the SafeBux token price on exchanges to harm
+**Goal:** Mallory manipulates the Safebux token price on exchanges to harm
 the economics of honest participants.
 
-**Mechanism:** Large buy/sell orders to crash SafeBux price, making stored
+**Mechanism:** Large buy/sell orders to crash Safebux price, making stored
 chunks economically worthless for honest Drops, or inflating price to make
 Cloud payments prohibitively expensive.
 
 **Outcome:** This is a tokenomics/market attack, not a protocol attack. The
-protocol is denominated in SafeBux wei — the absolute number of tokens doesn't
+protocol is denominated in Safebux wei — the absolute number of tokens doesn't
 change. What changes is the USD value of participants' stakes and earnings.
 
 **Defense:** Off-protocol. Tokenomics design, exchange listing policies, and
@@ -1056,7 +1056,7 @@ level attack, not a protocol attack.
 ### 8.3 EIP-712 cross-domain replay 🟢
 
 **Goal:** Mallory captures a valid EIP-712 signature from one context
-(e.g. signing a payment token on the SafeCloud test network) and replays it
+(e.g. signing a payment token on the Safecloud test network) and replays it
 on the mainnet.
 
 **Mechanism:** Payment token signed with `chainId = eip155:97` (BSC testnet)
@@ -1152,7 +1152,7 @@ attestation trust flows through the operator's key.
 
 **Defense:** M-of-N auditor model. The bundle hash must be co-signed by M
 of N independent auditors, not just the SafeBox operator. Any participant
-can become an auditor by staking SafeBux and signing bundles they have
+can become an auditor by staking Safebux and signing bundles they have
 independently verified. The set of trusted auditors is configured by each
 Jet operator independently. No single rogue auditor can endorse a malicious
 bundle if the threshold is > 1.
@@ -1182,7 +1182,7 @@ access that Spectre exploits.
 
 **Defense:** Correct security headers on the SafeBox-served application.
 Browser patches for Spectre mitigations. These are standard web security
-practices, not SafeCloud-specific.
+practices, not Safecloud-specific.
 
 ---
 
@@ -1192,7 +1192,7 @@ practices, not SafeCloud-specific.
 
 ### 10.1 The protocol's fundamental security model
 
-The SafeCloud security model rests on three independent assumptions:
+The Safecloud security model rests on three independent assumptions:
 
 1. **Cryptographic:** SHA-256, P-256 ECDSA, secp256k1 ECDSA, and AES-256-GCM
    are computationally secure against the attacker. This is a standard

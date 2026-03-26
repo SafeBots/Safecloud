@@ -1,0 +1,102 @@
+/* Safecloud/player Tool Styles */
+
+.Safecloud_player_tool {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    font-family: var(--mono, 'IBM Plex Mono', monospace);
+}
+
+/* Drop zone */
+.Safecloud_player_dropzone {
+    border: 2px dashed rgba(0, 255, 136, 0.3);
+    background: rgba(0, 255, 136, 0.02);
+    padding: 40px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    position: relative;
+}
+
+.Safecloud_player_dropzone:hover,
+.Safecloud_player_dragover {
+    border-color: rgba(0, 255, 136, 0.7);
+    background: rgba(0, 255, 136, 0.05);
+}
+
+.Safecloud_player_drop_icon {
+    font-size: 48px;
+    color: #00ff88;
+    text-shadow: 0 0 20px rgba(0, 255, 136, 0.5);
+    margin-bottom: 12px;
+    animation: pulse-icon 3s ease-in-out infinite;
+}
+
+@keyframes pulse-icon {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
+.Safecloud_player_drop_label {
+    font-size: 14px;
+    color: #c8e0c8;
+    margin-bottom: 6px;
+    letter-spacing: 0.05em;
+}
+
+.Safecloud_player_drop_sub {
+    font-size: 10px;
+    color: #5a7a5a;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+/* Progress bar */
+.Safecloud_player_progress {
+    height: 3px;
+    background: #1e281e;
+    overflow: hidden;
+}
+
+.Safecloud_player_progress_fill {
+    height: 100%;
+    width: 0%;
+    background: #00ff88;
+    box-shadow: 0 0 6px #00ff88;
+    transition: width 0.4s ease;
+}
+
+/* Status */
+.Safecloud_player_status {
+    font-size: 11px;
+    color: #5a7a5a;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    min-height: 18px;
+}
+
+.Safecloud_player_status.working { color: #ffaa00; }
+.Safecloud_player_status.ok      { color: #00ff88; }
+.Safecloud_player_status.error   { color: #ff3344; }
+
+/* Video */
+.Safecloud_player_video_wrap {
+    position: relative;
+    background: #000;
+    border: 1px solid #1e281e;
+}
+
+.Safecloud_player_video {
+    width: 100%;
+    display: block;
+    max-height: 480px;
+    background: #000;
+}
+
+/* Hide video wrap until stream is ready */
+.Safecloud_player_tool .Safecloud_player_video_wrap {
+    display: none;
+}
+.Safecloud_player_tool .Safecloud_player_video_wrap.Safecloud_active {
+    display: block;
+}

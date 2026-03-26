@@ -17,9 +17,9 @@ The three network roles are:
 
 | Role | Code | Where it runs |
 |------|------|--------------|
-| **Cloud** | `Q.Safe.Cloud` | Browser — file owner/consumer SDK |
-| **Jets** | `Q.Safe.Jets` (client) + `node/Safe.js` (server) | Browser (socket client) + Node.js (routing server) |
-| **Drops** | `Q.Safe.Drops` | Browser tabs volunteering IndexedDB storage |
+| **Cloud** | `Q.Safecloud.Client` | Browser — file owner/consumer SDK |
+| **Jets** | `Q.Safecloud.Jets` (client) + `node/Safecloud/.js` (server) | Browser (socket client) + Node.js (routing server) |
+| **Drops** | `Q.Safecloud.Drops` | Browser tabs volunteering IndexedDB storage |
 
 Jets never see plaintext. Drops never see plaintext. Only the Cloud (owner or
 authorised grantee) has the keys to decrypt.
@@ -71,13 +71,22 @@ and PHP.
 hard-coded in `_internal.js`:
 
 ```
-safecloud.encryption.root    → encryptionRoot (32 bytes) from rootKey
-safecloud.access.root        → accessRootBytes (32 bytes) from rootKey
-safecloud.subtree.{S}.{E}    → subtreeKey for chunk range [S, E)
-safecloud.chunk.key.{i}      → AES-256-GCM key for chunk i (relative)
-safecloud.chunk.iv.{i}       → 12-byte IV for chunk i (relative)
-safecloud.read.{word}        → label for a read-delegation capability
-safecloud.write.{word}       → label for a write-delegation capability
+safecloud.encryption.root      → encryptionRoot (32 bytes) from rootKey
+safecloud.access.root          → accessRoot (32 bytes) from rootKey
+
+Three parallel N-ary trees from one rootCid (binary default):
+  Merkle tree    — built bottom up from chunk CIDs (public, cacheable)
+  Encryption key tree — built top down via chained Q.Crypto.delegate (Cloud only)
+  Access level tree   — built top down via chained Q.Crypto.delegate (Jets enforce)
+
+Same link path array navigates all three:
+  ["track","data","0","1"]  → Merkle node / encryption subtreeKey / access grant
+safecloud.track.data.{S}.{E}    → subtreeKey for data track chunk range [S, E)
+safecloud.track.index           → key for the index track (single encrypted chunk)
+safecloud.chunk.key.{i}        → AES-256-GCM key for chunk i (relative)
+safecloud.chunk.iv.{i}         → 12-byte IV for chunk i (relative)
+safecloud.read.{word}          → label for a read-delegation capability
+safecloud.write.{word}         → label for a write-delegation capability
 safecloud.admin.{word}       → label for an admin-delegation capability
 ```
 
@@ -368,8 +377,8 @@ the plaintext. This means:
 - The CID commits to the full authenticated ciphertext including the GCM tag
 - Drops can verify they have the right chunk without any keys
 
-`Q.Safe.Cloud._internal.chunkCid(ciphertextB64, tagB64)` and
-`Q.Safe.Drops.cidFromData(arrayBuffer)` must produce identical values.
+`Q.Safecloud.Client._internal.chunkCid(ciphertextB64, tagB64)` and
+`Q.Safecloud.Drops.cidFromData(arrayBuffer)` must produce identical values.
 
 ---
 
@@ -423,25 +432,25 @@ without knowing any secrets.
 
 ---
 
-## 10. Q.Safe.Cloud API
+## 10. Q.Safecloud.Client API
 
 **Browser only.** All methods follow `Q.promisify` convention: they accept an
 optional callback as the last argument and also return a `Q.Promise`.
 
-### `Q.Safe.Cloud.defaultChunkSize`
+### `Q.Safecloud.Client.defaultChunkSize`
 `Number` — default chunk size in bytes (256 × 1024 = 262144).
 
-### `Q.Safe.Cloud.manifestVersion`
+### `Q.Safecloud.Client.manifestVersion`
 `Number` — current manifest version (1).
 
-### `Q.Safe.Cloud.levelFromLabel(type, word)`
+### `Q.Safecloud.Client.levelFromLabel(type, word)`
 `function(type: String, word: String) → Number` — maps a Streams-compatible
 level word (e.g. `'content'`) to its numeric level for a given type
 (`'read'`, `'write'`, `'admin'`).
 
 ---
 
-### `Q.Safe.Cloud.store(file, options, callback)` → Promise
+### `Q.Safecloud.Client.store(file, options, callback)` → Promise
 
 Chunks, encrypts, and uploads a file to Safecloud via Jets.
 
@@ -455,7 +464,7 @@ file: {
 
 options: {
   key:           Uint8Array,   // existing rootKey (re-upload / update). Omit to generate random key
-  chunkSize:     Number,       // default: Q.Safe.Cloud.defaultChunkSize
+  chunkSize:     Number,       // default: Q.Safecloud.Client.defaultChunkSize
   authorizations: Array,       // OCP auth claims to send to Jets (v1: accepted but not verified)
   payments:      Array,        // OCP payment claims (v1: accepted but not verified)
   jurisdiction:  String,       // stored in manifest, null in v1
@@ -481,12 +490,12 @@ callback(err, {
    - Compute CIDv1 from `ciphertext || tag`
 7. Build Merkle tree over ordered CIDs → `rootCid`
 8. Sign binding statement with `encryptionRoot`
-9. Upload all chunks via `Q.Safe.Jets.chunkPut()`
+9. Upload all chunks via `Q.Safecloud.Jets.chunkPut()`
 10. Return manifest + rootKey
 
 ---
 
-### `Q.Safe.Cloud.fetch(manifest, capability, options, callback)` → Promise
+### `Q.Safecloud.Client.fetch(manifest, capability, options, callback)` → Promise
 
 Downloads, Merkle-verifies, and decrypts a chunk range.
 
@@ -518,7 +527,7 @@ callback(err, Blob)
 1. Resolve `subtreeKey`:
    - Owner: `derive(encryptionRoot, "safecloud.subtree.0.N")`
    - Delegated: `capability.secret` IS the subtreeKey; verify OCP proof covers all requested chunks first
-2. Fetch chunks via `Q.Safe.Jets.chunkGet({ rootCid, start, end })`
+2. Fetch chunks via `Q.Safecloud.Jets.chunkGet({ rootCid, start, end })`
 3. For each chunk: verify Merkle proof against `manifest.rootCid`
 4. Decrypt using relative index `i = absIdx - start`:
    - `chunkKey = derive(subtreeKey, "safecloud.chunk.key.i")`
@@ -528,7 +537,7 @@ callback(err, Blob)
 
 ---
 
-### `Q.Safe.Cloud.grant(manifest, rootKey, options, callback)` → Promise
+### `Q.Safecloud.Client.grant(manifest, rootKey, options, callback)` → Promise
 
 Delegates access to a chunk range. Returns a capability that a grantee passes
 to `fetch()` and to Jets as OCP authorization proofs.
@@ -567,7 +576,7 @@ callback(err, {
 
 ---
 
-### `Q.Safe.Cloud.reshare(chunks, options, callback)` → Promise
+### `Q.Safecloud.Client.reshare(chunks, options, callback)` → Promise
 
 Turns this browser tab into a temporary Drop by storing received encrypted
 chunks in IndexedDB and announcing them to Jets. Chunks are always encrypted —
@@ -582,17 +591,17 @@ callback(err, { announced: Number })
 
 ---
 
-## 11. Q.Safe.Jets API
+## 11. Q.Safecloud.Jets API
 
 **Browser only.** Shared socket client used by both `Cloud` (uploaders/downloaders)
 and `Drops` (storage providers). All methods follow `Q.promisify` convention.
 
 ### Connection
 
-#### `Q.Safe.Jets.url` — `String|null`
+#### `Q.Safecloud.Jets.url` — `String|null`
 Override to use a specific server URL instead of `Q.nodeUrl()`.
 
-#### `Q.Safe.Jets.connect(callback)` → Promise
+#### `Q.Safecloud.Jets.connect(callback)` → Promise
 Connects (or reuses existing connection) to the Jet server. Safe to call
 multiple times. Auto-reconnects with exponential backoff + jitter (±30%,
 base 500ms, max 30s) on disconnect.
@@ -601,9 +610,9 @@ base 500ms, max 30s) on disconnect.
 callback(err, Q.Socket)
 ```
 
-### Drop lifecycle (called by `Q.Safe.Drops.activate()`)
+### Drop lifecycle (called by `Q.Safecloud.Drops.activate()`)
 
-#### `Q.Safe.Jets.dropRegister(info, callback)` → Promise
+#### `Q.Safecloud.Jets.dropRegister(info, callback)` → Promise
 Registers this browser tab as a Drop. Sends the stable `dropId` (derived from
 `Q.clientId()` + `sessionStorage`) so the Jet can recognise a reconnecting tab.
 
@@ -612,7 +621,7 @@ info: { storage: { GB: Number } }
 callback(err, { dropId: String })
 ```
 
-#### `Q.Safe.Jets.dropAnnounce(info, callback)` → Promise
+#### `Q.Safecloud.Jets.dropAnnounce(info, callback)` → Promise
 Announces updated storage stats and optionally a new Prolly root or Bloom filter.
 
 ```js
@@ -625,16 +634,16 @@ info: {
 callback(err)
 ```
 
-#### `Q.Safe.Jets.dropDisconnect(callback)` → Promise
+#### `Q.Safecloud.Jets.dropDisconnect(callback)` → Promise
 Signals intentional offline. Clears the stable `dropId` from `sessionStorage`.
 
 ```js
 callback(err)
 ```
 
-### Chunk routing (called by `Q.Safe.Cloud`)
+### Chunk routing (called by `Q.Safecloud.Client`)
 
-#### `Q.Safe.Jets.chunkPut(chunks, options, callback)` → Promise
+#### `Q.Safecloud.Jets.chunkPut(chunks, options, callback)` → Promise
 Sends encrypted chunks to the Jet for distribution to Drops.
 
 ```js
@@ -653,7 +662,7 @@ options: {
 callback(err, { results: Array<Object|false> })
 ```
 
-#### `Q.Safe.Jets.chunkGet(payload, options, callback)` → Promise
+#### `Q.Safecloud.Jets.chunkGet(payload, options, callback)` → Promise
 Requests encrypted chunks from the Jet. Supports range requests.
 
 ```js
@@ -678,7 +687,7 @@ callback(err, {
 
 ### Peer routing
 
-#### `Q.Safe.Jets.peerConnect(info, callback)` → Promise
+#### `Q.Safecloud.Jets.peerConnect(info, callback)` → Promise
 v1 stub. Sends a Jet-to-Jet peering request.
 ```js
 info: { url: String }
@@ -689,26 +698,26 @@ callback(err)
 
 | Event | Arguments | Fired when |
 |-------|-----------|------------|
-| `Q.Safe.Jets.onConnect` | `(Q.Socket)` | Socket connects |
-| `Q.Safe.Jets.onDisconnect` | `()` | Socket disconnects |
-| `Q.Safe.Jets.onDropPut` | `(payload, ack)` | Jet pushes store request to this Drop |
-| `Q.Safe.Jets.onDropGet` | `(payload, ack)` | Jet pushes retrieve request to this Drop |
-| `Q.Safe.Jets.onDropChallenge` | `(payload, ack)` | Jet issues proof-of-storage challenge |
-| `Q.Safe.Jets.onDropSlashed` | `(payload)` | This Drop's stake is slashed |
+| `Q.Safecloud.Jets.onConnect` | `(Q.Socket)` | Socket connects |
+| `Q.Safecloud.Jets.onDisconnect` | `()` | Socket disconnects |
+| `Q.Safecloud.Jets.onDropPut` | `(payload, ack)` | Jet pushes store request to this Drop |
+| `Q.Safecloud.Jets.onDropGet` | `(payload, ack)` | Jet pushes retrieve request to this Drop |
+| `Q.Safecloud.Jets.onDropChallenge` | `(payload, ack)` | Jet issues proof-of-storage challenge |
+| `Q.Safecloud.Jets.onDropSlashed` | `(payload)` | This Drop's stake is slashed |
 
-`Jets.js` wires `onDropPut` and `onDropGet` directly to `Q.Safe.Drops.put()`
-and `Q.Safe.Drops.get()` so Drops don't need to listen to these events manually.
+`Jets.js` wires `onDropPut` and `onDropGet` directly to `Q.Safecloud.Drops.put()`
+and `Q.Safecloud.Drops.get()` so Drops don't need to listen to these events manually.
 
 ---
 
-## 12. Q.Safe.Drops API
+## 12. Q.Safecloud.Drops API
 
 **Browser only.** Stores and serves encrypted chunks using IndexedDB. All
 methods follow `Q.promisify` convention.
 
 ### Configuration
 
-#### `Q.Safe.Drops.setStorageMax(sizeGB, callback)` → Promise
+#### `Q.Safecloud.Drops.setStorageMax(sizeGB, callback)` → Promise
 Sets the maximum storage this Drop is willing to offer. May trigger a browser
 storage-persistence permission request.
 
@@ -719,7 +728,7 @@ callback(err, Boolean)   // true if persist granted
 
 ### CID
 
-#### `Q.Safe.Drops.cidFromData(arrayBuffer, callback)` → Promise<String>
+#### `Q.Safecloud.Drops.cidFromData(arrayBuffer, callback)` → Promise<String>
 Computes CIDv1 from the raw encrypted chunk data. Must match `Cloud._internal.chunkCid()`.
 
 ```js
@@ -729,7 +738,7 @@ callback(err, cidString)
 
 ### Storage
 
-#### `Q.Safe.Drops.put(chunks, options, callback)` → Promise
+#### `Q.Safecloud.Drops.put(chunks, options, callback)` → Promise
 Stores one or more encrypted chunks in IndexedDB. Evicts LRU chunks if storage
 limit would be exceeded.
 
@@ -748,7 +757,7 @@ callback(err, {
 })
 ```
 
-#### `Q.Safe.Drops.get(cids, options, callback)` → Promise
+#### `Q.Safecloud.Drops.get(cids, options, callback)` → Promise
 Retrieves encrypted chunks by CID. Missing chunks are `null` (order preserved).
 Updates `accessed` timestamp for LRU purposes.
 
@@ -762,15 +771,15 @@ callback(err, {
 
 ### Trust / Payment hooks (stubs in v1)
 
-#### `Q.Safe.Drops.checkAuthorization(authorizations, method, payload, options)` → Boolean
+#### `Q.Safecloud.Drops.checkAuthorization(authorizations, method, payload, options)` → Boolean
 v1: always returns `true`. Will be wired to `Q.Crypto.OpenClaim.verify()` in v0.5.
 
-#### `Q.Safe.Drops.checkPayment(payments, options)` → Boolean
+#### `Q.Safecloud.Drops.checkPayment(payments, options)` → Boolean
 v1: always returns `true`. Will check monotonic `(payer, line)` payment amounts in v0.5.
 
 ---
 
-## 13. Node.js Jet Server (`node/Safe.js`)
+## 13. Node.js Jet Server (`node/Safecloud/.js`)
 
 The Jet server routes chunks between Cloud clients and Drop storage providers.
 It never decrypts anything.
@@ -778,7 +787,7 @@ It never decrypts anything.
 ### Starting the server
 
 ```js
-var Safe = require('./Safe');
+var Safe = require('./Safecloud/');
 Safe.listen(options);
 // Returns: { internal: httpServer, socket: socketServer }
 ```
@@ -832,21 +841,21 @@ delta and emits `'dropSync'`. On first contact (no jet-side root): emits
 
 ### Socket events handled
 
-All socket events under the `/Safe` namespace:
+All socket events under the `/Safecloud/` namespace:
 
 | Event (client → server) | Handler |
 |--------------------------|---------|
-| `Safe/drop/register` | Register or reconnect Drop |
-| `Safe/drop/announce` | Update stats, Prolly root, Bloom filter |
-| `Safe/drop/disconnect` | Remove Drop from registry |
-| `Safe/chunk/put` | Route encrypted chunks to Drops |
-| `Safe/chunk/get` | Fetch chunks from Drops (CID list or range) |
-| `Safe/chunk/challenge` | Forward proof-of-storage challenge to a Drop |
-| `Safe/peer/connect` | v1 stub — Jet-to-Jet peering |
+| `Safecloud/drop/register` | Register or reconnect Drop |
+| `Safecloud/drop/announce` | Update stats, Prolly root, Bloom filter |
+| `Safecloud/drop/disconnect` | Remove Drop from registry |
+| `Safecloud/chunk/put` | Route encrypted chunks to Drops |
+| `Safecloud/chunk/get` | Fetch chunks from Drops (CID list or range) |
+| `Safecloud/chunk/challenge` | Forward proof-of-storage challenge to a Drop |
+| `Safecloud/peer/connect` | v1 stub — Jet-to-Jet peering |
 
 | Event (PHP → server, internal) | Handler |
 |--------------------------------|---------|
-| `Safe/drop/slash` | Signal stake slashing for a Drop |
+| `Safecloud/drop/slash` | Signal stake slashing for a Drop |
 
 ---
 
@@ -962,9 +971,9 @@ The following stubs exist and need to be filled for v0.5:
 
 | File | Location | What to wire |
 |------|----------|-------------|
-| `node/Safe.js` | `Safe/chunk/put` handler | `Q.Crypto.OpenClaim.verify(options.authorizations[i])` |
-| `node/Safe.js` | `Safe/chunk/get` handler | same |
-| `node/Safe.js` | `Safe/chunk/challenge` ack | Sign `(cid, nonce)` with Drop's OCP ES256 key |
+| `node/Safecloud/.js` | `Safecloud/chunk/put` handler | `Q.Crypto.OpenClaim.verify(options.authorizations[i])` |
+| `node/Safecloud/.js` | `Safecloud/chunk/get` handler | same |
+| `node/Safecloud/.js` | `Safecloud/chunk/challenge` ack | Sign `(cid, nonce)` with Drop's OCP ES256 key |
 | `Drops.js` | `checkAuthorization()` | `Q.Crypto.OpenClaim.verify(claims)` |
 | `Drops.js` | `checkPayment()` | `Q.Crypto.OpenClaim.EVM.verify(claims)` — monotonic line check |
 
@@ -973,16 +982,16 @@ The following stubs exist and need to be filled for v0.5:
 ## 16. File Locations
 
 ```
-plugins/Safe/
+plugins/Safecloud/
 ├── node/
 │   └── Safe.js                                    ← Jet server (Node.js)
 └── web/js/
-    ├── Safe/
+    ├── Safecloud/
     │   ├── Cloud.js                               ← Q.Method.define wiring for Cloud
     │   ├── Jets.js                                ← Shared socket.io client (Cloud + Drops)
     │   ├── Drops.js                               ← Browser Drop node (IndexedDB)
     │   └── DataTrees.js                           ← Lazy-loads Merkle/Prolly/Bloom on Q.Data
-    └── methods/Q/Safe/Cloud/
+    └── methods/Q/Safecloud/Cloud/
         ├── _internal.js                           ← Key derivation, CID, chunking helpers
         ├── store.js                               ← Encrypt + upload pipeline
         ├── fetch.js                               ← Download + Merkle-verify + decrypt
@@ -1025,13 +1034,13 @@ classes/Q/
 
 ## 17. Pending Items (TODOs)
 
-1. **OCP authorization verification in Jets** — `Safe/chunk/put` and `Safe/chunk/get` handlers
+1. **OCP authorization verification in Jets** — `Safecloud/chunk/put` and `Safecloud/chunk/get` handlers
 2. **OCP payment verification in Jets** — same handlers, `options.payments`
 3. **Drop proof-of-storage challenge signing** — replace placeholder in `Jets.onDropChallenge`
 4. **Range request CID routing index** — Jets need a `rootCid → [cid...]` index for range gets
 5. **Prolly-backed routing** — use Prolly tree coverage to weight Drop selection
 6. **Erasure coding** — currently replication only
-7. **Jet-to-Jet peering** — `Safe/peer/connect` stub
+7. **Jet-to-Jet peering** — `Safecloud/peer/connect` stub
 8. **`Q.Data.Merkle`/`Prolly`/`Bloom` swap in `store.js`/`fetch.js`/`Drops.js`** — current code uses some inline helpers; replace with canonical `Q.Data.*` method calls (see client.zip analysis)
 9. **`Drops.buildProllyTree()`** — replace manual implementation with `Q.Data.Prolly.build(entries, idbStore)`
 10. **`Drops.buildBloomFilter()`** — replace with `Q.Data.Bloom.fromElements(cids)`
@@ -1056,8 +1065,8 @@ The framework also exposes:
 - `Q.reject(error)` — wraps an error in a rejected promise
 - `Q.Promise.all([...])` — equivalent to `Promise.all`
 
-In Safecloud, `Q.Promise` is the return type of every method in `Q.Safe.Cloud`,
-`Q.Safe.Jets`, and `Q.Safe.Drops`. All crypto primitives (`Q.Data.*`,
+In Safecloud, `Q.Promise` is the return type of every method in `Q.Safecloud.Client`,
+`Q.Safecloud.Jets`, and `Q.Safecloud.Drops`. All crypto primitives (`Q.Data.*`,
 `Q.Crypto.*`) also return `Q.Promise`.
 
 ---
@@ -1066,24 +1075,24 @@ In Safecloud, `Q.Promise` is the return type of every method in `Q.Safe.Cloud`,
 
 `Q.promisify` wraps a callback-style function so it can be called either as
 a callback-accepting function or as a Promise-returning function. This is
-how every public method in `Q.Safe.Cloud`, `Q.Safe.Jets`, and `Q.Safe.Drops`
+how every public method in `Q.Safecloud.Client`, `Q.Safecloud.Jets`, and `Q.Safecloud.Drops`
 is defined.
 
 ```js
 // Declaration pattern:
-Q.Safe.Cloud.store = Q.promisify(function (file, options, callback) {
+Q.Safecloud.Client.store = Q.promisify(function (file, options, callback) {
     // ... do async work ...
     callback(null, result);   // or callback(err)
 }, false, 2);   // false = don't return `this`; 2 = number of required non-callback args
 
 // Call as callback:
-Q.Safe.Cloud.store(file, options, function (err, result) { ... });
+Q.Safecloud.Client.store(file, options, function (err, result) { ... });
 
 // Call as Promise:
-Q.Safe.Cloud.store(file, options).then(function (result) { ... });
+Q.Safecloud.Client.store(file, options).then(function (result) { ... });
 
 // Call with no options (promisify handles optional trailing args):
-Q.Safe.Cloud.store(file).then(...);
+Q.Safecloud.Client.store(file).then(...);
 ```
 
 The `argCount` parameter tells `Q.promisify` how many non-callback arguments
@@ -1094,7 +1103,7 @@ callback. For example `store` has `argCount=2` because it expects `(file, option
 
 ### 18.3 `Q.exports(fn)` — method file declaration
 
-Every `Q.Data.*`, `Q.Crypto.*`, and `Q.Safe.Cloud.*` file is wrapped in
+Every `Q.Data.*`, `Q.Crypto.*`, and `Q.Safecloud.Client.*` file is wrapped in
 `Q.exports(function(Q, _) { ... })`. This is the Q framework's mechanism
 for declaring method files that are loaded on demand.
 
@@ -1104,7 +1113,7 @@ for declaring method files that are loaded on demand.
   files share the same `_internal.js` helper object `_`)
 
 In Safecloud:
-- `Q/Safe/Cloud/_internal.js` exports the `_` object used by `store.js`,
+- `Q/Safecloud/Cloud/_internal.js` exports the `_` object used by `store.js`,
   `fetch.js`, `grant.js`, and `reshare.js`
 - `Q/Data/Merkle/_internal.js` exports shared Merkle helpers
 - `Q/Data/Prolly/_internal.js` exports shared Prolly helpers
@@ -1124,7 +1133,7 @@ var context = JSON.stringify(Q.extend(
     options.exp ? { exp: options.exp } : {}
 ));
 
-// In node/Safe.js — building a Drop record:
+// In node/Safecloud/.js — building a Drop record:
 var drop = Q.extend({
     dropId:    dropId,
     socketId:  client.id,
@@ -1159,26 +1168,26 @@ myEvent.remove('myHandler');
 
 **Where used in Safecloud:**
 
-`Q.Safe.Jets` exposes six `Q.Event` instances:
+`Q.Safecloud.Jets` exposes six `Q.Event` instances:
 
 | Property | Fires when |
 |----------|-----------|
-| `Q.Safe.Jets.onConnect` | Socket connects to Jet server |
-| `Q.Safe.Jets.onDisconnect` | Socket disconnects |
-| `Q.Safe.Jets.onDropPut` | Jet pushes a store request to this Drop |
-| `Q.Safe.Jets.onDropGet` | Jet pushes a retrieve request to this Drop |
-| `Q.Safe.Jets.onDropChallenge` | Jet issues a proof-of-storage challenge |
-| `Q.Safe.Jets.onDropSlashed` | This Drop's stake is slashed by the network |
+| `Q.Safecloud.Jets.onConnect` | Socket connects to Jet server |
+| `Q.Safecloud.Jets.onDisconnect` | Socket disconnects |
+| `Q.Safecloud.Jets.onDropPut` | Jet pushes a store request to this Drop |
+| `Q.Safecloud.Jets.onDropGet` | Jet pushes a retrieve request to this Drop |
+| `Q.Safecloud.Jets.onDropChallenge` | Jet issues a proof-of-storage challenge |
+| `Q.Safecloud.Jets.onDropSlashed` | This Drop's stake is slashed by the network |
 
-`Jets.js` wires `onDropPut` and `onDropGet` directly to `Q.Safe.Drops` by
+`Jets.js` wires `onDropPut` and `onDropGet` directly to `Q.Safecloud.Drops` by
 registering named handlers on them:
 
 ```js
-Q.Safe.Jets.onDropPut.set(function (payload, ack) {
-    Q.Safe.Drops.put(chunks, payload.options, function (err, result) {
+Q.Safecloud.Jets.onDropPut.set(function (payload, ack) {
+    Q.Safecloud.Drops.put(chunks, payload.options, function (err, result) {
         ack && ack(err ? { error: err.message } : null, result);
     });
-}, 'Q.Safe.Jets.onDropPut');
+}, 'Q.Safecloud.Jets.onDropPut');
 ```
 
 This means application code can add its own handlers to these events without
@@ -1186,14 +1195,14 @@ removing the built-in wiring:
 
 ```js
 // Application-level monitoring:
-Q.Safe.Jets.onDropSlashed.set(function (payload) {
+Q.Safecloud.Jets.onDropSlashed.set(function (payload) {
     console.warn('Drop slashed, reason:', payload.reason);
 }, 'myApp.slashMonitor');
 ```
 
 **Node.js: `Q.makeEventEmitter(Safe)`**
 
-On the server side, `node/Safe.js` calls `Q.makeEventEmitter(Safe)` to give
+On the server side, `node/Safecloud/.js` calls `Q.makeEventEmitter(Safe)` to give
 the `Safe` object standard `emit` / `on` / `once` / `off` methods. This is
 Q's thin wrapper over Node's `EventEmitter`.
 
@@ -1229,14 +1238,14 @@ Q.Socket.connect(namespace, url, function (err, qs) {
 
 **Where used in Safecloud:**
 
-`Jets.js` calls `Q.Socket.connect('/Safe', url, ...)` to open the `/Safe`
-namespace. All subsequent socket events (`Safe/chunk/put`, `Safe/drop/register`,
+`Jets.js` calls `Q.Socket.connect('/Safecloud/', url, ...)` to open the `/Safecloud/`
+namespace. All subsequent socket events (`Safecloud/chunk/put`, `Safecloud/drop/register`,
 etc.) are emitted and received on `qs.socket`.
 
 Key design decisions:
-- **One shared socket** — both `Q.Safe.Cloud` (uploader/downloader) and
-  `Q.Safe.Drops` (storage provider) share the same `/Safe` namespace connection
-  managed by `Q.Safe.Jets`. There is no separate socket for each role.
+- **One shared socket** — both `Q.Safecloud.Client` (uploader/downloader) and
+  `Q.Safecloud.Drops` (storage provider) share the same `/Safecloud/` namespace connection
+  managed by `Q.Safecloud.Jets`. There is no separate socket for each role.
 - **Queue before connect** — `_withSocket(fn)` buffers calls made before the
   socket is ready, then drains the queue on connect.
 - **Drop identity is stable** — `_dropId()` is derived from `Q.clientId()` and
@@ -1706,21 +1715,21 @@ function verifyAuthorization(capability, requestedChunks) {
 Currently both are stubs returning `true`. In v0.5 they will call:
 
 ```js
-Q.Safe.Drops.checkAuthorization = function (authorizations, method, payload, options) {
+Q.Safecloud.Drops.checkAuthorization = function (authorizations, method, payload, options) {
     if (!authorizations || !authorizations.length) return false;
     return Q.Crypto.OpenClaim.verify(authorizations[0], { minValid: 1 });
 };
 
-Q.Safe.Drops.checkPayment = function (payments, options) {
+Q.Safecloud.Drops.checkPayment = function (payments, options) {
     if (!payments || !payments.length) return false;
     var claim = payments[0];
     return Q.Crypto.OpenClaim.EVM.verify(claim, claim.sig[0], claim.payer)
     .then(function (valid) {
         if (!valid) return false;
         var lineKey = claim.payer + ':' + claim.line;
-        var prev    = Q.Safe.Drops._lineCache[lineKey] || 0;
+        var prev    = Q.Safecloud.Drops._lineCache[lineKey] || 0;
         if (Number(claim.max) <= prev) return false;
-        Q.Safe.Drops._lineCache[lineKey] = Number(claim.max);
+        Q.Safecloud.Drops._lineCache[lineKey] = Number(claim.max);
         return true;
     });
 };

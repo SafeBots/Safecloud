@@ -1,4 +1,4 @@
-# Q.Safe.Jets — Implementation Design Document
+# Q.Safecloud.Jets — Implementation Design Document
 
 ## Table of Contents
 
@@ -14,11 +14,11 @@
   - [1.9 Prolly tree reconciliation](#19-prolly-tree-reconciliation)
   - [1.10 Bloom filter cold handshake](#110-bloom-filter-cold-handshake)
   - [1.11 Proof-of-storage challenges](#111-proof-of-storage-challenges)
-  - [1.12 Drop micropayments and SafeBux claims](#112-drop-micropayments-and-safebux-claims)
+  - [1.12 Drop micropayments and Safebux claims](#112-drop-micropayments-and-safebux-claims)
   - [1.13 Jets.Router — pluggable Drop and Jet discovery](#113-jetsrouter--pluggable-drop-and-jet-discovery)
 - [Part 2 — External interfaces called by Jets](#part-2--external-interfaces-called-by-jets)
-  - [From Q.Safe.Cloud (client layer above Jets)](#from-qsafecloud-client-layer-above-jets)
-  - [From Q.Safe.Drops (storage layer below Jets)](#from-qsafedrops-storage-layer-below-jets)
+  - [From Q.Safecloud.Client (client layer above Jets)](#from-qsafecloud-client-layer-above-jets)
+  - [From Q.Safecloud.Drops (storage layer below Jets)](#from-qsafedrops-storage-layer-below-jets)
   - [Platform: Q.Socket.connect](#platform-qsocketconnect)
   - [Platform: ethers.js provider](#platform-ethersjs-provider)
   - [Platform: Q.Data.Prolly](#platform-qdataprolly)
@@ -38,12 +38,12 @@
   - [PHP to Jet internal (POST /Q/node)](#php-to-jet-internal-post-qnode)
   - [HTTP range request interface](#http-range-request-interface)
   - [x402 payment headers](#x402-payment-headers)
-- [Part 4 — Client: web/js/Safe/Jets.js](#part-4--client-webjssafejetsjs)
+- [Part 4 — Client: web/js/Safecloud/Jets.js](#part-4--client-webjssafejetsjs)
   - [Internal helpers (implement first)](#internal-helpers-implement-first)
   - [Public methods](#public-methods)
-  - [Q.Safe.Jets Events](#qsafejets-events)
+  - [Q.Safecloud.Jets Events](#qsafejets-events)
   - [Default Drop push handlers](#default-drop-push-handlers)
-- [Part 5 — Server: classes/Safe/Jets.js](#part-5--server-classessafejetsjs)
+- [Part 5 — Server: classes/Safecloud/Jets.js](#part-5--server-classessafejetsjs)
   - [Internal helpers (implement first)](#internal-helpers-implement-first-1)
   - [Public methods](#public-methods-1)
   - [Safe Server Events](#safe-server-events)
@@ -53,8 +53,8 @@
 ---
 
 This document is the authoritative spec for:
-- `plugins/Safe/web/js/Safe/Jets.js` — browser socket client
-- `plugins/Safe/classes/Safe/Jets.js` — Node.js Jet server (replaces `node/Safe.js`)
+- `plugins/Safecloud/web/js/Safecloud/Jets.js` — browser socket client
+- `plugins/Safecloud/classes/Safecloud/Jets.js` — Node.js Jet server (replaces `node/Q.Safecloud.Clientjs`)
 
 Read `Cloud.md` first for the Cloud layer that sits above Jets.
 
@@ -64,18 +64,18 @@ Read `Cloud.md` first for the Cloud layer that sits above Jets.
 
 ### 1.1 Responsibilities: Jets client vs Jets server vs Cloud vs Drops
 
-**Jets client (`web/js/Safe/Jets.js`)** is responsible for:
-- Maintaining the `/Safe` socket.io connection to the Jet server
+**Jets client (`web/js/Safecloud/Jets.js`)** is responsible for:
+- Maintaining the `/Safecloud/` socket.io connection to the Jet server
 - Exposing `Jets.put(subtree)` and `Jets.get(subtree)` for Cloud to call
 - Managing Drop lifecycle: `dropRegister`, `dropAnnounce`, `dropDisconnect`
-- Routing incoming Jet->Drop push events to `Q.Safe.Drops`
+- Routing incoming Jet->Drop push events to `Q.Safecloud.Drops`
 - Reconnection with exponential backoff + jitter
 - Serialising/deserialising ArrayBuffers for socket.io transport (base64)
 
-**Jets server (`classes/Safe/Jets.js`)** is responsible for:
+**Jets server (`classes/Safecloud/Jets.js`)** is responsible for:
 - Accepting both socket.io and HTTP connections from Cloud clients
-- Routing `Safe/subtree/put` to Drops via `Safe/drop/put`
-- Routing `Safe/subtree/get` from Drops, attaching Merkle proofs, returning to Cloud
+- Routing `Safecloud/subtree/put` to Drops via `Safecloud/drop/put`
+- Routing `Safecloud/subtree/get` from Drops, attaching Merkle proofs, returning to Cloud
 - Verifying OCP grants and x402 payment headers before serving any request
 - Checking payer ERC-20 balances via ethers.js + RPC (cached N minutes)
 - Managing the Drop registry: registration, reconnect, grace-period eviction
@@ -86,10 +86,10 @@ Read `Cloud.md` first for the Cloud layer that sits above Jets.
 - Receiving PHP->Node internal messages
 - Pluggable routing strategy (v1: round-robin; v2: DHT hook)
 
-**Cloud** (`web/js/Safe/Cloud.js`): encrypts/decrypts; calls `Jets.put` and
+**Cloud** (`web/js/Safecloud/Cloud.js`): encrypts/decrypts; calls `Jets.put` and
 `Jets.get`. Jets never sees plaintext.
 
-**Drops** (`web/js/Safe/Drops.js`): stores and serves ciphertext in IndexedDB;
+**Drops** (`web/js/Safecloud/Drops.js`): stores and serves ciphertext in IndexedDB;
 responds to Jet push events; maintains Prolly tree and Bloom filter.
 
 ---
@@ -100,13 +100,13 @@ Jets exposes two transports for the same `put`/`get` operations:
 
 **socket.io** (primary for browser Cloud clients and all Drops):
 - Persistent connection; best for streaming and real-time prefetch
-- Used by `Q.Safe.Cloud` in the browser
+- Used by `Q.Safecloud.Client` in the browser
 - All Drop lifecycle events use socket.io exclusively
 
 **HTTP** (secondary; for compatibility with web proxies, CDNs, and x402):
-- `PUT /Safe/subtree` — upload a subtree of chunks
-- `GET /Safe/chunk/{cid}` — fetch a single chunk by CID (range-request support)
-- `GET /Safe/subtree/{rootCid}/{start}/{end}` — fetch a chunk range
+- `PUT /Safecloud/subtree` — upload a subtree of chunks
+- `GET /Safecloud/chunk/{cid}` — fetch a single chunk by CID (range-request support)
+- `GET /Safecloud/subtree/{rootCid}/{start}/{end}` — fetch a chunk range
 - Standard HTTP 206 Partial Content + `Content-Range` for range requests
 - Standard HTTP 402 Payment Required (x402) when no payment header present
 - Enables caching by web proxies and CDNs for public/shared content
@@ -227,7 +227,7 @@ serves the request and forwards the payment token to the serving Drop(s).
 **x402 compatibility for external clients:**
 External HTTP clients (wget, CDN proxies, AI agents) that don't have OCP grants
 can still fetch raw ciphertext chunks by paying via x402. Jets accepts the
-standard x402 `PAYMENT-SIGNATURE` header on `GET /Safe/chunk/{cid}` as an
+standard x402 `PAYMENT-SIGNATURE` header on `GET /Safecloud/chunk/{cid}` as an
 alternative to OCP payment tokens. This path does NOT require a grant — it
 uses payment alone. The served content is raw ciphertext; the external client
 must independently obtain decryption keys.
@@ -247,7 +247,7 @@ Q.Config.get(['Safe', 'evm', 'provider', chainId], defaultRpcUrl)
 // chainId in CAIP-2 format: 'eip155:8453' (Base), etc.
 ```
 
-`Safe._checkPayerBalance(payer, token, amount, chainId)`:
+`Q.Safecloud.Client_checkPayerBalance(payer, token, amount, chainId)`:
 1. Check `_balanceCache[chainId][payer][token]`; return if fresh (TTL 5 min)
 2. `token === address(0)`: `provider.getBalance(payer)` (native)
 3. Otherwise: `contract.balanceOf(payer)` via minimal ERC-20 ABI
@@ -261,7 +261,7 @@ Jets does NOT call `OpenClaiming.executePayment()` directly. That responsibility
 belongs to the Assets plugin. Jets' role is:
 1. Validate the payment token's signature and balance pre-check (above)
 2. Forward the payment token to PHP via `Q/node` internal message
-   `Safe/payment/collect` with the token and serving Drop's public key
+   `Safecloud/payment/collect` with the token and serving Drop's public key
 3. PHP delegates to the Assets plugin (`Q.Assets.OpenClaim`) which calls
    `OpenClaiming.executePayment(payment, [dropAddress], signature, dropAddress, amount, address(0))`
    on the contract deployed at `0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999`
@@ -270,7 +270,7 @@ This delegation means Jets has no Solidity dependencies and Assets plugin
 remains the single place where on-chain OCP execution happens across the
 whole Q platform.
 
-**Drops also verify independently:** When a Drop receives a `Safe/drop/get`
+**Drops also verify independently:** When a Drop receives a `Safecloud/drop/get`
 with a `paymentToken`, it independently checks the payer's balance using the
 same config path before serving. This prevents a compromised Jet from
 forwarding invalid tokens.
@@ -280,7 +280,7 @@ pre-check and the Drop's pre-check are both snapshots — neither is atomic with
 `paymentsExecute()`. A payer may pass both checks and then drain their balance
 before the claim is submitted. Drops and Jets rely on economic reputation and
 repeated interactions to mitigate payment failures: a payer whose claims
-consistently fail is excluded from future service. The graduated SafeBux lockup
+consistently fail is excluded from future service. The graduated Safebux lockup
 means payers always have residual slashable stake even if liquid balances are
 drained.
 
@@ -288,9 +288,9 @@ drained.
 
 ### 1.6 Anonymous Drops — identity without Users accounts
 
-Drops do not need user accounts. A browser tab connects to `/Safe` without
+Drops do not need user accounts. A browser tab connects to `/Safecloud/` without
 being logged in; `client.capability.userId` is null for anonymous connections.
-The Jet accepts both authenticated and anonymous connections on `/Safe`.
+The Jet accepts both authenticated and anonymous connections on `/Safecloud/`.
 
 **Drop identity is stable within a session** via `dropId` derived from
 `Q.clientId()` (sessionStorage). Same tab + session = same `dropId` across
@@ -298,15 +298,15 @@ reconnects.
 
 **Sybil resistance via stake weighting.** Anonymous Drops require no account,
 so nothing prevents an attacker from registering many Drop identities. Sybil
-mitigation is handled at the `Safe.Router` layer: Drop selection is weighted
+mitigation is handled at the `Q.Safecloud.Router` layer: Drop selection is weighted
 by `stakedSafebux × reliability × availableStorage`. Zero-stake Drops receive
 near-zero routing weight and earn nothing. Capturing significant routing share
-requires proportional SafeBux stake across all Sybil Drops — the attack scales
+requires proportional Safebux stake across all Sybil Drops — the attack scales
 linearly in cost with the share captured.
 
 **Drop keypair for payments:** On first registration, a P-256 keypair is
 generated locally and stored in IndexedDB (not sessionStorage — must survive
-restarts). The `publicKey` is sent in `Safe/drop/register`. OCP payment tokens
+restarts). The `publicKey` is sent in `Safecloud/drop/register`. OCP payment tokens
 use `keccak256(abi.encode([publicKey]))` as `recipientsHash`. The Drop reveals
 its `publicKey` only at claim time.
 
@@ -321,7 +321,7 @@ published to a Streams stream.
 
 **How it works:**
 
-When a user requests content via `Safe/subtree/get`, the request may include
+When a user requests content via `Safecloud/subtree/get`, the request may include
 a `streamId` (`publisherId + streamName`) alongside the OCP grants. If present,
 Jets checks the requester's Streams read level for that stream:
 
@@ -389,8 +389,8 @@ options: { authorizations, payments, onProgress }
 Returns: { chunks: Array<{ cid, iv, ciphertext, tag, proof: Array }|null> }
 ```
 
-Socket events: `Safe/subtree/put` and `Safe/subtree/get`.
-HTTP equivalents: `PUT /Safe/subtree` and `GET /Safe/subtree/{rootCid}/{start}/{end}`.
+Socket events: `Safecloud/subtree/put` and `Safecloud/subtree/get`.
+HTTP equivalents: `PUT /Safecloud/subtree` and `GET /Safecloud/subtree/{rootCid}/{start}/{end}`.
 
 Why subtree framing: one grant verification covers the whole range; Merkle proof
 generation knows the file structure; Prolly-based routing can optimise per range;
@@ -416,7 +416,7 @@ On Jet restart all roots reset; every reconnecting Drop triggers a cold sync.
 ### 1.10 Bloom filter cold handshake
 
 On first contact (or after Jet restart), the Drop sends a Bloom filter of all
-its stored CIDs in `Safe/drop/announce` (`bloomFilter` field). Compact:
+its stored CIDs in `Safecloud/drop/announce` (`bloomFilter` field). Compact:
 ~1.2 bytes/element at 1% false positive rate. A Drop with 100K chunks uses
 ~120KB for its filter. Cached in memory per Drop; re-sent on every cold reconnect.
 
@@ -425,7 +425,7 @@ its stored CIDs in `Safe/drop/announce` (`bloomFilter` field). Compact:
 ### 1.11 Proof-of-storage challenges
 
 The primary proof-of-storage mechanism is **anonymous paid spot-checks** —
-`Safe/drop/get` requests issued by the Jet for randomly selected CIDs,
+`Safecloud/drop/get` requests issued by the Jet for randomly selected CIDs,
 indistinguishable from real Cloud-originated retrieval requests. Each such
 request includes a micropayment token (same as any other retrieval). The Drop
 cannot tell a spot-check from legitimate traffic and must serve correctly
@@ -456,13 +456,13 @@ schedules spot-checks using a Poisson timer per connected Drop:
 // CID sampled uniformly at random from the Drop's announced Prolly root
 ```
 
-**The explicit `Safe/drop/challenge` event** is retained as a lightweight
+**The explicit `Safecloud/drop/challenge` event** is retained as a lightweight
 direct ping for cases where the Jet needs to verify a specific CID without
 routing it through the full `get` pipeline. It returns the actual chunk data
 (not a hash-based proof). The Jet verifies via CID recomputation.
 
 ```js
-// event: 'Safe/drop/challenge'  (Jet → Drop)
+// event: 'Safecloud/drop/challenge'  (Jet → Drop)
 { cid: String }          // no nonce — the chunk itself is the proof
 
 // ack: (err, { cid, iv, ciphertext, tag } | null)
@@ -519,17 +519,17 @@ requirement (see Drops.md §1.4) ensures honest Drops never accidentally
 produce this pattern.
 
 On reaching the threshold: emit `dropChallengeFail`, notify PHP via
-`POST /Q/node { 'Q/method': 'Safe/drop/slash' }` for stake slashing.
+`POST /Q/node { 'Q/method': 'Safecloud/drop/slash' }` for stake slashing.
 
 ---
 
-### 1.12 Drop micropayments and SafeBux claims
+### 1.12 Drop micropayments and Safebux claims
 
-1. Cloud sends OCP payment token with each `Safe/subtree/get`.
+1. Cloud sends OCP payment token with each `Safecloud/subtree/get`.
    `recipientsHash = keccak256(abi.encode([dropPublicKey]))`.
-2. Jet forwards token to serving Drop(s) in `Safe/drop/get` response.
+2. Jet forwards token to serving Drop(s) in `Safecloud/drop/get` response.
 3. Drop accumulates tokens in IndexedDB.
-4. Drop sends `Safe/drop/claimPayments` with public key + tokens + signature.
+4. Drop sends `Safecloud/drop/claimPayments` with public key + tokens + signature.
 5. Jet relays to PHP -> blockchain.
 
 Drop reveals `publicKey` only at claim time (preimage of `recipientsHash`),
@@ -546,18 +546,18 @@ Jet peering protocol) lives in `Jets.Router.md` (separate document).
 
 ```js
 // Default: round-robin drop selection, no Jet-to-Jet peering
-Safe.Router = {
+Q.Safecloud.Router = {
   // Select Drops to store CIDs. Returns Array<drop>.
   selectForPut: function (cids, options) { return Promise.resolve(drops); },
   // Select Drops to retrieve a CID. Returns Array<drop>.
   selectForGet: function (cid, options)  { return Promise.resolve(drops); },
   // Discover and relay to a peer Jet. Returns Promise<chunks>.
-  // Called by Safe/subtree/get handler when no local Drops have the CIDs.
+  // Called by Safecloud/subtree/get handler when no local Drops have the CIDs.
   relayGet:     function (subtree, options) { return Promise.resolve(null); }
 };
 ```
 
-Replace `Safe.Router` before calling `Safe.listen()` to plug in DHT routing.
+Replace `Q.Safecloud.Router` before calling `Q.Safecloud.Clientlisten()` to plug in DHT routing.
 The `dropId` maps to a DHT node ID via `SHA-256(dropId)` for XOR distance
 calculations. Jet-to-Jet relay via `relayGet` is a v2 deliverable (stub returns
 null). See `Jets.Router.md` for the full specification.
@@ -571,12 +571,12 @@ before implementing any Jets method.
 
 ---
 
-### From Q.Safe.Cloud (client layer above Jets)
+### From Q.Safecloud.Client (client layer above Jets)
 
 Jets does not call into Cloud. This section documents the **data shapes** Cloud
 sends to Jets for reference.
 
-**Chunk object** (in `Safe/subtree/put`):
+**Chunk object** (in `Safecloud/subtree/put`):
 ```js
 { cid: String, iv: String, ciphertext: String, tag: String, size: Number, tags: Array }
 // All strings are base64. cid is a CIDv1 string starting with 'bafy'.
@@ -596,12 +596,12 @@ sends to Jets for reference.
 
 ---
 
-### From Q.Safe.Drops (storage layer below Jets)
+### From Q.Safecloud.Drops (storage layer below Jets)
 
 Jets calls Drops only on the **server side** via socket.io push. The Jets client
-wires these events to `Q.Safe.Drops` functions:
+wires these events to `Q.Safecloud.Drops` functions:
 
-**`Q.Safe.Drops.put(chunks, options, callback)`**
+**`Q.Safecloud.Drops.put(chunks, options, callback)`**
 ```js
 chunks:  Array<{ iv: String, data: ArrayBuffer, tags: Array }>
 options: { authorizations, payments }
@@ -609,7 +609,7 @@ Returns: Promise<{ results: Array<{ cid, iv, size }|false> }>
 Called by: onDropPut handler in Jets.js client
 ```
 
-**`Q.Safe.Drops.get(cids, options, callback)`**
+**`Q.Safecloud.Drops.get(cids, options, callback)`**
 ```js
 cids:    Array<String>
 options: { paymentToken: Object|null }
@@ -617,13 +617,13 @@ Returns: Promise<{ chunks: Array<{ cid, iv, data: ArrayBuffer }|null> }>
 Called by: onDropGet handler in Jets.js client
 ```
 
-**`Q.Safe.Drops.getProllyRoot(callback)`**
+**`Q.Safecloud.Drops.getProllyRoot(callback)`**
 ```js
 Returns: Promise<String|null>   // hex Prolly root, or null if no chunks stored
 Called by: dropRegister, dropAnnounce in Jets.js client
 ```
 
-**`Q.Safe.Drops.getBloomFilter(callback)`**
+**`Q.Safecloud.Drops.getBloomFilter(callback)`**
 ```js
 Returns: Promise<String|null>   // base64 serialised Bloom filter, or null
 Called by: dropRegister (cold contact) in Jets.js client
@@ -634,10 +634,10 @@ Called by: dropRegister (cold contact) in Jets.js client
 ### Platform: Q.Socket.connect
 
 ```js
-Q.Socket.connect('/Safe', url, callback, options)
+Q.Socket.connect('/Safecloud/', url, callback, options)
 // Returns Q.Socket on success
 // Used by Jets.connect()
-// url: _jetUrl() = Q.Safe.Jets.url || Q.nodeUrl()
+// url: _jetUrl() = Q.Safecloud.Jets.url || Q.nodeUrl()
 ```
 
 Follows the standard Q.Socket pattern used by Streams.js. On the server,
@@ -703,9 +703,9 @@ Q.Data.Merkle.proof(leaves, index)
 // Returns: Promise<Array<{ hex: String, side: 'left'|'right' }>>
 ```
 
-Used by `Safe.buildMerkleProofs` to attach proofs to `get` responses. Requires
+Used by `Q.Safecloud.ClientbuildMerkleProofs` to attach proofs to `get` responses. Requires
 the original `leaves` array stored in `_cidIndex[rootCid]` when the file was
-uploaded via `Safe/subtree/put`.
+uploaded via `Safecloud/subtree/put`.
 
 ---
 
@@ -714,7 +714,7 @@ uploaded via `Safe/subtree/put`.
 ```js
 Q.Utils.validateCapability(capability, scope)
 // capability: client.capability (set by Q auth middleware on socket connect)
-// scope: String, e.g. 'Safe/subtree/put'
+// scope: String, e.g. 'Safecloud/subtree/put'
 // Returns: Boolean
 // Anonymous Drops pass with userId === null
 ```
@@ -752,8 +752,8 @@ Streams.fetchOne(userId, publisherId, streamName, function(err, stream) {
 // ADMIN_LEVEL.invite = 20   — can share access with others
 ```
 
-Called by `Safe.verifyStreamAccess(userId, publisherId, streamName, level)`
-in the `Safe/subtree/get` handler. If `userId` is null (anonymous), this
+Called by `Q.Safecloud.ClientverifyStreamAccess(userId, publisherId, streamName, level)`
+in the `Safecloud/subtree/get` handler. If `userId` is null (anonymous), this
 check is skipped and access is controlled solely by OCP grants.
 
 ---
@@ -766,7 +766,7 @@ The full call chain is:
 
 ```
 Jets (Node.js)
-  -> POST /Q/node { 'Q/method': 'Safe/payment/collect', paymentToken, dropPublicKey }
+  -> POST /Q/node { 'Q/method': 'Safecloud/payment/collect', paymentToken, dropPublicKey }
   -> PHP Assets plugin (Q.Assets.OpenClaim)
   -> OpenClaiming.executePayment(payment, recipients, signature, recipient, amount, address(0))
      at 0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999
@@ -786,7 +786,7 @@ here so the implementer knows where Jets' responsibility ends.
 
 ## Part 3 — Socket and HTTP event protocol
 
-All socket events on the `/Safe` namespace. Ack pattern: `ack(err, result)`.
+All socket events on the `/Safecloud/` namespace. Ack pattern: `ack(err, result)`.
 HTTP and socket.io share identical verification and routing logic — HTTP
 handlers are thin adapters over the same internal functions.
 
@@ -800,38 +800,38 @@ handlers are thin adapters over the same internal functions.
   │                                                                       │
   │  ┌──────────────┐  Jets.put(subtree)    ┌────────────────────────┐  │
   │  │              │  ─────────────────▶   │                        │  │
-  │  │  Q.Safe      │  Jets.get(subtree)    │  Q.Safe.Jets (client)  │  │
-  │  │  .Cloud      │  ◀─────────────────   │  socket.io /Safe       │  │
+  │  │  Q.Safe      │  Jets.get(subtree)    │  Q.Safecloud.Jets (client)  │  │
+  │  │  .Cloud      │  ◀─────────────────   │  socket.io /Safecloud/       │  │
   │  │              │                       └───────────┬────────────┘  │
   │  │  (encrypts / │                                   │ push events   │
   │  │   decrypts)  │  ┌──────────────────────────┐    │               │
-  │  │              │  │  Q.Safe.Drops (IndexedDB) │◀───┘               │
+  │  │              │  │  Q.Safecloud.Drops (IndexedDB) │◀───┘               │
   │  └──────┬───────┘  │  store/serve ciphertext   │                   │
   │         │          │  Prolly tree + Bloom       │                   │
   │         │ OCP      └──────────────────────────┘                    │
   │         │ grants+payments                                            │
   └─────────┼────────────────────────────────────────────────────────────┘
-            │ socket.io /Safe   OR   HTTPS batch GET/PUT
+            │ socket.io /Safecloud/   OR   HTTPS batch GET/PUT
             ▼
   ┌─────────────────────────────────────────────────────────────────────┐
-  │  NODE.JS JET SERVER  (classes/Safe/Jets.js)                         │
+  │  NODE.JS JET SERVER  (classes/Safecloud/Jets.js)                         │
   │                                                                      │
   │  ① verifySubtreeGrant (OCP Role A)   →  403 if any index denied    │
   │  ② verifyStreamAccess (Streams)      →  403 if readLevel too low   │
   │  ③ _checkPayerBalance (OCP Role B)   →  402 if balance low         │
   │  ④ Jets.Router.selectForGet/Put       →  choose Drops               │
-  │  ⑤ callDrop (Safe/drop/put|get)       →  fan out to Drops           │
+  │  ⑤ callDrop (Safecloud/drop/put|get)       →  fan out to Drops           │
   │  ⑥ buildMerkleProofs (_cidIndex)      →  attach proofs to response  │
   │  ⑦ forward payment tokens → PHP → Assets → OpenClaiming contract   │
   │                                                                      │
-  │  ┌─────────────────┐  Safe/drop/put    ┌─────────────────────────┐ │
-  │  │ _cidIndex        │  Safe/drop/get ▶  │  Drop (browser tab)     │ │
-  │  │ rootCid→[cids]  │  Safe/drop/       │  IndexedDB ciphertext   │ │
+  │  ┌─────────────────┐  Safecloud/drop/put    ┌─────────────────────────┐ │
+  │  │ _cidIndex        │  Safecloud/drop/get ▶  │  Drop (browser tab)     │ │
+  │  │ rootCid→[cids]  │  Safecloud/drop/       │  IndexedDB ciphertext   │ │
   │  │ _dropProllyStore│  challenge      ◀  │  Prolly tree + Bloom    │ │
   │  └─────────────────┘                   └─────────────────────────┘ │
   └─────────────────────────────────────────────────────────────────────┘
             │
-            │ POST /Q/node (Safe/payment/collect)
+            │ POST /Q/node (Safecloud/payment/collect)
             ▼
   ┌──────────────────────────┐
   │  PHP / Assets plugin     │
@@ -864,7 +864,7 @@ stable** — they depend only on the encryption key tree, not on who has access.
 The access grant tree produces OCP authorization tokens that travel alongside
 requests but do not affect the encrypted bytes.
 
-This means a CDN proxy can cache `GET /Safe/chunk/{cid}` responses using the
+This means a CDN proxy can cache `GET /Safecloud/chunk/{cid}` responses using the
 CID as the cache key. The same ciphertext is served to every requester; only
 clients who hold a valid OCP grant (and the matching subtreeKey) can decrypt it.
 The Jet sets `Cache-Control: public, max-age=31536000, immutable` on chunk
@@ -876,7 +876,7 @@ responses since CIDs are content-addressed and never change.
 
 **Grant — OCP Role A (access authorization):**
 
-Produced by `Cloud.grant()`. Verified by `Safe.verifySubtreeGrant()` on the
+Produced by `Cloud.grant()`. Verified by `Q.Safecloud.ClientverifySubtreeGrant()` on the
 Jet. Identifies which chunk range the bearer is authorized to access.
 
 ```js
@@ -903,7 +903,7 @@ Jet. Identifies which chunk range the bearer is authorized to access.
 **Payment token — OCP Role B (micropayment):**
 
 An EIP-712 `Payment` struct from the OpenClaiming contract, signed by the
-payer. Verified by `Safe._checkPayerBalance()` + forwarded to PHP for on-chain
+payer. Verified by `Q.Safecloud.Client_checkPayerBalance()` + forwarded to PHP for on-chain
 execution. Identifies who is paying, how much, and to which recipients.
 
 ```js
@@ -936,13 +936,13 @@ proxies and intermediate servers. Because encrypted chunk bytes are
 deterministic and content-addressed, any proxy can cache and deduplicate
 responses across all requesters.
 
-**`GET /Safe/subtree/{rootCid}/{start}/{end}`**
+**`GET /Safecloud/subtree/{rootCid}/{start}/{end}`**
 
 URL path carries `rootCid`, `start`, `end`. Query parameters carry auth/payment
 data as `base64url(JSON.stringify(array))`:
 
 ```
-GET /Safe/subtree/bafy.../0/10?g=<grants_b64url>&p=<payments_b64url>&s=<streamId_b64url>
+GET /Safecloud/subtree/bafy.../0/10?g=<grants_b64url>&p=<payments_b64url>&s=<streamId_b64url>
 ```
 
 - `g` — OCP grants array (Role A), `secret` field stripped
@@ -957,8 +957,8 @@ single grant typically fits comfortably.
 
 ```
 // Example: 10 chunks split into two 5-chunk requests
-GET /Safe/subtree/bafy.../0/5?g=...&p=...   → chunks [0,5)
-GET /Safe/subtree/bafy.../5/10?g=...&p=...  → chunks [5,10)
+GET /Safecloud/subtree/bafy.../0/5?g=...&p=...   → chunks [0,5)
+GET /Safecloud/subtree/bafy.../5/10?g=...&p=...  → chunks [5,10)
 ```
 
 Cloud reassembles the chunk arrays in order before decryption.
@@ -969,7 +969,7 @@ Cache-Control: public, max-age=31536000, immutable
 Content-Type: application/json
 ```
 
-**`PUT /Safe/subtree`** — body is always JSON; no URL size concern:
+**`PUT /Safecloud/subtree`** — body is always JSON; no URL size concern:
 ```json
 {
   "chunks":      [{ "cid": "...", "iv": "...", "ciphertext": "...", "tag": "...", "size": 262144, "tags": [] }],
@@ -978,11 +978,11 @@ Content-Type: application/json
   "grants":      [{ "statement": {}, "proof": {}, "start": 0, "end": 10 }],
   "payments":    [{ "payment": {}, "signature": "0x...", "chainId": "eip155:8453" }],
   "publisherId": "abc123",
-  "streamName":  "Safe/files/xyz"
+  "streamName":  "Safecloud/files/xyz"
 }
 ```
 
-**`GET /Safe/chunk/{cid}`** — single-chunk fetch (x402 path for external
+**`GET /Safecloud/chunk/{cid}`** — single-chunk fetch (x402 path for external
 clients). No grants required; guarded by `PAYMENT-SIGNATURE` header only.
 Supports HTTP `Range:` header for Safari `<video>` and CDN range requests.
 Response is raw ciphertext bytes (`Content-Type: application/octet-stream`).
@@ -1077,7 +1077,7 @@ ack({ error: { code: 'PaymentRequired', message: '...', details: { ... } } })
 
 ### Cloud to Jet (socket.io and HTTP)
 
-**`Safe/subtree/put`** (socket.io) / **`PUT /Safe/subtree`** (HTTP)
+**`Safecloud/subtree/put`** (socket.io) / **`PUT /Safecloud/subtree`** (HTTP)
 ```js
 // Request payload (socket) / body (HTTP):
 {
@@ -1096,7 +1096,7 @@ ack({ error: { code: 'PaymentRequired', message: '...', details: { ... } } })
 // Error acks / error bodies: see HTTP error response format above
 ```
 
-**`Safe/subtree/get`** (socket.io) / **`GET /Safe/subtree/{rootCid}/{start}/{end}`** (HTTP)
+**`Safecloud/subtree/get`** (socket.io) / **`GET /Safecloud/subtree/{rootCid}/{start}/{end}`** (HTTP)
 ```js
 // Request payload (socket) / URL + query params (HTTP):
 {
@@ -1126,7 +1126,7 @@ ack({ error: { code: 'PaymentRequired', message: '...', details: { ... } } })
 // Error acks / error bodies: see HTTP error response format above
 ```
 
-**`GET /Safe/chunk/{cid}`** (HTTP only)
+**`GET /Safecloud/chunk/{cid}`** (HTTP only)
 ```
 Single-chunk fetch for external clients (x402 path).
 Supports Range: header (206 Partial Content) for Safari/CDN.
@@ -1144,7 +1144,7 @@ Success:     → 200 + ciphertext bytes + PAYMENT-RESPONSE header
 
 ### Drop to Jet (socket.io)
 
-**`Safe/drop/register`**
+**`Safecloud/drop/register`**
 ```js
 {
   dropId:      String,
@@ -1157,7 +1157,7 @@ Success:     → 200 + ciphertext bytes + PAYMENT-RESPONSE header
 ack: (err, { dropId: String })
 ```
 
-**`Safe/drop/announce`**
+**`Safecloud/drop/announce`**
 ```js
 {
   dropId:      String,
@@ -1169,13 +1169,13 @@ ack: (err, { dropId: String })
 ack: (err)
 ```
 
-**`Safe/drop/disconnect`**
+**`Safecloud/drop/disconnect`**
 ```js
 { dropId: String }
 ack: (err)
 ```
 
-**`Safe/drop/claimPayments`**
+**`Safecloud/drop/claimPayments`**
 ```js
 {
   dropId:        String,
@@ -1190,7 +1190,7 @@ ack: (err, { txHash: String|null })
 
 ### Jet to Drop (socket.io push)
 
-**`Safe/drop/put`**
+**`Safecloud/drop/put`**
 ```js
 {
   chunks:  Array<{ cid, iv, ciphertext, tag, size, tags }>,
@@ -1199,7 +1199,7 @@ ack: (err, { txHash: String|null })
 ack: (err, { results: Array<{ cid, stored: Boolean }> })
 ```
 
-**`Safe/drop/get`**
+**`Safecloud/drop/get`**
 ```js
 {
   cids:         Array<String>,
@@ -1209,7 +1209,7 @@ ack: (err, { results: Array<{ cid, stored: Boolean }> })
 ack: (err, { chunks: Array<{ cid, iv, ciphertext, tag }|null> })
 ```
 
-**`Safe/drop/challenge`**
+**`Safecloud/drop/challenge`**
 ```js
 // Jet → Drop: request a specific chunk as proof of storage
 { cid: String }
@@ -1225,7 +1225,7 @@ ack: (err, { chunks: Array<{ cid, iv, ciphertext, tag }|null> })
 The Jet verifies: `SHA-256(fromBase64(ciphertext) || fromBase64(tag)) === cid`.
 This is self-verifying from the CID alone — no local copy of the chunk needed.
 
-**`Safe/drop/slashed`**
+**`Safecloud/drop/slashed`**
 ```js
 { reason: String }
 // no ack
@@ -1235,16 +1235,16 @@ This is self-verifying from the CID alone — no local copy of the chunk needed.
 
 ### PHP to Jet internal (POST /Q/node)
 
-**`Safe/drop/slash`**
+**`Safecloud/drop/slash`**
 ```js
-{ 'Q/method': 'Safe/drop/slash', dropId: String, reason: String }
+{ 'Q/method': 'Safecloud/drop/slash', dropId: String, reason: String }
 ```
 
 ---
 
 ### HTTP range request interface
 
-`GET /Safe/chunk/{cid}` supports HTTP Range as required by Safari `<video>`
+`GET /Safecloud/chunk/{cid}` supports HTTP Range as required by Safari `<video>`
 and HTTP proxies. The Jet:
 1. Fetches full ciphertext from a Drop (or memory cache)
 2. Parses `Range: bytes=N-M` header
@@ -1256,7 +1256,7 @@ Ciphertext is opaque bytes to the Jet — no decryption needed for range serving
 
 ### x402 payment headers
 
-Used on the HTTP transport for `GET /Safe/chunk/{cid}` when no
+Used on the HTTP transport for `GET /Safecloud/chunk/{cid}` when no
 `PAYMENT-SIGNATURE` header is present. Provides x402 v2-compatible payment
 discovery for external clients (curl, AI agents, CDN middleware).
 
@@ -1273,12 +1273,12 @@ PaymentRequirements (x402 v2 spec):
   "scheme":             "exact",
   "network":            "eip155:8453",
   "maxAmountRequired":  "1000",
-  "resource":           "https://jet.example.com/Safe/chunk/bafy...",
+  "resource":           "https://jet.example.com/Safecloud/chunk/bafy...",
   "description":        "Safecloud chunk retrieval",
   "mimeType":           "application/octet-stream",
   "payTo":              "0xJetWalletAddress",
   "token":              "0xUSDCAddress",
-  "extra":              { "name": "SafeCloud", "version": "1" }
+  "extra":              { "name": "Safecloud", "version": "1" }
 }
 ```
 
@@ -1287,7 +1287,7 @@ Wallet: `Q.Config.get(['Safe', 'wallet', 'address'])`.
 
 **Retry with payment:**
 ```
-GET /Safe/chunk/{cid}
+GET /Safecloud/chunk/{cid}
 PAYMENT-SIGNATURE: <base64(EIP-712 signed PaymentPayload)>
 ```
 
@@ -1305,9 +1305,9 @@ ack format (see HTTP error response format section above).
 
 
 
-## Part 4 — Client: web/js/Safe/Jets.js
+## Part 4 — Client: web/js/Safecloud/Jets.js
 
-Implements `Q.Safe.Jets` in the browser. Supersedes `plugins/Safe/web/js/Safe/Jets.js`
+Implements `Q.Safecloud.Jets` in the browser. Supersedes `plugins/Safecloud/web/js/Safecloud/Jets.js`
 stub, upgrading `chunkPut`/`chunkGet` to the subtree interface and adding
 `dropClaimPayments`.
 
@@ -1321,16 +1321,16 @@ Calls: sessionStorage.getItem/setItem, Q.clientId()
 Called by: dropRegister, dropAnnounce, dropDisconnect
 ```
 Returns stable `dropId` for this session. Format: `'drop-' + Q.clientId()`.
-Stored in `sessionStorage['Q.Safe.dropId']`. Cleared on intentional `dropDisconnect`.
+Stored in `sessionStorage['Q.Safecloud.ClientdropId']`. Cleared on intentional `dropDisconnect`.
 
 ---
 
 **`_jetUrl()` -> String**
 ```
-Calls: Q.Safe.Jets.url, Q.nodeUrl()
+Calls: Q.Safecloud.Jets.url, Q.nodeUrl()
 Called by: connect
 ```
-Returns `Q.Safe.Jets.url` if set, else `Q.nodeUrl()`. Allows overriding for
+Returns `Q.Safecloud.Jets.url` if set, else `Q.nodeUrl()`. Allows overriding for
 multi-Jet deployments.
 
 ---
@@ -1341,7 +1341,7 @@ Calls: Uint8Array, btoa/atob
 Called by: onDropPut handler, onDropGet handler
 ```
 ArrayBuffer <-> base64 for socket.io transport. Used only for the binary `data`
-field in `Q.Safe.Drops.put/get` calls — all other chunk fields are already
+field in `Q.Safecloud.Drops.put/get` calls — all other chunk fields are already
 base64 strings as produced by Cloud.
 
 ---
@@ -1358,7 +1358,7 @@ triggers `connect()`. Queue is drained in `connect`'s success callback.
 
 **`_scheduleReconnect()` -> void**
 ```
-Calls: setTimeout, Q.Safe.Jets.connect
+Calls: setTimeout, Q.Safecloud.Jets.connect
 Called by: socket 'disconnect' handler in connect
 ```
 Exponential backoff +/-30% jitter. baseMs=500, maxMs=30000. Preserved from
@@ -1368,22 +1368,22 @@ existing stub.
 
 ### Public methods
 
-**`Q.Safe.Jets.connect(callback)` -> Promise\<Q.Socket\>**
+**`Q.Safecloud.Jets.connect(callback)` -> Promise\<Q.Socket\>**
 ```
-Calls: _jetUrl, Q.Socket.connect('/Safe', url, callback)
+Calls: _jetUrl, Q.Socket.connect('/Safecloud/', url, callback)
 Called by: _withSocket, explicit callers
 ```
-Connects to `/Safe` namespace. Idempotent. On success: sets `_socket`,
-`_connected`, resets `_reconnectAttempt`, registers `Safe/drop/*` event
+Connects to `/Safecloud/` namespace. Idempotent. On success: sets `_socket`,
+`_connected`, resets `_reconnectAttempt`, registers `Safecloud/drop/*` event
 handlers, drains `_queue`, fires `onConnect`. On disconnect: clears state,
 schedules reconnect, fires `onDisconnect`. If `_dropInfo` is set (Drop was
 registered before disconnect), calls `dropRegister(_dropInfo)` after reconnect.
 
 ---
 
-**`Q.Safe.Jets.put(subtree, options, callback)` -> Promise**
+**`Q.Safecloud.Jets.put(subtree, options, callback)` -> Promise**
 ```
-Calls: _withSocket -> qs.socket.emit('Safe/subtree/put', ...)
+Calls: _withSocket -> qs.socket.emit('Safecloud/subtree/put', ...)
 Called by: store.js (via Cloud)
 ```
 Parameters:
@@ -1397,9 +1397,9 @@ All chunk fields are already base64 strings from Cloud. Calls
 
 ---
 
-**`Q.Safe.Jets.get(subtree, options, callback)` -> Promise**
+**`Q.Safecloud.Jets.get(subtree, options, callback)` -> Promise**
 ```
-Calls: _withSocket -> qs.socket.emit('Safe/subtree/get', ...)
+Calls: _withSocket -> qs.socket.emit('Safecloud/subtree/get', ...)
 Called by: fetch.js, _prefetchLoop.js (via Cloud)
 ```
 Parameters:
@@ -1412,63 +1412,63 @@ entries are unavailable chunks — Cloud handles them as partial failure.
 
 ---
 
-**`Q.Safe.Jets.dropRegister(info, callback)` -> Promise**
+**`Q.Safecloud.Jets.dropRegister(info, callback)` -> Promise**
 ```
-Calls: Q.Safe.Drops.getProllyRoot, Q.Safe.Drops.getBloomFilter (if no prollyRoot),
-       _withSocket -> qs.socket.emit('Safe/drop/register', ...)
-Called by: Q.Safe.Drops
+Calls: Q.Safecloud.Drops.getProllyRoot, Q.Safecloud.Drops.getBloomFilter (if no prollyRoot),
+       _withSocket -> qs.socket.emit('Safecloud/drop/register', ...)
+Called by: Q.Safecloud.Drops
 ```
 Parameters: `{ publicKey: String (base64 P-256), storage: { GB } }`.
-Fetches `prollyRoot` from `Q.Safe.Drops.getProllyRoot()`. If null, fetches
+Fetches `prollyRoot` from `Q.Safecloud.Drops.getProllyRoot()`. If null, fetches
 `bloomFilter`. Builds full payload with `dropId`, `clientId`. Stores as `_dropInfo`
 for reconnect handler.
 
 ---
 
-**`Q.Safe.Jets.dropAnnounce(info, callback)` -> Promise**
+**`Q.Safecloud.Jets.dropAnnounce(info, callback)` -> Promise**
 ```
-Calls: _withSocket -> qs.socket.emit('Safe/drop/announce', ...)
-Called by: reshare.js, Q.Safe.Drops
+Calls: _withSocket -> qs.socket.emit('Safecloud/drop/announce', ...)
+Called by: reshare.js, Q.Safecloud.Drops
 ```
 Sends `{ storage, used, prollyRoot, bloomFilter }`. Called after `reshare()`
 and after LRU eviction.
 
 ---
 
-**`Q.Safe.Jets.dropDisconnect(callback)` -> Promise**
+**`Q.Safecloud.Jets.dropDisconnect(callback)` -> Promise**
 ```
-Calls: _withSocket -> qs.socket.emit('Safe/drop/disconnect', ...)
-Called by: Q.Safe.Drops
+Calls: _withSocket -> qs.socket.emit('Safecloud/drop/disconnect', ...)
+Called by: Q.Safecloud.Drops
 ```
 Clears `dropId` from sessionStorage after successful ack.
 
 ---
 
-**`Q.Safe.Jets.dropClaimPayments(payload, callback)` -> Promise**
+**`Q.Safecloud.Jets.dropClaimPayments(payload, callback)` -> Promise**
 ```
-Calls: _withSocket -> qs.socket.emit('Safe/drop/claimPayments', ...)
-Called by: Q.Safe.Drops
+Calls: _withSocket -> qs.socket.emit('Safecloud/drop/claimPayments', ...)
+Called by: Q.Safecloud.Drops
 ```
 Parameters:
 ```js
 {
   publicKey:     String,   // base64 P-256 — reveals identity for claim
-  paymentTokens: Array,    // accumulated OCP tokens from Safe/drop/get responses
+  paymentTokens: Array,    // accumulated OCP tokens from Safecloud/drop/get responses
   signature:     String    // base64 OCP claim signed with Drop keypair
 }
 ```
 
 ---
 
-### Q.Safe.Jets Events
+### Q.Safecloud.Jets Events
 
 ```js
-Q.Safe.Jets.onConnect       = new Q.Event()  // (Q.Socket) — on connect
-Q.Safe.Jets.onDisconnect    = new Q.Event()  // () — on disconnect
-Q.Safe.Jets.onDropPut       = new Q.Event()  // (payload, ack)
-Q.Safe.Jets.onDropGet       = new Q.Event()  // (payload, ack)
-Q.Safe.Jets.onDropChallenge = new Q.Event()  // (payload, ack)
-Q.Safe.Jets.onDropSlashed   = new Q.Event()  // (payload)
+Q.Safecloud.Jets.onConnect       = new Q.Event()  // (Q.Socket) — on connect
+Q.Safecloud.Jets.onDisconnect    = new Q.Event()  // () — on disconnect
+Q.Safecloud.Jets.onDropPut       = new Q.Event()  // (payload, ack)
+Q.Safecloud.Jets.onDropGet       = new Q.Event()  // (payload, ack)
+Q.Safecloud.Jets.onDropChallenge = new Q.Event()  // (payload, ack)
+Q.Safecloud.Jets.onDropSlashed   = new Q.Event()  // (payload)
 ```
 
 ---
@@ -1477,22 +1477,22 @@ Q.Safe.Jets.onDropSlashed   = new Q.Event()  // (payload)
 
 Wired at module load time (bottom of Jets.js). Preserve from existing stub:
 
-**`onDropPut`**: deserialise chunk data base64->ArrayBuffer -> `Q.Safe.Drops.put` -> ack.
-**`onDropGet`**: `Q.Safe.Drops.get` -> serialise ArrayBuffer->base64 -> ack.
-**`onDropChallenge`**: `Q.Safe.Drops.get([cid])` → return chunk bytes directly.
+**`onDropPut`**: deserialise chunk data base64->ArrayBuffer -> `Q.Safecloud.Drops.put` -> ack.
+**`onDropGet`**: `Q.Safecloud.Drops.get` -> serialise ArrayBuffer->base64 -> ack.
+**`onDropChallenge`**: `Q.Safecloud.Drops.get([cid])` → return chunk bytes directly.
 Jet verifies `SHA-256(ciphertext || tag) === cid`. No nonce, no signing.
 See Drops.md §5 `onDropChallenge` for the full handler pipeline.
 
 ---
 
-## Part 5 — Server: classes/Safe/Jets.js
+## Part 5 — Server: classes/Safecloud/Jets.js
 
 Follows `Streams.js` conventions: `Users.Socket.listen()`, `/Q/node` handler,
-`Q.makeEventEmitter`. Supersedes `plugins/Safe/node/Safe.js`.
+`Q.makeEventEmitter`. Supersedes `plugins/Safecloud/node/Q.Safecloud.Clientjs`.
 
 **Private state:**
 ```js
-Safe.drops = {}           // dropId -> drop record (schema below)
+Q.Safecloud.Drops = {}           // dropId -> drop record (schema below)
 var _socketToDropId = {}  // socketId -> dropId
 var _dropProllyStores = {}// dropId -> { get, put } in-memory Prolly store
 var _providers = {}       // chainId -> ethers.JsonRpcProvider
@@ -1526,26 +1526,26 @@ var _cidIndex = {}        // rootCid -> Array<String> (ordered CIDs from put)
 **`_storeForDrop(dropId)` -> { get, put }**
 ```
 Calls: _dropProllyStores[dropId]
-Called by: Safe._reconcileDropInventory
+Called by: Q.Safecloud.Client_reconcileDropInventory
 ```
 Returns or creates in-memory Prolly node store for a Drop. Plain object
 `{ hash: node }` wrapped with promise-returning `get`/`put`.
 
 ---
 
-**`Safe._evmProvider(chainId)` -> ethers.JsonRpcProvider**
+**`Q.Safecloud.Client_evmProvider(chainId)` -> ethers.JsonRpcProvider**
 ```
 Calls: Q.Config.get(['Safe', 'evm', 'provider', chainId]), ethers.JsonRpcProvider
-Called by: Safe._checkPayerBalance
+Called by: Q.Safecloud.Client_checkPayerBalance
 ```
 Lazy-initialises a provider. Cached in `_providers[chainId]`.
 
 ---
 
-**`Safe._checkPayerBalance(payer, token, amount, chainId)` -> Promise\<Boolean\>**
+**`Q.Safecloud.Client_checkPayerBalance(payer, token, amount, chainId)` -> Promise\<Boolean\>**
 ```
-Calls: Safe._evmProvider, _balanceCache, ethers Contract.balanceOf
-Called by: Safe/subtree/put handler, Safe/subtree/get handler, x402 verify
+Calls: Q.Safecloud.Client_evmProvider, _balanceCache, ethers Contract.balanceOf
+Called by: Safecloud/subtree/put handler, Safecloud/subtree/get handler, x402 verify
 ```
 1. Check `_balanceCache[chainId][payer][token]`; return if fresh.
 2. `token === address(0)`: `provider.getBalance(payer)`.
@@ -1555,7 +1555,7 @@ Cache TTL: `Q.Config.get(['Safe', 'evm', 'balanceCacheTtlMs'], 300000)`.
 
 ---
 
-**`Safe.callDrop(drop, method, payload, timeoutMs)` -> Promise**
+**`Q.Safecloud.ClientcallDrop(drop, method, payload, timeoutMs)` -> Promise**
 ```
 Calls: drop.socket.emit(method, payload, ack)
 Called by: subtree/put handler, subtree/get handler, chunk/challenge handler
@@ -1565,19 +1565,19 @@ Emits a socket.io event to a Drop and awaits the ack. Rejects after
 
 ---
 
-**`Safe.selectDrops(cids, options)` -> Array\<drop\>**
+**`Q.Safecloud.ClientselectDrops(cids, options)` -> Array\<drop\>**
 ```
-Calls: Safe.drops, Safe.router (if set)
+Calls: Q.Safecloud.Drops, Q.Safecloud.Router (if set)
 Called by: subtree/put handler, subtree/get handler
 ```
 v1: filters online Drops (`offlineSince === null`), returns up to
 `options.replication` (default 2) in round-robin order. Delegates to
-`Safe.router.selectForPut(cids, options)` or `.selectForGet(cid, options)`
-if `Safe.router` is set.
+`Q.Safecloud.Router.selectForPut(cids, options)` or `.selectForGet(cid, options)`
+if `Q.Safecloud.Router` is set.
 
 ---
 
-**`Safe.verifySubtreeGrant(grants, rootCid, start, end)` -> Object**
+**`Q.Safecloud.ClientverifySubtreeGrant(grants, rootCid, start, end)` -> Object**
 ```
 Calls: Date.now(), ECDSA verify (via Q.Utils or inline)
 Called by: subtree/put handler, subtree/get handler
@@ -1603,7 +1603,7 @@ on `get`.
 
 ---
 
-**`Safe.verifyStreamAccess(userId, publisherId, streamName, level, callback)` -> void**
+**`Q.Safecloud.ClientverifyStreamAccess(userId, publisherId, streamName, level, callback)` -> void**
 ```
 Calls: Streams.fetchOne, stream.testReadLevel / stream.testAdminLevel
 Called by: subtree/put handler, subtree/get handler (when publisherId+streamName present)
@@ -1618,23 +1618,23 @@ is controlled solely by OCP grants.
 
 `level` is a Streams read or admin level string, e.g. `'content'` (23) for
 read access or `'invite'` (20) for sharing. The mapping:
-- `Safe/subtree/get`: checks `READ_LEVEL.content` (23)
+- `Safecloud/subtree/get`: checks `READ_LEVEL.content` (23)
 - Sub-delegation validation: checks `ADMIN_LEVEL.invite` (20)
 
 ---
 
-**`Safe.buildMerkleProofs(rootCid, cids)` -> Promise\<Array\>**
+**`Q.Safecloud.ClientbuildMerkleProofs(rootCid, cids)` -> Promise\<Array\>**
 ```
 Calls: _cidIndex[rootCid], Q.Data.Merkle.proof(storedCids, i)
 Called by: subtree/get handler
 ```
 Retrieves the ordered CID array from `_cidIndex[rootCid]` (populated during
-`Safe/subtree/put`). Calls `Q.Data.Merkle.proof(storedCids, absoluteIndex)`
+`Safecloud/subtree/put`). Calls `Q.Data.Merkle.proof(storedCids, absoluteIndex)`
 for each requested chunk. If `_cidIndex[rootCid]` is missing (Jet restart):
 returns null proofs — Cloud retries.
 
 Jets SHOULD prioritize rebuilding `_cidIndex` before serving requests after a
-restart (e.g. by requiring at least one `Safe/subtree/put` to repopulate the
+restart (e.g. by requiring at least one `Safecloud/subtree/put` to repopulate the
 index, or by persisting the index to disk). Serving without Merkle proofs is
 a temporary fallback for restarts, not a steady-state mode — clients that
 receive null proofs will retry on a Jet that has the index.
@@ -1643,10 +1643,10 @@ Returns `Array< Array<{ hex, side }> >`, one proof per requested chunk.
 
 ---
 
-**`Safe._reconcileDropInventory(drop, prollyRoot)` -> void**
+**`Q.Safecloud.Client_reconcileDropInventory(drop, prollyRoot)` -> void**
 ```
-Calls: _storeForDrop, Q.Data.Prolly.diff, Safe.emit
-Called by: Safe/drop/register handler, Safe/drop/announce handler
+Calls: _storeForDrop, Q.Data.Prolly.diff, Q.Safecloud.Clientemit
+Called by: Safecloud/drop/register handler, Safecloud/drop/announce handler
 ```
 Compares Jet's stored root vs Drop's reported root. Emits `dropColdSync`
 (no prior state), `dropSync` (diff result), or nothing (match). Updates
@@ -1654,40 +1654,40 @@ Compares Jet's stored root vs Drop's reported root. Emits `dropColdSync`
 
 ---
 
-**`Safe._attachBloomFilter(drop, bloomFilter)` -> void**
+**`Q.Safecloud.Client_attachBloomFilter(drop, bloomFilter)` -> void**
 ```
 Calls: Q.Data.Bloom (deserialize base64), drop.bloomFilter =
-Called by: Safe/drop/register handler, Safe/drop/announce handler
+Called by: Safecloud/drop/register handler, Safecloud/drop/announce handler
 ```
 Deserialises the Bloom filter from base64 and stores in `drop.bloomFilter`
 for use by `selectDrops` when probing which Drops likely have a specific CID.
 
 ---
 
-**`Safe_request_handler(req, res, next)` -> void**
+**`Safecloud_request_handler(req, res, next)` -> void**
 ```
-Calls: Safe.drops, Safe.emit
+Calls: Q.Safecloud.Drops, Q.Safecloud.Clientemit
 Called by: Express POST /Q/node
 ```
-Handles PHP->Node messages. Currently handles `Safe/drop/slash`: finds Drop
-record by `dropId`, emits `dropSlash` event, sends `Safe/drop/slashed` to
+Handles PHP->Node messages. Currently handles `Safecloud/drop/slash`: finds Drop
+record by `dropId`, emits `dropSlash` event, sends `Safecloud/drop/slashed` to
 Drop's socket.
 
 ---
 
 ### Public methods
 
-**`Safe.listen(options)` -> { internal, socket }**
+**`Q.Safecloud.Clientlisten(options)` -> { internal, socket }**
 ```
 Calls (in order):
   Q.listen()
-  server.attached.express.post('/Q/node', Safe_request_handler)
+  server.attached.express.post('/Q/node', Safecloud_request_handler)
   Q.Config.get (host, port, https)
   Users.Socket.listen({ host, port, https })
-  socketServer.io.of('/Safe').on('connection', ...)
-  app.get('/Safe/chunk/:cid', ...)
-  app.get('/Safe/subtree/:rootCid/:start/:end', ...)
-  app.put('/Safe/subtree', ...)
+  socketServer.io.of('/Safecloud/').on('connection', ...)
+  app.get('/Safecloud/chunk/:cid', ...)
+  app.get('/Safecloud/subtree/:rootCid/:start/:end', ...)
+  app.put('/Safecloud/subtree', ...)
   setInterval (grace-period sweep, GRACE_MS)
   var Streams = Q.require('Streams')  (lazy, only when streamId present in request)
 ```
@@ -1695,12 +1695,12 @@ Calls (in order):
 Entry point; mirrors `Streams.listen()`. Idempotent (returns cached result on
 repeat calls).
 
-**Socket.io `/Safe` connection handler registers:**
-- `Safe/drop/register` — create or restore Drop record; Prolly reconciliation
-- `Safe/drop/announce` — update stats; Prolly reconciliation; Bloom attach
-- `Safe/drop/disconnect` — remove Drop record
-- `Safe/drop/claimPayments` — relay to PHP
-- `Safe/subtree/put`:
+**Socket.io `/Safecloud/` connection handler registers:**
+- `Safecloud/drop/register` — create or restore Drop record; Prolly reconciliation
+- `Safecloud/drop/announce` — update stats; Prolly reconciliation; Bloom attach
+- `Safecloud/drop/disconnect` — remove Drop record
+- `Safecloud/drop/claimPayments` — relay to PHP
+- `Safecloud/subtree/put`:
   1. `verifySubtreeGrant(grants, null, start, end)` — grants don't need rootCid on upload;
      if `{ ok: false }`: ack `{ error: 'NotAuthorized', unauthorized, reason }` (403)
   2. `verifyStreamAccess(userId, publisherId, streamName, 'content')` if present;
@@ -1708,35 +1708,35 @@ repeat calls).
   3. For each payment token: `_checkPayerBalance`; if insufficient:
      ack `{ error: 'PaymentRequired', reason: '...' }` (402 equivalent)
   4. Store CID array in `_cidIndex[rootCid]`
-  5. `selectDrops(cids)` -> fan out `callDrop(Safe/drop/put)` in parallel
+  5. `selectDrops(cids)` -> fan out `callDrop(Safecloud/drop/put)` in parallel
   6. Ack merged per-chunk results
-- `Safe/subtree/get`:
+- `Safecloud/subtree/get`:
   1. `verifySubtreeGrant(grants, rootCid, start, end)`; if `{ ok: false }`:
      ack `{ error: 'NotAuthorized', unauthorized, reason }` — structured for bulk re-request
   2. `verifyStreamAccess(userId, publisherId, streamName, 'content')` if present
   3. For each payment token: `_checkPayerBalance`; if insufficient:
      ack `{ error: 'PaymentRequired', reason: '...' }`
-  4. `selectDrops([...cids])` -> `callDrop(Safe/drop/get)` with fallback
+  4. `selectDrops([...cids])` -> `callDrop(Safecloud/drop/get)` with fallback
   5. `buildMerkleProofs(rootCid, fetchedCids)`
   6. Forward `paymentToken` to each serving Drop
   7. Ack `{ chunks: [...] }` — null entries for unavailable (not a 403)
-- `Safe/chunk/challenge` — `selectDrops([cid])` -> `callDrop(Safe/drop/challenge)` ->
+- `Safecloud/chunk/challenge` — `selectDrops([cid])` -> `callDrop(Safecloud/drop/challenge)` ->
   verify `SHA-256(ciphertext||tag) === cid`; log failure to reliability score on mismatch/null
-- `Safe/peer/connect` — v1 stub: log and ack null
+- `Safecloud/peer/connect` — v1 stub: log and ack null
 - `disconnect` — mark `drop.offlineSince = Date.now()`, emit `dropOffline`
 
 **HTTP routes:**
-- `GET /Safe/chunk/:cid`:
+- `GET /Safecloud/chunk/:cid`:
   - No `PAYMENT-SIGNATURE` header → 402 with `PAYMENT-REQUIRED` (x402 spec)
   - Invalid signature / insufficient balance → 402
   - Chunk not found in `_cidIndex` → 404
   - On success: fetch from Drop, serve with Range support, `PAYMENT-RESPONSE` header
-- `GET /Safe/subtree/:rootCid/:start/:end`:
+- `GET /Safecloud/subtree/:rootCid/:start/:end`:
   - Parse grants + payments from `X-OCP-Grants` / `X-OCP-Payments` headers (base64 JSON)
   - `verifySubtreeGrant` failure → 403 with JSON body `{ error, unauthorized, reason }`
   - `_checkPayerBalance` failure → 402 with x402 body
   - Success → same logic as socket get → JSON response body
-- `PUT /Safe/subtree`:
+- `PUT /Safecloud/subtree`:
   - Parse grants + payments from body JSON
   - Same 403/402 logic as socket put
   - Success → JSON response body `{ results }`
@@ -1746,11 +1746,11 @@ repeat calls).
 var GRACE_MS = Q.Config.get(['Safe', 'drop', 'offlineGraceMs'], 60000);
 setInterval(function () {
   var now = Date.now();
-  for (var dropId in Safe.drops) {
-    var drop = Safe.drops[dropId];
+  for (var dropId in Q.Safecloud.Drops) {
+    var drop = Q.Safecloud.Drops[dropId];
     if (drop.offlineSince && (now - drop.offlineSince) > GRACE_MS) {
-      Safe.emit('dropDisconnect', drop);
-      delete Safe.drops[dropId];
+      Q.Safecloud.Clientemit('dropDisconnect', drop);
+      delete Q.Safecloud.Drops[dropId];
       delete _dropProllyStores[dropId];
     }
   }
@@ -1762,16 +1762,16 @@ setInterval(function () {
 ### Safe Server Events
 
 ```js
-Safe.on('dropRegister',      function (drop) { })
-Safe.on('dropReconnect',     function (drop) { })
-Safe.on('dropAnnounce',      function (drop) { })
-Safe.on('dropOffline',       function (drop) { })
-Safe.on('dropDisconnect',    function (drop) { })
-Safe.on('dropSync',          function (drop, changes) { })   // Prolly diff
-Safe.on('dropColdSync',      function (drop, prollyRoot) { })
-Safe.on('dropBloom',         function (drop, bloomFilter) { })
-Safe.on('dropChallengeFail', function (drop, cid) { })
-Safe.on('dropSlash',         function (drop, payload) { })
+Q.Safecloud.Clienton('dropRegister',      function (drop) { })
+Q.Safecloud.Clienton('dropReconnect',     function (drop) { })
+Q.Safecloud.Clienton('dropAnnounce',      function (drop) { })
+Q.Safecloud.Clienton('dropOffline',       function (drop) { })
+Q.Safecloud.Clienton('dropDisconnect',    function (drop) { })
+Q.Safecloud.Clienton('dropSync',          function (drop, changes) { })   // Prolly diff
+Q.Safecloud.Clienton('dropColdSync',      function (drop, prollyRoot) { })
+Q.Safecloud.Clienton('dropBloom',         function (drop, bloomFilter) { })
+Q.Safecloud.Clienton('dropChallengeFail', function (drop, cid) { })
+Q.Safecloud.Clienton('dropSlash',         function (drop, payload) { })
 ```
 
 ---
@@ -1780,37 +1780,37 @@ Safe.on('dropSlash',         function (drop, payload) { })
 
 Each step only calls things already above it in this list.
 
-**Server (classes/Safe/Jets.js):**
+**Server (classes/Safecloud/Jets.js):**
 
 1. `_storeForDrop(dropId)` — pure in-memory store factory
-2. `Safe._evmProvider(chainId)` — ethers.JsonRpcProvider lazy init
-3. `Safe._checkPayerBalance(payer, token, amount, chainId)` — calls `_evmProvider`
-4. `Safe.callDrop(drop, method, payload, timeoutMs)` — socket.io ack promise wrapper
-5. `Safe.selectDrops(cids, options)` — v1 round-robin; delegates to `Safe.Router`
-6. `Safe.verifySubtreeGrant(grants, rootCid, start, end)` — returns `{ ok, unauthorized, reason }`
-7. `Safe.verifyStreamAccess(userId, publisherId, streamName, level, callback)` — calls Streams.fetchOne
-8. `Safe.buildMerkleProofs(rootCid, cids)` — calls `Q.Data.Merkle.proof`
-9. `Safe._reconcileDropInventory(drop, prollyRoot)` — calls `_storeForDrop`, `Q.Data.Prolly.diff`
-10. `Safe._attachBloomFilter(drop, bloomFilter)` — calls `Q.Data.Bloom`
-11. `Safe_request_handler(req, res, next)` — PHP->Node handler
-12. `Safe.listen(options)` — wires all socket.io + HTTP handlers + grace sweep
+2. `Q.Safecloud.Client_evmProvider(chainId)` — ethers.JsonRpcProvider lazy init
+3. `Q.Safecloud.Client_checkPayerBalance(payer, token, amount, chainId)` — calls `_evmProvider`
+4. `Q.Safecloud.ClientcallDrop(drop, method, payload, timeoutMs)` — socket.io ack promise wrapper
+5. `Q.Safecloud.ClientselectDrops(cids, options)` — v1 round-robin; delegates to `Q.Safecloud.Router`
+6. `Q.Safecloud.ClientverifySubtreeGrant(grants, rootCid, start, end)` — returns `{ ok, unauthorized, reason }`
+7. `Q.Safecloud.ClientverifyStreamAccess(userId, publisherId, streamName, level, callback)` — calls Streams.fetchOne
+8. `Q.Safecloud.ClientbuildMerkleProofs(rootCid, cids)` — calls `Q.Data.Merkle.proof`
+9. `Q.Safecloud.Client_reconcileDropInventory(drop, prollyRoot)` — calls `_storeForDrop`, `Q.Data.Prolly.diff`
+10. `Q.Safecloud.Client_attachBloomFilter(drop, bloomFilter)` — calls `Q.Data.Bloom`
+11. `Safecloud_request_handler(req, res, next)` — PHP->Node handler
+12. `Q.Safecloud.Clientlisten(options)` — wires all socket.io + HTTP handlers + grace sweep
 
-**Client (web/js/Safe/Jets.js):**
+**Client (web/js/Safecloud/Jets.js):**
 
 13. `_dropId()` — sessionStorage stable ID
 14. `_jetUrl()` — URL resolution
 15. `_ab2b64(buf)` / `_b642ab(b64)` — serialisation helpers
 16. `_withSocket(fn)` — queue-or-execute helper
 17. `_scheduleReconnect()` — exponential backoff
-18. `Q.Safe.Jets.connect(callback)` — Q.Socket.connect + event wiring + drain
-19. `Q.Safe.Jets.put(subtree, options, callback)` — Safe/subtree/put emit
-20. `Q.Safe.Jets.get(subtree, options, callback)` — Safe/subtree/get emit
-21. `Q.Safe.Jets.dropRegister(info, callback)` — fetches Prolly root + Bloom -> register
-22. `Q.Safe.Jets.dropAnnounce(info, callback)` — announce emit
-23. `Q.Safe.Jets.dropDisconnect(callback)` — disconnect emit + sessionStorage clear
-24. `Q.Safe.Jets.dropClaimPayments(payload, callback)` — claimPayments emit
-25. Default `onDropPut` handler — wires to `Q.Safe.Drops.put`
-26. Default `onDropGet` handler — wires to `Q.Safe.Drops.get`
+18. `Q.Safecloud.Jets.connect(callback)` — Q.Socket.connect + event wiring + drain
+19. `Q.Safecloud.Jets.put(subtree, options, callback)` — Safecloud/subtree/put emit
+20. `Q.Safecloud.Jets.get(subtree, options, callback)` — Safecloud/subtree/get emit
+21. `Q.Safecloud.Jets.dropRegister(info, callback)` — fetches Prolly root + Bloom -> register
+22. `Q.Safecloud.Jets.dropAnnounce(info, callback)` — announce emit
+23. `Q.Safecloud.Jets.dropDisconnect(callback)` — disconnect emit + sessionStorage clear
+24. `Q.Safecloud.Jets.dropClaimPayments(payload, callback)` — claimPayments emit
+25. Default `onDropPut` handler — wires to `Q.Safecloud.Drops.put`
+26. Default `onDropGet` handler — wires to `Q.Safecloud.Drops.get`
 27. Default `onDropChallenge` handler — returns chunk bytes; Jet verifies CID
 
 ---
@@ -1823,12 +1823,12 @@ Each step only calls things already above it in this list.
   from the stored CID index (`_cidIndex`)
 - Key derivation — Cloud only
 - Service worker management — Cloud only
-- Prolly tree construction on the Drop side — `Q.Safe.Drops` only
-- Bloom filter construction — `Q.Safe.Drops` only; Jets only receives and queries
+- Prolly tree construction on the Drop side — `Q.Safecloud.Drops` only
+- Bloom filter construction — `Q.Safecloud.Drops` only; Jets only receives and queries
 - IndexedDB storage — Drops only
 - On-chain OCP payment execution — Assets plugin only (`Q.Assets.OpenClaim`);
   Jets only pre-checks balances and forwards tokens to PHP for execution
-- SafeBux ERC-20 contract interaction — PHP/blockchain layer; Jets only relays claims
+- Safebux ERC-20 contract interaction — PHP/blockchain layer; Jets only relays claims
 - DHT peer discovery and Jet-to-Jet relay — pluggable via `Jets.Router`;
   full specification in `Jets.Router.md` (separate document)
 - x402 facilitator role — Jets is the resource server, not the facilitator;

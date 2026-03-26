@@ -1,10 +1,10 @@
-# Safe.Router — Implementation Design Document
+# Q.Safecloud.Router — Implementation Design Document
 
 ## Table of Contents
 
 - [Part 1 — Key Design Decisions](#part-1--key-design-decisions)
-  - [1.1 Responsibilities: Safe.Router vs Safe.Jets](#11-responsibilities-saferouter-vs-safejets)
-  - [1.2 The pairwise SafeBux marketplace](#12-the-pairwise-safebux-marketplace)
+  - [1.1 Responsibilities: Q.Safecloud.Router vs Q.Safecloud.Jets](#11-responsibilities-saferouter-vs-safejets)
+  - [1.2 The pairwise Safebux marketplace](#12-the-pairwise-safebux-marketplace)
   - [1.3 Drops connecting to multiple Jets](#13-drops-connecting-to-multiple-jets)
   - [1.4 Hyperswarm for Jet peer discovery](#14-hyperswarm-for-jet-peer-discovery)
   - [1.5 Pairwise EVM identity and hello handshake](#15-pairwise-evm-identity-and-hello-handshake)
@@ -21,46 +21,46 @@
   - [hyperswarm v3](#hyperswarm-v3)
   - [Q.Data.Prolly (Jet-level tree)](#qdataprolly-jet-level-tree)
   - [ethers.js (balance pre-check)](#ethersjs-balance-pre-check)
-  - [Safe.Jets internal state consumed by Router](#safejets-internal-state-consumed-by-router)
+  - [Q.Safecloud.Jets internal state consumed by Router](#safejets-internal-state-consumed-by-router)
 - [Part 3 — Wire formats](#part-3--wire-formats)
   - [safecloud.jet.hello](#safecloudjetheello)
   - [safecloud:routing-announcement (OCP)](#safecloudrouting-announcement-ocp)
   - [safecloud:drop-availability (OCP)](#safeclouddrop-availability-ocp)
   - [safecloud:corruption (CoC)](#safecloudcorruption-coc)
-  - [Relay request: GET /Safe/relay/{rootCid}/{start}/{end}](#relay-request-get-saferelayrooticdstartend)
+  - [Relay request: GET /Safecloud/relay/{rootCid}/{start}/{end}](#relay-request-get-saferelayrooticdstartend)
   - [Noise bearer token derivation](#noise-bearer-token-derivation)
 - [Part 4 — Jet-level Prolly tree](#part-4--jet-level-prolly-tree)
   - [Structure and ordering](#structure-and-ordering)
   - [Maintenance lifecycle](#maintenance-lifecycle)
   - [Syncing between Jets](#syncing-between-jets)
-- [Part 5 — Safe.Router public interface](#part-5--saferouter-public-interface)
-  - [Safe.Router.selectForGet(cid, options)](#saferouterselectforgetcid-options)
-  - [Safe.Router.selectForPut(cids, options)](#saferouterselectforputcids-options)
-  - [Safe.Router.relayGet(subtree, options)](#saferouterrelaygetsubtree-options)
-  - [Safe.Router.announce(rootCid, event)](#saferouterannounce-rootcid-event)
-  - [Safe.Router.gossipCoC(coc)](#saferoutergossipcococ)
-  - [Safe.Router.peerJets()](#saferouterpeernjets)
+- [Part 5 — Q.Safecloud.Router public interface](#part-5--saferouter-public-interface)
+  - [Q.Safecloud.Router.selectForGet(cid, options)](#saferouterselectforgetcid-options)
+  - [Q.Safecloud.Router.selectForPut(cids, options)](#saferouterselectforputcids-options)
+  - [Q.Safecloud.Router.relayGet(subtree, options)](#saferouterrelaygetsubtree-options)
+  - [Q.Safecloud.Router.announce(rootCid, event)](#saferouterannounce-rootcid-event)
+  - [Q.Safecloud.Router.gossipCoC(coc)](#saferoutergossipcococ)
+  - [Q.Safecloud.Router.peerJets()](#saferouterpeernjets)
 - [Part 6 — Implementation Order](#part-6--implementation-order)
 - [Part 7 — What is NOT in Router.js](#part-7--what-is-not-in-routerjs)
 
 ---
 
-This document is the authoritative spec for `plugins/Safe/classes/Safe/Router.js`
-— the pluggable routing layer that `classes/Safe/Jets.js` delegates all Drop
-selection, Jet-to-Jet peering, relay, and CoC gossip to via `Safe.Router.*`.
+This document is the authoritative spec for `plugins/Safecloud/classes/Safecloud/Router.js`
+— the pluggable routing layer that `classes/Safecloud/Jets.js` delegates all Drop
+selection, Jet-to-Jet peering, relay, and CoC gossip to via `Q.Safecloud.Router.*`.
 
 Read `Protocol.md` (Edge 2), `Jets.md`, and `Drops.md` first. The naming
-convention throughout is `Safe.*` (server-side classes): `Safe.Jets`,
-`Safe.Router`, `Safe.Drops`. The browser-side counterparts are
-`Q.Safe.Jets` and `Q.Safe.Drops`.
+convention throughout is `Q.Safecloud.Client*` (server-side classes): `Q.Safecloud.Jets`,
+`Q.Safecloud.Router`, `Q.Safecloud.Drops`. The browser-side counterparts are
+`Q.Safecloud.Jets` and `Q.Safecloud.Drops`.
 
 ---
 
 ## Part 1 — Key Design Decisions
 
-### 1.1 Responsibilities: Safe.Router vs Safe.Jets
+### 1.1 Responsibilities: Q.Safecloud.Router vs Q.Safecloud.Jets
 
-**Safe.Router** (`classes/Safe/Router.js`) is responsible for:
+**Q.Safecloud.Router** (`classes/Safecloud/Router.js`) is responsible for:
 - Hyperswarm peer discovery (joining the `safecloud-jets` topic, handling connections)
 - Pairwise Jet-to-Jet authentication via `safecloud.jet.hello` + session delegation
 - Maintaining the second-level Prolly tree (union of all connected Drops' CIDs)
@@ -71,47 +71,47 @@ convention throughout is `Safe.*` (server-side classes): `Safe.Jets`,
   (Jet-signed, gossiped on first/last Drop transitions)
 - Pairwise topic subscriptions between Jets for availability events
 - Selecting Drops for `put` and `get` requests (weighted by stake × reliability × storage)
-- Relay fallback: `GET /Safe/relay/{rootCid}/{start}/{end}` to peer Jets
+- Relay fallback: `GET /Safecloud/relay/{rootCid}/{start}/{end}` to peer Jets
   (Jets pay each other for relay)
 - CoC gossip over hyperswarm Noise connections
 - Request coalescing and CID-level deduplication
 
-**Safe.Jets** (`classes/Safe/Jets.js`) is responsible for:
+**Q.Safecloud.Jets** (`classes/Safecloud/Jets.js`) is responsible for:
 - Accepting socket.io and HTTP connections from Cloud clients and Drops
 - OCP Role A grant verification and Role B payment pre-screening
 - Merkle proof attachment on `get` responses
 - Chunk fan-out to Drops via socket.io push events
-- Drop lifecycle management (`Safe.drops` state)
+- Drop lifecycle management (`Q.Safecloud.Drops` state)
 - PHP→Node internal messages
 
-**The interface boundary:** Safe.Jets calls `Safe.Router.selectForGet(cid)`,
+**The interface boundary:** Q.Safecloud.Jets calls `Q.Safecloud.Router.selectForGet(cid)`,
 `selectForPut(cids)`, and `relayGet(subtree)` to get routing decisions. Jets
 calls `Router.announce(rootCid, event)` when first/last Drop coverage changes.
 Everything about peer discovery, inventory sync, and CoC propagation is Router's
-concern. Safe.Jets never calls hyperswarm directly.
+concern. Q.Safecloud.Jets never calls hyperswarm directly.
 
 ---
 
-### 1.2 The pairwise SafeBux marketplace
+### 1.2 The pairwise Safebux marketplace
 
-SafeCloud is a **pairwise marketplace of zero-sum SafeBux transfers** for
+Safecloud is a **pairwise marketplace of zero-sum Safebux transfers** for
 services between peers. Every service rendered between adjacent nodes is
 compensated with a micropayment, and every payment is balanced:
 
 ```
-Safe.Cloud (browser)
-    │  pays Jet in SafeBux
+Q.Safecloud.Client (browser)
+    │  pays Jet in Safebux
     │  OCP Role B, payer = cloudEVM, recipients = [jetEVM]
     ▼
-Safe.Jets (Node.js) — Jet A
-    │  pays Drop in SafeBux
+Q.Safecloud.Jets (Node.js) — Jet A
+    │  pays Drop in Safebux
     │  OCP Role B, payer = jetA_EVM, recipients = [dropEVM]
     ├──▶ Drop (browser IndexedDB)
     │
-    │  pays peer Jet in SafeBux (for relay)
+    │  pays peer Jet in Safebux (for relay)
     │  OCP Role B, payer = jetA_EVM, recipients = [jetB_EVM]
-    └──▶ Safe.Jets — Jet B
-              │  pays Drop in SafeBux
+    └──▶ Q.Safecloud.Jets — Jet B
+              │  pays Drop in Safebux
               └──▶ Drop (browser IndexedDB)
 ```
 
@@ -121,15 +121,15 @@ its own Drops. Drops earn from whichever Jets they serve.
 
 **No participant is forced to transact with any other.** A Jet can refuse to
 route requests from a Cloud client whose payment token has an insufficient
-SafeBux balance. A Drop can refuse to serve a Jet whose balance check fails.
+Safebux balance. A Drop can refuse to serve a Jet whose balance check fails.
 A Jet can refuse to relay for a peer Jet that consistently fails to pay. The
 market enforces honest behavior without a central authority — if a participant
 is overpriced, unreliable, or corrupt, counterparties simply route around them.
 
-**Why this structure is zero-sum in SafeBux:** The total SafeBux in the
-system does not change as it flows through the chain. Cloud loses SafeBux; Jets
+**Why this structure is zero-sum in Safebux:** The total Safebux in the
+system does not change as it flows through the chain. Cloud loses Safebux; Jets
 gain some and lose some (their margin is the spread); Drops accumulate. The
-only external entry point is SafeBux earned through honest storage service
+only external entry point is Safebux earned through honest storage service
 accumulating on-chain via `paymentsExecute()`.
 
 ---
@@ -139,7 +139,7 @@ accumulating on-chain via `paymentsExecute()`.
 A Drop does not serve just one Jet. It connects to a small number of Jets
 simultaneously (default `Q.Config.get(['Safe', 'drop', 'maxJets'], 3)`) using
 `Q.Socket` connections — one persistent socket.io connection per Jet, each
-to a different Jet URL discovered via the SafeCloud Jet directory or
+to a different Jet URL discovered via the Safecloud Jet directory or
 configuration.
 
 ```
@@ -150,7 +150,7 @@ Drop (browser tab)
 ```
 
 **Each Jet-Drop pair is an independent bilateral relationship:**
-- The Drop sends `Safe/drop/register` to each Jet separately
+- The Drop sends `Safecloud/drop/register` to each Jet separately
 - Each Jet maintains its own Drop record and Prolly state for this Drop
 - Payment tokens accumulate per-Jet (each Jet pays the Drop for chunks
   it routes through that Drop)
@@ -232,7 +232,7 @@ in `hello.delegation` was signed by the Jet's wallet key. It binds an ES256
 and EIP-712 session key to the wallet's EVM address. Once verified:
 - All subsequent routing messages signed with those session keys are
   attributable to `hello.evmAddress`
-- The EVM address can be queried on BSC for the Jet's SafeBux stake
+- The EVM address can be queried on BSC for the Jet's Safebux stake
 - CoC evidence signed by those keys is attributable to that Jet
 
 Jets are Node.js processes — no browser key management complexity. A Jet
@@ -261,7 +261,7 @@ representation of what this Jet can serve.
 - Root: hex string
 
 **Why not highest-stake Drop as the value:** Stake fluctuates continuously as
-Drops earn SafeBux and as the graduated lockup releases tokens. Using the
+Drops earn Safebux and as the graduated lockup releases tokens. Using the
 highest-stake Drop as the canonical value would cause frequent value changes
 that ripple through the Prolly tree, generating unnecessary root churn and
 Jet-to-Jet sync traffic. The lowest-EVM-address representative is stable as
@@ -321,7 +321,7 @@ The routing announcement is therefore a **jointly signed OCP claim**:
 
 Both sign the same canonical OCP envelope. The Drop signs first (via the
 session EIP-712 key derived from `Q.Crypto.delegate`), sends back to the
-Jet via a new `Safe/drop/signAnnouncement` event, and the Jet counter-signs
+Jet via a new `Safecloud/drop/signAnnouncement` event, and the Jet counter-signs
 before broadcasting.
 
 **Accountability:** If the Drop's `prollyRoot` does not contain `rootCid`,
@@ -398,7 +398,7 @@ any peer availability change and can fail over without retrying stale routes.
 
 ### 1.10 Relay authentication — Noise-derived bearer tokens
 
-Relay requests (`GET /Safe/relay/...`) are HTTPS and require authentication.
+Relay requests (`GET /Safecloud/relay/...`) are HTTPS and require authentication.
 Both sides derive the same short-lived token from the Noise handshake shared
 secret — no round-trip needed.
 
@@ -438,8 +438,8 @@ what the Noise handshake hash represents. It is ephemeral and automatically
 invalidated when the connection drops. No separate key management.
 
 **Relay is a paid service.** The relaying Jet (Jet B) receives an OCP Role B
-payment token from Jet A alongside the relay request, denominated in SafeBux.
-`recipients = [jetB_EVM]`. Jet B verifies Jet A's SafeBux balance before
+payment token from Jet A alongside the relay request, denominated in Safebux.
+`recipients = [jetB_EVM]`. Jet B verifies Jet A's Safebux balance before
 serving, the same way a Drop verifies a Jet's balance. The relay payment is
 a first-class participant in the pairwise marketplace — Jet A earns from Cloud,
 pays Drops directly for chunks they serve, and pays peer Jets for relay when
@@ -457,7 +457,7 @@ Jet B MUST mitigate this via layered defenses:
   outstanding per peer Jet A. If `outstanding[jetA] > creditLimit`, Jet B
   requires on-chain confirmation of prior claims before serving new relay
   requests. `creditLimit = Q.Config.get(['Safe', 'relay', 'peerCreditLimitSafebux'], '10000')`
-- **Stake threshold:** Jet B rejects relay from peer Jets whose SafeBux
+- **Stake threshold:** Jet B rejects relay from peer Jets whose Safebux
   stake is below `Q.Config.get(['Safe', 'relay', 'minPeerStake'], '1000')`.
   Zero-stake Jets can neither relay nor earn relay payments.
 - **Reliability degradation:** Failed payment claims permanently reduce the
@@ -466,7 +466,7 @@ Jet B MUST mitigate this via layered defenses:
   single episode.
 
 Relay payment guarantees are ultimately economic, not cryptographic. The
-graduated lockup (locked SafeBux cannot be transferred) means peer Jets
+graduated lockup (locked Safebux cannot be transferred) means peer Jets
 always have residual slashable stake even if they try to drain liquid balances.
 
 ---
@@ -543,12 +543,12 @@ self-correcting. Coalescing is a performance optimisation, not a correctness
 invariant.
 
 **Why this matters in practice:** A popular video segment prefetched by
-many simultaneous `_prefetchLoop` instances (from multiple Safe.Cloud viewers)
+many simultaneous `_prefetchLoop` instances (from multiple Q.Safecloud.Client viewers)
 would otherwise hammer the same Drop with N identical reads for the same
 IndexedDB key. Coalescing collapses N requests into one Drop read, N-fold
 reduction in Drop load for popular content.
 
-**Bloom filter pre-routing:** Before issuing a `Safe/drop/put` to a Drop,
+**Bloom filter pre-routing:** Before issuing a `Safecloud/drop/put` to a Drop,
 Router checks the Drop's in-memory Bloom filter: if the filter says the Drop
 likely already has the CID, the put is skipped for that Drop. This avoids
 redundant network roundtrips for content the Drop already holds — the most
@@ -563,7 +563,7 @@ over socket.io. Each received CoC is validated before storing or forwarding.
 
 **Acceptance criteria:**
 1. CoC is validly signed by claimant's EVM key
-2. Claimant's SafeBux stake ≥ `Q.Config.get(['Safe', 'coc', 'minClaimantStake'], '1000')`
+2. Claimant's Safebux stake ≥ `Q.Config.get(['Safe', 'coc', 'minClaimantStake'], '1000')`
 3. All evidence claims are validly signed by the stated subject key
 4. Not already seen (`SHA-256(canonicalJSON(coc))` not in `_cocStore`)
 5. Claimant ≠ subject (no self-CoC)
@@ -579,7 +579,7 @@ over socket.io. Each received CoC is validated before storing or forwarding.
 3. If subject is a connected Drop:
    - Add to `_corruptActors` set
    - Set `reliabilityScore(drop) = 0` (excluded from routing)
-   - Emit `corruptActorDetected` event (Safe.Jets decides whether to disconnect)
+   - Emit `corruptActorDetected` event (Q.Safecloud.Jets decides whether to disconnect)
 4. If subject is a peer Jet:
    - Remove from routing table
    - Close Noise connection
@@ -600,15 +600,15 @@ mechanics, and the lottery model for distributing slashed stake.
 
 ### 1.14 Pluggable interface
 
-`Safe.Router` is assigned on `Safe` before `Safe.listen()`:
+`Q.Safecloud.Router` is assigned on `Safe` before `Q.Safecloud.Clientlisten()`:
 
 ```js
 // Default (this file):
-Safe.Router = require('./Router');
+Q.Safecloud.Router = require('./Router');
 
 // Override with custom implementation (e.g. Kademlia DHT):
-Safe.Router = require('./Router.Kademlia');
-Safe.listen(options);
+Q.Safecloud.Router = require('./Router.Kademlia');
+Q.Safecloud.Clientlisten(options);
 ```
 
 The interface contract:
@@ -622,7 +622,7 @@ The interface contract:
   announce:      (rootCid, event) => void,
   gossipCoC:     (coc) => void,
   peerJets:      () => Array<{ evmAddress, url, stake }>,
-  // Lifecycle hooks called by Safe.Jets:
+  // Lifecycle hooks called by Q.Safecloud.Jets:
   onDropRegistered:   (drop, prollyRoot) => void,
   onDropAnnounce:     (drop, diff) => void,
   onDropDisconnected: (drop) => void
@@ -700,21 +700,21 @@ The in-memory Prolly store for the second-level tree: `_jetProllyStore`
 ### ethers.js (balance pre-check)
 
 ```js
-// Query SafeBux balance for Drop or peer Jet (shared cache with Safe.Jets):
+// Query Safebux balance for Drop or peer Jet (shared cache with Q.Safecloud.Jets):
 const balance = await _safebux.balanceOf(evmAddress);  // BigInt
-// Cached 1 hour per evmAddress in _balanceCache (shared with Safe.Jets)
+// Cached 1 hour per evmAddress in _balanceCache (shared with Q.Safecloud.Jets)
 ```
 
-Uses the same provider instance and cache as `Safe.Jets._checkPayerBalance`.
+Uses the same provider instance and cache as `Q.Safecloud.Jets._checkPayerBalance`.
 
 ---
 
-### Safe.Jets internal state consumed by Router
+### Q.Safecloud.Jets internal state consumed by Router
 
 Router reads (read-only):
 ```js
-Safe.drops         // dropId → drop record
-Safe._cidIndex     // rootCid → Array<cidString>
+Q.Safecloud.Drops         // dropId → drop record
+Q.Safecloud.Client_cidIndex     // rootCid → Array<cidString>
 ```
 
 Router private state:
@@ -805,7 +805,7 @@ Jointly signed by Drop and Jet. Sent when Jet gains first Drop for a
 }
 ```
 
-**Construction:** Drop signs first (sends `Safe/drop/signAnnouncement` ack
+**Construction:** Drop signs first (sends `Safecloud/drop/signAnnouncement` ack
 to Jet with Drop's signature). Jet counter-signs. Both sign canonical JSON
 with `sig` stripped (RFC 8785). Withdrawal: `stm.ttl = 0`.
 
@@ -815,7 +815,7 @@ announce the Jet has received from that Drop over its direct socket.io connectio
 
 The verifying Jet does NOT recompute the Prolly root from scratch — it simply
 compares the value in the announcement to the `newRoot` of the most recent
-`Safe/drop/announce` entry it holds for that Drop. This is possible because
+`Safecloud/drop/announce` entry it holds for that Drop. This is possible because
 Drops send signed diff-log entries on every inventory change, so the Jet always
 has the Drop's current root from their direct connection. A new peer Jet that
 has never connected to this Drop directly cannot perform this check — it
@@ -896,22 +896,22 @@ Jet-signed only. Gossiped when first/last Drop for a `rootCid` transitions.
 
 ---
 
-### Relay request: GET /Safe/relay/{rootCid}/{start}/{end}
+### Relay request: GET /Safecloud/relay/{rootCid}/{start}/{end}
 
 ```
-GET /Safe/relay/bafy.../0/10?g=<grants_b64url>&p=<payments_b64url>
+GET /Safecloud/relay/bafy.../0/10?g=<grants_b64url>&p=<payments_b64url>
 Authorization: Bearer <Noise-derived token>
 X-OCP-Payment: <base64(OCP Role B token, payer=jetA_EVM, recipients=[jetB_EVM])>
 ```
 
 `X-OCP-Payment` carries the relay payment token from Jet A to Jet B —
-part of the pairwise marketplace. Jet B verifies Jet A's SafeBux balance
+part of the pairwise marketplace. Jet B verifies Jet A's Safebux balance
 before serving, exactly as Drops verify Jets.
 
 **Responses:**
-- `200` — chunks JSON, same shape as `GET /Safe/subtree`
+- `200` — chunks JSON, same shape as `GET /Safecloud/subtree`
 - `401` — invalid/expired bearer token; Jet A re-derives and retries once
-- `402` — Jet A's SafeBux balance insufficient for relay payment
+- `402` — Jet A's Safebux balance insufficient for relay payment
 - `403` — grant verification failed
 - `404` — Jet B has no coverage for this range
 
@@ -1019,16 +1019,16 @@ relay to the peer with the best `_peerRoutes` entry.
 
 ---
 
-## Part 5 — Safe.Router public interface
+## Part 5 — Q.Safecloud.Router public interface
 
 ---
 
-### `Safe.Router.selectForGet(cid, options)` → Promise\<drop|null\>
+### `Q.Safecloud.Router.selectForGet(cid, options)` → Promise\<drop|null\>
 
 ```
 cid:     String
 options: { exclude: Array<dropId> }
-Returns: drop from Safe.drops, or null (triggers relayGet in Safe.Jets)
+Returns: drop from Q.Safecloud.Drops, or null (triggers relayGet in Q.Safecloud.Jets)
 ```
 
 Checks `_inflight[cid]` first — if a request is already in flight, returns
@@ -1038,7 +1038,7 @@ weighted-random selection among connected Drops with `cid` in their inventory
 
 ---
 
-### `Safe.Router.selectForPut(cids, options)` → Promise\<Array\<drop\>\>
+### `Q.Safecloud.Router.selectForPut(cids, options)` → Promise\<Array\<drop\>\>
 
 ```
 cids:    Array<String>
@@ -1052,7 +1052,7 @@ Returns fewer than `replicationFactor` if not enough suitable Drops connected.
 
 ---
 
-### `Safe.Router.relayGet(subtree, options)` → Promise\<{chunks}|null\>
+### `Q.Safecloud.Router.relayGet(subtree, options)` → Promise\<{chunks}|null\>
 
 ```
 subtree: { rootCid, start, end, grants }
@@ -1068,7 +1068,7 @@ all exhausted.
 
 ---
 
-### `Safe.Router.announce(rootCid, event)` → void
+### `Q.Safecloud.Router.announce(rootCid, event)` → void
 
 ```
 rootCid: String
@@ -1077,21 +1077,21 @@ event:   'available'|'unavailable'
 
 Constructs `safecloud:drop-availability` OCP claim signed with Jet's EIP-712
 session key. Broadcasts over all Noise connections. Sends to pairwise
-subscribers. For `available`: requests Drop co-signature (`Safe/drop/signAnnouncement`)
+subscribers. For `available`: requests Drop co-signature (`Safecloud/drop/signAnnouncement`)
 for the DHT routing announcement.
 
 ---
 
-### `Safe.Router.gossipCoC(coc)` → void
+### `Q.Safecloud.Router.gossipCoC(coc)` → void
 
 Validates, deduplicates, stores in `_cocStore`, decrements `hopCount`, floods
 to peers. Updates `_corruptActors` and reliability scores for known subjects.
 
 ---
 
-### `Safe.Router.peerJets()` → Array\<{evmAddress, url, stake}\>
+### `Q.Safecloud.Router.peerJets()` → Array\<{evmAddress, url, stake}\>
 
-Snapshot of `_peers`. Used by Safe.Jets for monitoring and relay candidate
+Snapshot of `_peers`. Used by Q.Safecloud.Jets for monitoring and relay candidate
 selection.
 
 ---
@@ -1106,53 +1106,53 @@ selection.
 6. `_weightedRandomSelect(drops, N)` — weighted-random selection
 7. `_updateReliability(dropId, success)` — EMA update
 8. `_applyPeerDiff(diff)` — update `_peerRoutes` from peer Prolly diff
-9. `Safe.Router.onDropRegistered(drop, prollyRoot)` — merge Drop CIDs
-10. `Safe.Router.onDropAnnounce(drop, diff)` — apply diff to second-level tree
-11. `Safe.Router.onDropDisconnected(drop)` — remove Drop CIDs, fire events
-12. `Safe.Router.selectForGet(cid, options)` — weighted select + coalescing
-13. `Safe.Router.selectForPut(cids, options)` — weighted select + Bloom check
-14. `Safe.Router.relayGet(subtree, options)` — Noise token + HTTPS + payment
-15. `Safe.Router.announce(rootCid, event)` — sign OCP, flood peers
-16. `Safe.Router.gossipCoC(coc)` — validate, deduplicate, flood
-17. `Safe.Router.peerJets()` — snapshot
+9. `Q.Safecloud.Router.onDropRegistered(drop, prollyRoot)` — merge Drop CIDs
+10. `Q.Safecloud.Router.onDropAnnounce(drop, diff)` — apply diff to second-level tree
+11. `Q.Safecloud.Router.onDropDisconnected(drop)` — remove Drop CIDs, fire events
+12. `Q.Safecloud.Router.selectForGet(cid, options)` — weighted select + coalescing
+13. `Q.Safecloud.Router.selectForPut(cids, options)` — weighted select + Bloom check
+14. `Q.Safecloud.Router.relayGet(subtree, options)` — Noise token + HTTPS + payment
+15. `Q.Safecloud.Router.announce(rootCid, event)` — sign OCP, flood peers
+16. `Q.Safecloud.Router.gossipCoC(coc)` — validate, deduplicate, flood
+17. `Q.Safecloud.Router.peerJets()` — snapshot
 18. `_handleHello(conn, hello)` — verify delegation, init Prolly sync
 19. `_handleAvailability(msg)` — update `_peerRoutes`
 20. `_handleProllyDiff(conn, msg)` — respond to diff request
 21. `_handleCoC(msg)` — validate + pass to gossipCoC
 22. `_handleSubscribe(conn, msg)` — register pairwise subscription
 23. `_onConnection(conn, info)` — top-level handler: sends hello, dispatches msgs
-24. `Safe.Router.init(options)` — create hyperswarm, join topic, setup handlers;
-    called by `Safe.listen()` before accepting connections
+24. `Q.Safecloud.Router.init(options)` — create hyperswarm, join topic, setup handlers;
+    called by `Q.Safecloud.Clientlisten()` before accepting connections
 
 ---
 
 ## Part 7 — What is NOT in Router.js
 
-- **Chunk transfer** — Safe.Jets calls Drops directly via socket.io. Router
+- **Chunk transfer** — Q.Safecloud.Jets calls Drops directly via socket.io. Router
   selects the Drop; Jets does the calling.
 
-- **OCP Role A grant verification** — Safe.Jets `verifySubtreeGrant()`.
+- **OCP Role A grant verification** — Q.Safecloud.Jets `verifySubtreeGrant()`.
 
-- **OCP Role B payment verification** — Safe.Jets `_checkPayerBalance()`.
+- **OCP Role B payment verification** — Q.Safecloud.Jets `_checkPayerBalance()`.
 
-- **Merkle proof generation** — Safe.Jets `buildMerkleProofs()`.
+- **Merkle proof generation** — Q.Safecloud.Jets `buildMerkleProofs()`.
 
-- **Drop lifecycle records** — `Safe.drops` is owned by Safe.Jets. Router
+- **Drop lifecycle records** — `Q.Safecloud.Drops` is owned by Q.Safecloud.Jets. Router
   reads it but never creates, updates, or deletes Drop records.
 
-- **PHP→Node internal messages** — Safe.Jets `Safe_request_handler`.
+- **PHP→Node internal messages** — Q.Safecloud.Jets `Safecloud_request_handler`.
 
 - **IndexedDB** — Router is Node.js server-side only.
 
 - **On-chain payment execution** — Assets plugin via PHP bridge. Router only
-  reads BSC balances for pre-screening (shared cache with Safe.Jets).
+  reads BSC balances for pre-screening (shared cache with Q.Safecloud.Jets).
 
 - **Kademlia / XOR-distance routing** — v2. The pluggable interface is
   designed so a Kademlia implementation is a drop-in replacement for
-  `Safe.Router` without touching Safe.Jets.
+  `Q.Safecloud.Router` without touching Q.Safecloud.Jets.
 
 - **Drop-to-Drop communication** — Drops do not communicate with each other.
   All inter-Drop coordination goes through Jets.
 
-- **Safe.Cloud** — Router is entirely server-side. It has no knowledge of
+- **Q.Safecloud.Client** — Router is entirely server-side. It has no knowledge of
   encryption, key derivation, or manifests. It routes opaque CIDs.

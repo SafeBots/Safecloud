@@ -1,0 +1,147 @@
+/* Safecloud/drop Tool
+ * Classes used: .Safecloud_drop_tool, .Safecloud_drop_connect_screen,
+ *   .Safecloud_drop_logo, .Safecloud_drop_tagline, .Safecloud_drop_jet_url,
+ *   .Safecloud_drop_connect_btn, .Safecloud_drop_status, .Safecloud_drop_dashboard,
+ *   .Safecloud_drop_stats_table, .Safecloud_drop_stat_*, .Safecloud_drop_claim_btn
+ */
+
+.Safecloud_drop_tool {
+    font-family: 'IBM Plex Mono', 'Courier New', monospace;
+    color: #c8e0c8;
+}
+
+/* ── Connect screen ─────────────────────────────────────── */
+.Safecloud_drop_connect_screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    padding: 48px 24px;
+    max-width: 480px;
+    margin: 0 auto;
+    text-align: center;
+}
+
+.Safecloud_drop_logo {
+    font-size: 52px;
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    color: #00ff88;
+    text-shadow: 0 0 32px rgba(0,255,136,.4);
+}
+
+.Safecloud_drop_tagline {
+    font-size: 11px;
+    color: #5a7a5a;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+}
+
+.Safecloud_drop_jet_url {
+    width: 100%;
+    padding: 10px 14px;
+    background: #0a0c0a;
+    border: 1px solid #1e281e;
+    color: #c8e0c8;
+    font-family: inherit;
+    font-size: 12px;
+    outline: none;
+    transition: border-color .2s;
+    box-sizing: border-box;
+}
+.Safecloud_drop_jet_url:focus { border-color: #00ff88; }
+
+.Safecloud_drop_connect_btn {
+    width: 100%;
+    padding: 16px;
+    background: transparent;
+    border: 1px solid #00ff88;
+    color: #00ff88;
+    font-family: inherit;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background .2s, letter-spacing .2s;
+    box-shadow: 0 0 16px rgba(0,255,136,.12);
+}
+.Safecloud_drop_connect_btn:hover:not(:disabled) {
+    background: rgba(0,255,136,.07);
+    letter-spacing: .24em;
+}
+.Safecloud_drop_connect_btn:disabled {
+    border-color: #1e281e;
+    color: #3a4a3a;
+    box-shadow: none;
+    cursor: default;
+}
+.Safecloud_drop_connect_btn.Q_working {
+    opacity: .6;
+    cursor: wait;
+}
+
+.Safecloud_drop_status {
+    font-size: 11px;
+    letter-spacing: .08em;
+    min-height: 18px;
+    color: #5a7a5a;
+}
+.Safecloud_drop_status.ok    { color: #00ff88; }
+.Safecloud_drop_status.error { color: #ff3344; }
+
+/* ── Dashboard ──────────────────────────────────────────── */
+.Safecloud_drop_dashboard { padding: 8px 0; }
+
+.Safecloud_drop_stats_table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+.Safecloud_drop_stats_table th {
+    text-align: left;
+    color: #5a7a5a;
+    font-weight: 400;
+    font-size: 10px;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    padding: 9px 12px 9px 0;
+    border-bottom: 1px solid #1e281e;
+    white-space: nowrap;
+    width: 38%;
+}
+.Safecloud_drop_stats_table td {
+    padding: 9px 0;
+    border-bottom: 1px solid #1e281e;
+    color: #c8e0c8;
+    word-break: break-all;
+}
+
+/* Stat value colour overrides */
+.Safecloud_drop_stat_evmAddress { color: #00ff88; font-size: 11px; }
+.Safecloud_drop_stat_safebux    { color: #ffaa00; }
+.Safecloud_drop_stat_prollyRoot { color: #3a4a3a; font-size: 10px; }
+
+.Safecloud_drop_claim_btn {
+    margin-top: 18px;
+    width: 100%;
+    padding: 12px;
+    background: transparent;
+    border: 1px solid #00ff88;
+    color: #00ff88;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 700;
+    letter-spacing: .18em;
+    text-transform: uppercase;
+    cursor: pointer;
+    transition: background .2s;
+}
+.Safecloud_drop_claim_btn:hover:not(:disabled) { background: rgba(0,255,136,.07); }
+.Safecloud_drop_claim_btn:disabled {
+    border-color: #1e281e;
+    color: #3a4a3a;
+    cursor: default;
+}
+.Safecloud_drop_claim_btn.Q_working { opacity: .6; cursor: wait; }

@@ -1,4 +1,4 @@
-# SafeCloud — Inter-Node Communication Protocol
+# Safecloud — Inter-Node Communication Protocol
 
 ## Table of Contents
 
@@ -18,14 +18,14 @@
   - [Cache-Control on encrypted responses](#cache-control-on-encrypted-responses)
 - [Edge 1 — Cloud ↔ Jets (HTTP + socket.io)](#edge-1--cloud--jets-http--socketio)
   - [Topology](#topology-1)
-  - [PUT /Safe/subtree — upload chunks](#put-safesubtree--upload-chunks)
-  - [GET /Safe/subtree/{rootCid}/{start}/{end} — fetch chunk range](#get-safesubtreerooticdstartend--fetch-chunk-range)
-  - [GET /Safe/chunk/{cid} — single-chunk x402 fetch](#get-safechunkcid--single-chunk-x402-fetch)
+  - [PUT /Safecloud/cloud/subtree — upload chunks](#put-safesubtree--upload-chunks)
+  - [GET /Safecloud/cloud/subtree/{rootCid}/{start}/{end} — fetch chunk range](#get-safesubtreerooticdstartend--fetch-chunk-range)
+  - [GET /Safecloud/cloud/chunk/{cid} — single-chunk x402 fetch](#get-safechunkcid--single-chunk-x402-fetch)
   - [socket.io equivalents](#socketio-equivalents)
 - [Edge 2 — Jets ↔ Jets (HTTP via Jets.Router / hyperswarm)](#edge-2--jets--jets-http-via-jetsrouter--hyperswarm)
   - [Topology](#topology-2)
   - [Peer discovery via hyperswarm](#peer-discovery-via-hyperswarm)
-  - [Relay request: GET /Safe/relay/{rootCid}/{start}/{end}](#relay-request-get-saferelayrooticdstartend)
+  - [Relay request: GET /Safecloud/cloud/relay/{rootCid}/{start}/{end}](#relay-request-get-saferelayrooticdstartend)
 - [Edge 3 — Jets ↔ Ethereum Provider RPC](#edge-3--jets--ethereum-provider-rpc)
   - [Topology](#topology-3)
   - [Balance check (pre-screen only)](#balance-check-pre-screen-only)
@@ -41,7 +41,7 @@
   - [Topology](#topology-5)
   - [Balance verification](#balance-verification)
   - [Payment claim execution](#payment-claim-execution)
-- [SafeBux economics](#safebux-economics)
+- [Safebux economics](#safebux-economics)
   - [Zero-sum payment flows](#zero-sum-payment-flows)
   - [Stake and graduated lockup](#stake-and-graduated-lockup)
   - [Routing priority and stake](#routing-priority-and-stake)
@@ -61,7 +61,7 @@
 
 ## Overview
 
-SafeCloud is a decentralized encrypted storage network composed of four node
+Safecloud is a decentralized encrypted storage network composed of four node
 types:
 
 ```
@@ -91,14 +91,22 @@ The following principles underpin every design decision in this protocol. When
 in doubt about how to handle a case not explicitly covered, apply these
 principles in order.
 
-**1. Merkle trees going up, key derivation trees going down.**
-Chunks are content-addressed and assembled upward into Merkle/Prolly trees.
-Encryption keys are derived downward from a root secret into per-chunk keys.
-These two trees have the same shape but are structurally separate: one is a
-commitment tree over ciphertext, the other is a derivation tree over secrets.
-This asymmetry is intentional — it means the content-address tree is publicly
-shareable (it commits to ciphertext, not plaintext) while the key tree is
-access-controlled.
+**1. Three parallel trees from one root.**
+Every stored file has three trees rooted at the same `rootCid`, all with the
+same N-ary shape, all navigable by the same link path arrays:
+
+- **Merkle tree** — built bottom up from ciphertext. Commits to every chunk in
+  every track. Public and cacheable. Deduplication is automatic: same content
+  → same CIDs → same tree nodes.
+- **Encryption key tree** — built top down via chained `Q.Crypto.delegate` calls,
+  one per link path segment. Cloud only. Jets never see it.
+- **Access level tree** — built top down via chained `Q.Crypto.delegate` calls,
+  same path segments, different label prefix. Carries Streams-compatible access
+  levels (`readLevel`, `writeLevel`, `adminLevel`). Jets enforce this tree.
+
+The Merkle and Prolly trees go up; the key derivation trees go down.
+The Prolly tree is per-node inventory (which files a Jet/Drop holds), not per-file
+structure — it is completely separate from the per-file Merkle tree.
 
 **2. Separate derivation trees for encryption and access — deduplication without
 disclosure.**
@@ -113,7 +121,7 @@ authorized holders via OCP Role A grants.
 Wherever possible, chunk retrieval is expressed as standard HTTP GET requests
 with `Cache-Control: public, max-age=31536000, immutable`. This means CDNs,
 browsers, and proxies all participate in the caching layer for free. The
-immutability of CIDs (content-addressed, deterministic) makes this safe.
+immutability of CIDs (content-addressed, deterministic) makes this Q.Safecloud.Client
 
 **4. OCP for all protocol-level signing.**
 Every protocol-level authorization, payment, proof, and identity claim is
@@ -150,7 +158,7 @@ all supported chains and is not upgradeable — the rules are fixed and auditabl
 **8. EVM addresses as canonical identity.**
 Every participant — Cloud payer, Jet, Drop — is identified by their EVM address
 on BNB Chain (BSC, `eip155:56`). This address is the basis for stake
-accumulation, SafeBux earnings, and slashing. It is not optional or ephemeral.
+accumulation, Safebux earnings, and slashing. It is not optional or ephemeral.
 A participant without an EVM address has no stake and no accountability, and
 is treated accordingly by routing algorithms.
 
@@ -178,7 +186,7 @@ Cloud payment token to a Drop forwards the original Cloud-signed OCP envelope;
 it does not re-sign it as itself.
 
 **12. Trusted execution environment for dynamically loaded JS.**
-Any participant running SafeCloud logic in a browser (Drops, and optionally
+Any participant running Safecloud logic in a browser (Drops, and optionally
 Cloud clients) must trust the JavaScript they execute. This trust should be
 grounded in one of:
 - A verifiable attestation from SafeBox (hardware root of trust via AWS Nitro,
@@ -218,17 +226,17 @@ and the claimant is penalized for filing it.
 
 ### Chain separation
 
-SafeCloud uses two distinct chain roles:
+Safecloud uses two distinct chain roles:
 
-- **Identity, stake, and SafeBux accounting:** BNB Chain (BSC, `eip155:56`).
-  Every participant's canonical EVM address, their SafeBux balance, and all
+- **Identity, stake, and Safebux accounting:** BNB Chain (BSC, `eip155:56`).
+  Every participant's canonical EVM address, their Safebux balance, and all
   stake/slash operations live on BSC. This is hardcoded in the v1 protocol.
 
 - **OpenClaiming payment execution:** the chain specified in each payment
   token's `stm.chainId` and `stm.contract`. The OpenClaiming contract is
   deployed at `0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999` on all supported
   chains. In the **v1 reference deployment all payment flows — Cloud → Jet and
-  Jet → Drop — execute on BSC** (`eip155:56`), denominated in SafeBux.
+  Jet → Drop — execute on BSC** (`eip155:56`), denominated in Safebux.
 
 The multi-chain capability of the OpenClaiming contract is a protocol feature
 reserved for future deployments. All examples in this document use
@@ -268,7 +276,7 @@ Canonicalization uses RFC 8785 / JCS (JSON Canonicalization Scheme): `sig`
 is stripped before hashing, keys are sorted, and the canonical UTF-8 JSON
 string is SHA-256 hashed for ES256 signing.
 
-**Important:** The two SafeCloud OCP roles both use the full OCP envelope, with
+**Important:** The two Safecloud OCP roles both use the full OCP envelope, with
 claim-type-specific fields in `stm`:
 - **Role A (access grants):** `sub = "safecloud:subtree"`. `stm` contains
   `label`, `context`, `issuedTime`, `secretHash`, `parent`. Signed with a
@@ -277,7 +285,7 @@ claim-type-specific fields in `stm`:
   EIP-712 Payment struct fields. Signed with an EVM (secp256k1 / EIP-712) key.
   The `sig[]` entry is accepted directly by `OpenClaiming.paymentsExecute()`.
 
-The general OCP envelope is the base format for all SafeCloud signed objects.
+The general OCP envelope is the base format for all Safecloud signed objects.
 An implementor should expect all grants and payment tokens to have the
 `ocp`/`iss`/`sub`/`stm`/`key[]`/`sig[]` structure.
 
@@ -288,7 +296,7 @@ An implementor should expect all grants and payment tokens to have the
 Every Drop and Jet must prove ownership of its canonical EVM address before
 being trusted on the network. Rather than requiring interactive wallet
 signatures for every OCP claim — which would be unusable in a browser Drop that
-signs challenge responses and Prolly diffs continuously — SafeCloud uses a
+signs challenge responses and Prolly diffs continuously — Safecloud uses a
 **one-time interactive delegation** via `Q.Crypto.delegate` to establish a
 non-interactive session keypair.
 
@@ -326,7 +334,7 @@ const delegation = await Q.Crypto.delegate({
 Both session keys are derived deterministically from the wallet signature — no
 random generation, no storage of raw private key material. The session keypair
 is stored in IndexedDB as a non-extractable `CryptoKey` (Web Crypto API,
-`extractable: false`). All subsequent SafeCloud signing is non-interactive:
+`extractable: false`). All subsequent Safecloud signing is non-interactive:
 
 | Claim type | Signing key used |
 |------------|-----------------|
@@ -334,7 +342,7 @@ is stored in IndexedDB as a non-extractable `CryptoKey` (Web Crypto API,
 | Payment tokens, routing announcements | EIP-712 session key (on-chain compatible) |
 | CoC evidence | EIP-712 session key |
 
-The delegation claim itself is sent in `Safe/drop/register` (Edge 4) and in
+The delegation claim itself is sent in `Safecloud/drop/register` (Edge 4) and in
 `safecloud.jet.hello` (Edge 2) in place of the old `authPayload`/`authSignature`
 fields. Any receiver can verify the session keys are legitimately delegated
 from the canonical wallet address by checking the delegation claim's signature.
@@ -347,7 +355,7 @@ wallet signature.
 
 ### Pristine environment requirement and SafeBox attestation
 
-**The threat:** SafeCloud Drops hold real economic stake (SafeBux) and sign
+**The threat:** Safecloud Drops hold real economic stake (Safebux) and sign
 OCP claims non-interactively using their delegated session keys. If the
 JavaScript environment serving the Drop application is compromised — even
 subtly — a malicious server could:
@@ -361,9 +369,9 @@ subtly — a malicious server could:
 The delegation ceremony's `extractable: false` mitigates key exfiltration via
 JavaScript, but it does not help if the malicious code simply calls the
 non-extractable key's `sign()` function directly on attacker-chosen payloads.
-A pristine environment is therefore a hard requirement for SafeCloud Drops.
+A pristine environment is therefore a hard requirement for Safecloud Drops.
 
-**SafeBox:** The SafeCloud browser application is served exclusively from
+**SafeBox:** The Safecloud browser application is served exclusively from
 `safebox.org`, which runs on a SafeBox-attested infrastructure. SafeBox is a
 system for serving web applications from AWS EC2 instances whose software stack
 is:
@@ -439,8 +447,8 @@ Role A grants are full OCP envelopes. The access-specific fields live in `stm`.
   "iss":  "data:key/es256;base64,<issuer-SPKI-DER-base64>",
   "sub":  "safecloud:subtree",
   "stm":  {
-    "label":      "safecloud.read.content",
-    "context":    "{\"rootCid\":\"bafy...\",\"start\":0,\"end\":100,\"exp\":0}",
+    "label":      "safecloud.node.1",
+    "context":    "{\"rootCid\":\"bafy...\",\"link\":[\"track\",\"data\",\"0\",\"1\"],\"readLevel\":23,\"exp\":0}",
     "issuedTime": 1700000000,
     "secretHash": "<hex-keccak256-of-subtreeKey>",
     "parent":     "<hex-of-issuing-public-key>"
@@ -454,8 +462,18 @@ Fields:
 - `ocp` — always `1`
 - `iss` — the granting party's key URI (content owner or sub-delegator)
 - `sub` — always `"safecloud:subtree"` for access grants
-- `stm.label` — access tier: `safecloud.read.*`, `safecloud.write.*`, `safecloud.admin.*`
-- `stm.context` — JSON string: `{ rootCid, start, end, exp }` — the exact range being granted
+- `stm.label` — access tier: `safecloud.read.*`, `safecloud.write.*`, `safecloud.admin.*`.
+  The label is the last segment's HKDF label in the delegation chain:
+  - Track level: `safecloud.track.data`, `safecloud.track.index`
+  - Subtree level: `safecloud.node.0`, `safecloud.node.1`, etc.
+  The full path is recorded in `stm.context.link`. Grants for different tracks
+  and different subtree nodes are completely independent — a grantee may hold
+  index-only access, a clip range only, or any combination.
+- `stm.context` — JSON string: `{ rootCid, link, readLevel, writeLevel, adminLevel, exp }`
+  where `link` is the path array to the granted subtree node,
+  e.g. `["track","data","0","1"]` for a specific internal node,
+  or `["track","index"]` for the index track.
+  The access level fields mirror the Streams access level system.
 - `stm.issuedTime` — Unix seconds; informational only, does not affect crypto
 - `stm.secretHash` — `keccak256` of the subtreeKey bytes; lets the Jet verify the
   grant's stated access is internally consistent without seeing the key itself
@@ -472,10 +490,13 @@ Sub-delegation: a grantee with `safecloud.admin.*` may issue a new grant with
 themselves as `iss`, reducing the range or level. The `stm.parent` field chains
 back to the original issuer so the Jet can verify the delegation path.
 
-Grant verification on the Jet checks per-index coverage: for each absolute
-chunk index `i` in `[start, end)`, at least one grant must satisfy
-`stm.context.start ≤ i < stm.context.end`, `stm.context.rootCid == rootCid`
-(on reads), `exp` not exceeded, and valid OCP signature.
+Grant verification on the Jet checks link path coverage: for each requested
+chunk, at least one grant must satisfy:
+- `stm.context.link` is an ancestor-or-equal path of the chunk's position in the tree
+- `stm.context.rootCid == rootCid` (on reads)
+- `stm.context.readLevel >= required` (or writeLevel/adminLevel as appropriate)
+- `exp` not exceeded
+- Valid OCP signature verifying the delegation chain from `accessRoot`
 
 ---
 
@@ -533,7 +554,7 @@ A grants in the same request payload.
 **Cloud payer model:** Cloud clients do not go through the session delegation
 ceremony — they do not connect to the network as a registered participant.
 Their identity is simply the EVM address that signed the OCP Role B payment
-token. SafeCloud is agnostic about how that address is funded:
+token. Safecloud is agnostic about how that address is funded:
 
 | Scenario | Who signs the Cloud → Jet payment token |
 |----------|------------------------------------------|
@@ -543,7 +564,7 @@ token. SafeCloud is agnostic about how that address is funded:
 | Developer testing | A funded test wallet |
 
 The Jet does not care who the ultimate end-user is — only that the OCP payment
-token carries a valid EIP-712 signature and the payer has sufficient SafeBux
+token carries a valid EIP-712 signature and the payer has sufficient Safebux
 balance and allowance.
 
 **Line 0 (DEFAULT_LINE) semantics:**
@@ -584,7 +605,7 @@ so long as the cumulative redeemed amount does not exceed `stm.max`. Each call
 increments `lines[payer][line].spent`; the token is exhausted when `spent`
 reaches `max`.
 
-**EIP-712 domain** used by all SafeCloud payment tokens:
+**EIP-712 domain** used by all Safecloud payment tokens:
 ```json
 {
   "name":              "OpenClaiming.payments",
@@ -629,34 +650,38 @@ Jets and Drops performing verification must support all three formats. The
 
 ### Batch HTTP request format
 
-`GET /Safe/subtree/{rootCid}/{start}/{end}` encodes all auth and payment
+`GET /Safecloud/cloud/subtree/{rootCid}` encodes all auth and payment
 parameters in the URL query string so that responses can be cached by CDN
 proxies and intermediate servers.
 
 Query parameters:
+- `link` — slash-separated link path, e.g. `track/data/0/1`. Defaults to `track/data` if omitted.
 - `g` — `base64url(JSON.stringify(grants[]))` — OCP Role A grants (secret stripped)
 - `p` — `base64url(JSON.stringify(payments[]))` — OCP Role B payment tokens
 - `s` — `base64url(publisherId + "\t" + streamName)` — optional Streams check
 
-**URL size limit:** The full URL must stay within ~2000 characters. If the
-parameter set would exceed this, the client splits into multiple sub-range
-requests and reassembles the chunk arrays in order. A range of 3–5 chunks
-with a single grant typically fits within this limit.
+**URL size limit:** The full URL must stay within ~2000 characters. For large grant
+sets, split into multiple requests at different link paths and reassemble.
 
 ```
-// 10-chunk range split into two requests:
-GET /Safe/subtree/bafy.../0/5?g=<b64url>&p=<b64url>
-GET /Safe/subtree/bafy.../5/10?g=<b64url>&p=<b64url>
+// Data track subtree nodes fetched separately:
+GET /Safecloud/cloud/subtree/bafy...?link=track/data/0&g=<b64url>&p=<b64url>
+GET /Safecloud/cloud/subtree/bafy...?link=track/data/1&g=<b64url>&p=<b64url>
+// Index track:
+GET /Safecloud/cloud/subtree/bafy...?link=track/index&g=<b64url>&p=<b64url>
 ```
 
-`PUT /Safe/subtree` and all socket.io messages use JSON bodies; no size limit
+`PUT /Safecloud/cloud/subtree` and all socket.io messages use JSON bodies; no size limit
+applies to them.
+
+`PUT /Safecloud/cloud/subtree` and all socket.io messages use JSON bodies; no size limit
 applies to them.
 
 ---
 
 ### Error response envelope
 
-Every non-2xx response from any SafeCloud HTTP endpoint uses this envelope:
+Every non-2xx response from any Safecloud HTTP endpoint uses this envelope:
 
 ```json
 {
@@ -742,7 +767,7 @@ ack({ error: { code: 'NotAuthorized', message: '...', details: { unauthorized: [
 
 ### x402 compliance
 
-When a `GET /Safe/chunk/{cid}` request arrives **without a `PAYMENT-SIGNATURE`
+When a `GET /Safecloud/cloud/chunk/{cid}` request arrives **without a `PAYMENT-SIGNATURE`
 header**, the Jet returns a fully x402 v2-compatible response so that external
 clients (AI agents, CDN middleware, curl) can discover payment requirements and
 retry automatically:
@@ -759,12 +784,12 @@ Content-Type: application/json
   "scheme":             "exact",
   "network":            "eip155:56",
   "maxAmountRequired":  "1000",
-  "resource":           "https://jet.example.com/Safe/chunk/bafy...",
-  "description":        "SafeCloud chunk retrieval",
+  "resource":           "https://jet.example.com/Safecloud/cloud/chunk/bafy...",
+  "description":        "Safecloud chunk retrieval",
   "mimeType":           "application/octet-stream",
   "payTo":              "0xJetWalletAddress",
   "token":              "0xUSDCAddress",
-  "extra":              { "name": "SafeCloud", "version": "1" }
+  "extra":              { "name": "Safecloud", "version": "1" }
 }
 ```
 
@@ -787,12 +812,12 @@ PAYMENT-RESPONSE: <base64(SettlementResponse)>
 Cache-Control: public, max-age=31536000, immutable
 ```
 
-**x402 applies to `GET /Safe/chunk/{cid}` only.** This is the raw single-chunk
+**x402 applies to `GET /Safecloud/cloud/chunk/{cid}` only.** This is the raw single-chunk
 endpoint for external clients who pay for ciphertext access and obtain
 decryption keys through a separate channel (e.g. OCP Role A grant from the
 content owner). No OCP Role A grant is required on this path.
 
-**`GET /Safe/subtree` is NOT an x402 endpoint.** It requires OCP Role A grants.
+**`GET /Safecloud/cloud/subtree` is NOT an x402 endpoint.** It requires OCP Role A grants.
 If no grants are present, the Jet returns 403 (not 402 with x402 headers),
 because the client needs to obtain a grant from the content owner — payment
 alone is not sufficient to access a specific named subtree.
@@ -824,29 +849,150 @@ locally held subtreeKey (from their respective OCP Role A grants) differs.
 
 ---
 
+
+---
+
+## File tracks — data track and index track
+
+Every Safecloud object has two independently encrypted and independently
+grantable tracks. Tracks are top-level branches of the N-ary Merkle tree:
+
+```
+rootCid
+├── track/data    ← N-ary subtree of encrypted content chunks (N=2 default)
+│     ├── node/0  → node/0/0, node/0/1, ... → leaf CIDs
+│     └── node/1  → ...
+└── track/index   ← single encrypted index chunk (initSegment, chapters, codec)
+```
+
+**Data track** contains the file content itself, split into AES-256-GCM encrypted
+chunks arranged in an N-ary Merkle tree (default N=2). For video, each chunk
+contains one GOP aligned to a keyframe boundary, so any subtree node can be
+decoded independently. Keys are derived by chaining `Q.Crypto.delegate` down the
+link path: `encryptionRoot → track/data → node/0 → node/0/1 → ... → subtreeKey`.
+Leaf chunk keys use `Q.Data.derive(subtreeKey, "safecloud.chunk.key.i")`.
+
+**Index track** is a single encrypted chunk (found by navigating
+`Merkle.getNode(rootCid, ["track","index"])` — no manifest field needed) whose
+plaintext is a JSON object containing type-specific metadata. For video:
+
+```json
+{
+  "initSegment":   "<base64 fMP4 ftyp+moov bytes>",
+  "totalDuration": 852.852,
+  "codec":         "avc1.64001f",
+  "audioCodec":    "mp4a.40.2",
+  "width":         1920,
+  "height":        1080,
+  "frameRate":     "30000/1001",
+  "chapters": [
+    { "pts": 0.000,  "dts": 0.000,  "label": null },
+    { "pts": 6.006,  "dts": 6.006,  "label": null },
+    ...
+  ]
+}
+```
+
+For other file types the index carries whatever makes sense (document outline,
+track listing, dataset schema, etc.). The index is always small enough to fit in
+a single chunk — a few KB even for a long video with many chapters.
+
+**Why separate tracks:**
+
+1. **Privacy.** Codec, resolution, duration, and chapter timestamps are
+   sensitive metadata. Storing them encrypted prevents passive observers from
+   learning anything about the content — not even how long a video is — without
+   a valid grant.
+
+2. **Teaser / preview access.** Granting only the index track lets a recipient
+   see the table of contents, scrub a seek bar, and inspect metadata — without
+   being able to decrypt any actual video frames or file content. Combined with
+   thumbnail images in the index, this enables rich previews with zero plaintext
+   leakage from the data track.
+
+3. **Independent cacheability.** The index track CID is stable and small. CDNs
+   and Drops can cache it independently of the data chunks.
+
+4. **Extensibility.** Future forks can be added without changing the core
+   protocol: `safecloud.track.thumbs` for thumbnail images,
+   `safecloud.track.preview` for a low-resolution rendition,
+   `safecloud.track.audit` for provenance / access log.
+
+**Key derivation for tracks:**
+
+Both tracks are derived from the same `encryptionRoot`, ensuring a single
+`rootKey` gives access to everything. But they use different HKDF labels, so they can be granted independently.
+The Merkle tree path mirrors the HKDF label — "Merkle trees going up,
+key derivation trees going down" (§Principles):
+
+```
+encryptionRoot
+├── Q.Crypto.delegate("safecloud.track.data.{S}.{E}", context)  → data subtreeKey
+└── Q.Crypto.delegate("safecloud.track.index",        context)  → index key
+```
+
+**Manifest fields for tracks:**
+
+```json
+{
+  "v":                       1,
+  "rootCid":                 "bafy...",
+  "treeN":                   2,
+  "treeDepth":               5,
+  "chunkCount":              143,
+  "tracks":                  ["data","index"],
+  "encryptionRootPublicKey": "...",
+  "accessRootPublicKey":     "...",
+  "bindingProof":            {...}
+}
+```
+
+No `indexCid` field — the index track CID is found by navigating
+`Merkle.getNode(rootCid, ["track","index"])`. The rootCid commits to it.
+`treeN` and `treeDepth` describe the N-ary data track structure.
+`chunkCount` is the total leaf count in the data track.
+No codec, resolution, duration, or timestamp information appears in the manifest.
+
+**Grant independence examples:**
+
+```
+Full access:
+  grant("safecloud.track.data.0.143", rootCid)   → decrypt all video frames
+  grant("safecloud.track.index",      rootCid)   → decrypt index (chapters, timestamps)
+
+Preview / teaser:
+  grant("safecloud.track.index", rootCid) only   → see chapters + seek bar, no video
+
+Clip access:
+  grant("safecloud.track.data.24.48", rootCid)   → only minutes 2-4
+  grant("safecloud.track.index",      rootCid)   → full chapter list (shows what they're missing)
+```
+
+---
+
 ## Edge 1 — Cloud ↔ Jets (HTTP + socket.io)
 
 ### Topology
 
 ```
-  Browser (Q.Safe.Cloud)
+  Browser (Q.Safecloud.Client)
       │
-      ├── socket.io /Safe  (persistent, primary for browser clients)
+      ├── socket.io /Safecloud/  (persistent, primary for browser clients)
       └── HTTPS             (batch GET cacheable by CDN; PUT for upload)
       │
-  Node.js Jet server (classes/Safe/Jets.js)
+  Node.js Jet server (classes/Safecloud/Jets.js)
 ```
 
-Cloud connects to the Jet on its configured URL (`Q.Safe.Jets.url` or
-`Q.nodeUrl()`). The socket.io namespace is `/Safe`. Both transports share
+Cloud connects to the Jet on its configured URL (`Q.Safecloud.Jets.url` or
+`Q.nodeUrl()`). The socket.io namespace is `/Safecloud/`. Both transports share
 identical verification and response logic.
 
 ---
 
-### PUT /Safe/subtree — upload chunks
+### PUT /Safecloud/cloud/subtree — upload chunks
 
 ```
-PUT /Safe/subtree
+PUT /Safecloud/cloud/subtree
 Content-Type: application/json
 
 {
@@ -860,14 +1006,17 @@ Content-Type: application/json
       "tags":       []
     }
   ],
-  "start":       0,
-  "end":         10,
+  "link":        ["track", "data"],
   "grants":      [ <OCP Role A grant objects, secret stripped> ],
   "payments":    [ <OCP Role B payment token objects> ],
   "publisherId": "abc123",
-  "streamName":  "Safe/files/xyz"
+  "streamName":  "Safecloud/files/xyz"
 }
 ```
+
+`link` identifies which subtree these chunks belong to, e.g. `["track","data"]` for the full data
+track or `["track","index"]` for the index track. The Jet uses this to key the CID index and route
+Merkle proofs correctly.
 
 `publisherId` + `streamName` are optional. When present, the Jet checks the
 caller's Streams `WRITE_LEVEL.post` (20) before proceeding — uploading chunks
@@ -882,13 +1031,14 @@ requires write access, not read access.
 
 ---
 
-### GET /Safe/subtree/{rootCid}/{start}/{end} — fetch chunk range
+### GET /Safecloud/cloud/subtree/{rootCid} — fetch subtree by link path
 
 ```
-GET /Safe/subtree/bafy.../0/10?g=<grants_b64url>&p=<payments_b64url>&s=<streamId_b64url>
+GET /Safecloud/cloud/subtree/bafy...?link=track/data/0/1&g=<grants_b64url>&p=<payments_b64url>&s=<streamId_b64url>
 ```
 
-Parameters are `base64url(JSON.stringify(...))`. See Batch HTTP format above.
+- `link` — slash-separated link path, e.g. `track/data` (full data track) or `track/data/0/1` (specific subtree node). Defaults to `track/data` if omitted.
+- `g`, `p`, `s` — `base64url(JSON.stringify(...))`. See Batch HTTP format above.
 
 **Success (200):**
 ```json
@@ -914,13 +1064,13 @@ Cloud verifies each proof before decrypting.
 
 ---
 
-### GET /Safe/chunk/{cid} — single-chunk x402 fetch
+### GET /Safecloud/cloud/chunk/{cid} — single-chunk x402 fetch
 
 For external clients only (wget, AI agents, CDN origin pulls). Supports HTTP
 `Range:` header for Safari `<video>` and CDN range requests.
 
 ```
-GET /Safe/chunk/bafy...
+GET /Safecloud/cloud/chunk/bafy...
 Range: bytes=0-16383     (optional)
 PAYMENT-SIGNATURE: <base64(JSON OCP Role B envelope)>   (required; else 402)
 ```
@@ -939,7 +1089,7 @@ Content-Range: bytes 0-16383/262160    (if Range: was sent)
 
 ### socket.io equivalents
 
-The socket.io events `Safe/subtree/put` and `Safe/subtree/get` carry the same
+The socket.io events `Safecloud/subtree/put` and `Safecloud/subtree/get` carry the same
 payload shapes as the HTTP endpoints and return results via ack callbacks.
 See Jets.md Part 3 for the full socket event list. The key differences:
 
@@ -1023,13 +1173,13 @@ availability event subscriptions, not data transfer.
 
 ---
 
-### Relay request: GET /Safe/relay/{rootCid}/{start}/{end}
+### Relay request: GET /Safecloud/cloud/relay/{rootCid}
 
 When Jet A cannot find local Drops for a rootCid range, it queries peer Jets
 via `Jets.Router.relayGet()`, which sends:
 
 ```
-GET /Safe/relay/bafy.../0/10?g=<grants_b64url>&p=<payments_b64url>
+GET /Safecloud/cloud/relay/bafy...?link=track/data/0/1&g=<grants_b64url>&p=<payments_b64url>
 Authorization: Bearer <jet-to-jet-auth-token>
 ```
 
@@ -1039,7 +1189,7 @@ derivation (HMAC input, TTL, rotation) is specified in `Jets.Router.md`.
 The relay endpoint is not accessible without a valid token — it is not part
 of the public API.
 
-**Success (200):** Same response shape as `GET /Safe/subtree` above.
+**Success (200):** Same response shape as `GET /Safecloud/cloud/subtree` above.
 
 **If the peer Jet also has no coverage (404):** Jet A tries the next peer in
 the routing table. After all peers are exhausted, the chunk slot is returned
@@ -1099,7 +1249,7 @@ immediate request cost, not the ceiling. This pre-screen is not authoritative �
 on-chain execution (handled by the Assets plugin) performs the definitive check.
 
 **On-chain execution is NOT performed by Jets.** Jets forward accumulated
-payment tokens to PHP via `POST /Q/node { 'Q/method': 'Safe/payment/collect' }`,
+payment tokens to PHP via `POST /Q/node { 'Q/method': 'Safecloud/payment/collect' }`,
 and PHP delegates to the Assets plugin which calls
 `OpenClaiming.paymentsExecute()` at `0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999`.
 
@@ -1110,14 +1260,14 @@ and PHP delegates to the Assets plugin which calls
 ### Topology
 
 ```
-  Drop (browser tab, Q.Safe.Drops)
+  Drop (browser tab, Q.Safecloud.Drops)
       │
-      └── socket.io /Safe  (Drop connects outbound to Jet)
+      └── socket.io /Safecloud/  (Drop connects outbound to Jet)
       │
-  Jet (Node.js, classes/Safe/Jets.js)
+  Jet (Node.js, classes/Safecloud/Jets.js)
 ```
 
-Drops connect outbound to the Jet using the standard `Q.Socket.connect('/Safe',
+Drops connect outbound to the Jet using the standard `Q.Socket.connect('/Safecloud/',
 url)` mechanism. The Jet does NOT connect to Drops — it pushes requests to
 already-connected Drop sockets. Drops may be anonymous (`userId === null`).
 
@@ -1132,9 +1282,9 @@ When a Drop connects to a Jet, it performs a structured handshake that
 establishes its identity, inventory, and stake before the Jet will route any
 requests to it.
 
-**Canonical identity:** Every participant in the SafeCloud network — both Jets
+**Canonical identity:** Every participant in the Safecloud network — both Jets
 and Drops — has a canonical EVM address on BNB Chain (BSC, `chainId = eip155:56`).
-This address is the basis for stake accounting, SafeBux earnings, and Proof of
+This address is the basis for stake accounting, Safebux earnings, and Proof of
 Corruption slashing. A Drop derives its EVM address from its wallet and
 registers it during the handshake via the session delegation claim.
 
@@ -1153,28 +1303,28 @@ signature.
 ```
 Drop                              Jet
  │                                 │
- │── Safe/drop/register ──────────▶│  (EVM address, P-256 key, storage offer)
+ │── Safecloud/drop/register ──────────▶│  (EVM address, P-256 key, storage offer)
  │◀── ack { cold, minStake } ──────│  (Jet tells Drop if it needs to sync inventory)
  │                                 │
- │── Safe/drop/announce ──────────▶│  (Bloom filter if cold, or Prolly root if warm)
+ │── Safecloud/drop/announce ──────────▶│  (Bloom filter if cold, or Prolly root if warm)
  │◀── ack ────────────────────────│
  │                                 │
  │  [Jet may issue spot challenges]│
- │◀── Safe/drop/challenge ─────────│  (verify Drop actually has claimed chunks)
+ │◀── Safecloud/drop/challenge ─────────│  (verify Drop actually has claimed chunks)
  │── ack { proof } ───────────────▶│
  │                                 │
  │  [Jet now routes requests here] │
 ```
 
 After the handshake, the Jet:
-1. Records the Drop's EVM address and current SafeBux stake (queried from chain)
+1. Records the Drop's EVM address and current Safebux stake (queried from chain)
 2. Builds or reconciles its Prolly tree view of the Drop's inventory
-3. Begins issuing `Safe/drop/get` and `Safe/drop/put` requests to this Drop
+3. Begins issuing `Safecloud/drop/get` and `Safecloud/drop/put` requests to this Drop
 4. Constructs OCP Role B payment tokens addressed to `[dropEVMAddress]` when
    forwarding retrieval requests
 
 **Stake check at registration:** The Jet queries the BSC chain for the Drop's
-SafeBux balance (`safebux.balanceOf(dropEVMAddress)`). Drops with zero or
+Safebux balance (`safebux.balanceOf(dropEVMAddress)`). Drops with zero or
 negligible stake receive lower routing priority. A minimum stake threshold is
 configurable: `Q.Config.get(['Safe', 'drop', 'minStakeSafebux'], '0')`. Drops
 below threshold may still connect and accumulate stake before being routed to
@@ -1186,7 +1336,7 @@ at full capacity.
 
 **Register (Drop → Jet):**
 ```js
-// event: 'Safe/drop/register'
+// event: 'Safecloud/drop/register'
 {
   "dropId":     "drop-<Q.clientId()>",   // sessionStorage-stable
   "clientId":   "<Q.clientId()>",
@@ -1209,14 +1359,14 @@ at full capacity.
   "prollyRoot": "<hex>|null",
   "bloomFilter": "<base64>|null"
 }
-// ack: { "dropId": "drop-...", "cold": true|false, "minStake": "<SafeBux wei>" }
+// ack: { "dropId": "drop-...", "cold": true|false, "minStake": "<Safebux wei>" }
 ```
 
 **Announce (Drop → Jet):** Sent after every inventory change — new chunks stored,
 chunks evicted, or IndexedDB wiped. Always includes a signed Prolly diff.
 
 ```js
-// event: 'Safe/drop/announce'
+// event: 'Safecloud/drop/announce'
 {
   "dropId":      "...",
   "storage":     { "GB": 10 },
@@ -1274,7 +1424,7 @@ subsequent challenge failure will contradict the claimed root).
 3. Updates its local Prolly store and routing table accordingly
 4. Stores the signed announce entry for potential CoC use
 
-**Protocol requirement:** A Drop MUST send an updated `Safe/drop/announce` with
+**Protocol requirement:** A Drop MUST send an updated `Safecloud/drop/announce` with
 its new Prolly root *before* evicting any chunks. A Drop that evicts chunks
 without first re-announcing may have its old Prolly root used as evidence in a
 valid CoC (the old root implies a CID the Drop can no longer prove it holds).
@@ -1282,16 +1432,16 @@ Honest Drops running the reference implementation satisfy this automatically.
 
 **Disconnect (Drop → Jet):** Intentional shutdown.
 ```js
-// event: 'Safe/drop/disconnect'
+// event: 'Safecloud/drop/disconnect'
 { "dropId": "..." }
 // ack: null
 ```
 Clears `dropId` from sessionStorage. Unexpected disconnects are handled by
-the Jet's grace-period sweep (default 60s TTL before eviction from `Safe.drops`).
+the Jet's grace-period sweep (default 60s TTL before eviction from `Q.Safecloud.Drops`).
 
 **Claim payments (Drop → Jet):**
 ```js
-// event: 'Safe/drop/claimPayments'
+// event: 'Safecloud/drop/claimPayments'
 {
   "dropId":        "...",
   "paymentTokens": [ <OCP Role B tokens signed by Jet> ],
@@ -1309,7 +1459,7 @@ this to PHP for on-chain execution via the Assets plugin.
 ### Jet → Drop: chunk storage push
 
 ```js
-// event: 'Safe/drop/put'  (server pushes to Drop socket)
+// event: 'Safecloud/drop/put'  (server pushes to Drop socket)
 {
   "chunks": [
     { "cid": "bafy...", "iv": "<b64 12>", "ciphertext": "<b64>",
@@ -1323,7 +1473,7 @@ this to PHP for on-chain execution via the Assets plugin.
 The Drop stores chunks in IndexedDB keyed by CID. On failure (quota exceeded),
 the Drop performs LRU eviction, appends an eviction announce entry to its log,
 and retries. After successfully storing all chunks, the Drop sends a
-`Safe/drop/announce` event with the updated `prollyRoot` and `diff` containing
+`Safecloud/drop/announce` event with the updated `prollyRoot` and `diff` containing
 the newly added CIDs. The Jet does not consider a chunk durably stored until it
 receives the corresponding signed announce.
 
@@ -1332,7 +1482,7 @@ receives the corresponding signed announce.
 ### Jet → Drop: chunk retrieval pull
 
 ```js
-// event: 'Safe/drop/get'  (server pushes to Drop socket)
+// event: 'Safecloud/drop/get'  (server pushes to Drop socket)
 {
   "cids":         ["bafy...", "bafy..."],
   "options":      {},
@@ -1343,14 +1493,14 @@ receives the corresponding signed announce.
 
 The `paymentToken` is constructed and signed by the **Jet** (not Cloud) using:
 - `stm.payer = jetEVMAddress` — the Jet is paying the Drop from its earned income
-- `stm.token = SAFEBUX_ADDRESS` — denominated in SafeBux on BSC
+- `stm.token = SAFEBUX_ADDRESS` — denominated in Safebux on BSC
 - `stm.recipientsHash = keccak256(abi.encode([dropEVMAddress]))` — Drop's address
   as registered during handshake
 - `stm.line = 0` — default line, always open
 
 Before serving, the Drop independently verifies the payment token's payer
 (Jet) balance via ethers.js against the BSC chain (same 1-hour cache). If the
-Jet's SafeBux balance is insufficient, the Drop may return `null` or choose to
+Jet's Safebux balance is insufficient, the Drop may return `null` or choose to
 serve and flag the Jet as a low-trust router.
 
 ---
@@ -1363,7 +1513,7 @@ root using a Poisson-scheduled timer (unpredictable cadence — Drops cannot
 anticipate challenges to temporarily re-fetch chunks).
 
 ```js
-// event: 'Safe/drop/challenge'
+// event: 'Safecloud/drop/challenge'
 { "cid": "bafy...", "nonce": "<hex random 32 bytes>" }
 
 // ack — signed OCP claim (the signature is the CoC evidence if forged):
@@ -1410,14 +1560,14 @@ key. The contradiction is decidable from the evidence alone.
 
 On challenge failure (timeout, missing proof, or invalid proof): the Jet stores
 the failed challenge response alongside the most recent signed announce, forming
-a candidate CoC, and notifies PHP via `POST /Q/node { 'Q/method': 'Safe/drop/slash' }`.
+a candidate CoC, and notifies PHP via `POST /Q/node { 'Q/method': 'Safecloud/drop/slash' }`.
 
 ---
 
 ### Jet → Drop: slash notification
 
 ```js
-// event: 'Safe/drop/slashed'   (no ack)
+// event: 'Safecloud/drop/slashed'   (no ack)
 { "reason": "Challenge failed: proof invalid" }
 ```
 
@@ -1437,7 +1587,7 @@ offering storage).
       ├── ethers.js (browser)
       └── HTTPS JSON-RPC
       │
-  EVM Provider  (same config as Jet: Safe/evm/provider/<chainId>)
+  EVM Provider  (same config as Jet: Safecloud/evm/provider/<chainId>)
       │
   OpenClaiming contract  at 0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999
 ```
@@ -1450,12 +1600,12 @@ same as Jets) and payment claim execution (write, triggered by Drop).
 
 ### Balance verification
 
-Drops verify the Jet's SafeBux balance on BSC before serving chunks in response
-to `Safe/drop/get`. The payment token's `stm.payer` is the Jet's EVM address.
+Drops verify the Jet's Safebux balance on BSC before serving chunks in response
+to `Safecloud/drop/get`. The payment token's `stm.payer` is the Jet's EVM address.
 
 ```js
 // Browser ethers.js (CDN import or bundled):
-// chainId for SafeBux is always BSC: 'eip155:56'
+// chainId for Safebux is always BSC: 'eip155:56'
 const provider = new ethers.JsonRpcProvider(
     Q.Config.get(['Safe', 'evm', 'provider', 'eip155:56'], BSC_RPC_URL)
 );
@@ -1472,7 +1622,7 @@ from BSC.
 ### Payment claim execution
 
 **Accumulation lifecycle:** As the Drop serves chunks, it accumulates OCP Role B
-payment tokens from the Jet (one token per `Safe/drop/get` session). Tokens are
+payment tokens from the Jet (one token per `Safecloud/drop/get` session). Tokens are
 stored in IndexedDB. When the accumulated unredeemed value exceeds
 `Q.Config.get(['Safe', 'drop', 'claimThresholdSafebux'], '100000')`, or on user
 request, the Drop initiates a claim.
@@ -1514,41 +1664,41 @@ for (const token of accumulatedTokens) {
 
 **Alternative path (relay via Jet, no gas needed):**
 ```js
-// event: 'Safe/drop/claimPayments'
+// event: 'Safecloud/drop/claimPayments'
 {
   "dropId":        "drop-...",
   "paymentTokens": accumulatedTokens,   // OCP Role B envelopes signed by Jet
   "signature":     "<base64 OCP claim signed with Drop secp256k1 keypair>"
 }
 ```
-The Jet forwards to PHP (`POST /Q/node { 'Q/method': 'Safe/payment/collect' }`),
+The Jet forwards to PHP (`POST /Q/node { 'Q/method': 'Safecloud/payment/collect' }`),
 which calls `paymentsExecute(payment, [dropEVMAddress], sig, dropEVMAddress, amount, address(0))`
 via the Assets plugin. This path requires the Jet/PHP to cover BSC gas.
 
 The Drop maintains two keypairs in IndexedDB:
 - **P-256 (ES256):** For OCP Role A grant verification and proof-of-storage
-  challenge signing. `publicKey` (SPKI) sent in `Safe/drop/register`.
+  challenge signing. `publicKey` (SPKI) sent in `Safecloud/drop/register`.
 - **secp256k1:** For on-chain transactions. EVM address derived as
   `last 20 bytes of keccak256(pubkey[1:])`. Sent as `evmAddress` in
-  `Safe/drop/register`. This IS the Drop's canonical BSC address and is known
+  `Safecloud/drop/register`. This IS the Drop's canonical BSC address and is known
   to the Jet from the start — there is no reveal step.
 
 ---
 
-## SafeBux economics
+## Safebux economics
 
 ### Zero-sum payment flows
 
-SafeCloud uses a two-layer zero-sum economy denominated in SafeBux (an ERC-20
+Safecloud uses a two-layer zero-sum economy denominated in Safebux (an ERC-20
 token on BNB Chain / BSC, `chainId = eip155:56`):
 
 ```
   Cloud client
-      │  pays Jet in SafeBux
+      │  pays Jet in Safebux
       │  (OCP Role B, payer=cloudEVMAddress, recipients=[jetEVMAddress])
       ▼
   Jet
-      │  pays Drop in SafeBux
+      │  pays Drop in Safebux
       │  (OCP Role B, payer=jetEVMAddress, recipients=[dropEVMAddress])
       ▼
   Drop
@@ -1559,42 +1709,42 @@ serving. The Jet's income minus its Drop payments is its operating margin.
 Neither Cloud nor Drops are aware of the other's existence in the payment
 layer — Cloud only knows Jets, Drops only know Jets.
 
-Jets must pre-approve the OpenClaiming contract to spend SafeBux on their
+Jets must pre-approve the OpenClaiming contract to spend Safebux on their
 behalf (`SAFEBUX.approve(OC_ADDRESS, allowance)`). No prior `lineOpen()` call
 is required for the default line (`line = 0`) — it is always open by protocol.
 Jets that want budget isolation (e.g. separate accounting per downstream Jet or
 Drop pool) may open explicit lines (`line >= 1`) via `lineOpen(jetEVMAddress,
-lineId, maxWei)`. Jets that run out of SafeBux balance or allowance cannot pay
+lineId, maxWei)`. Jets that run out of Safebux balance or allowance cannot pay
 Drops and will lose Drop connectivity.
 
 ### Stake and graduated lockup
 
-Claimed SafeBux on-chain represents the actor's **stake** in the network. Stake
+Claimed Safebux on-chain represents the actor's **stake** in the network. Stake
 is the basis for routing priority (Jets prefer high-stake Drops) and is the
 asset at risk in a Proof of Corruption slash.
 
-**Graduated lockup:** SafeBux is subject to a percentage-based vesting schedule
+**Graduated lockup:** Safebux is subject to a percentage-based vesting schedule
 after claiming. For example, at 10%/day release rate:
 - Day 0: 10% of claimed balance is immediately spendable
 - Day 1: another 10% unlocks
 - …
 - Day 9: last tranche unlocks; full balance accessible
 
-This prevents earn-and-run attacks: a malicious actor who earns SafeBux and
+This prevents earn-and-run attacks: a malicious actor who earns Safebux and
 then tries to transfer it all cannot fully drain their stake for approximately
 the lockup period. The remaining locked balance is always slashable.
 
-Transferring SafeBux to another address does not reset the lockup — locked
+Transferring Safebux to another address does not reset the lockup — locked
 tokens cannot be transferred. Only unlocked tokens are liquid. Therefore
 long-standing participants always retain a residual locked stake proportional
 to their recent earnings.
 
 The exact lockup parameters (percentage per period, period length) are encoded
-in the SafeBux token contract on BSC and apply to all participants equally.
+in the Safebux token contract on BSC and apply to all participants equally.
 
 ### Routing priority and stake
 
-Jets use SafeBux stake as one signal for Drop selection:
+Jets use Safebux stake as one signal for Drop selection:
 
 ```js
 // Jets.Router weight for a Drop:
@@ -1612,7 +1762,7 @@ single high-stake Drop earns more.
 
 A Proof of Corruption (CoC) is a signed OCP claim asserting that a specific
 network participant made two or more self-contradictory signed statements.
-The CoC is the primary accountability mechanism in the SafeCloud network.
+The CoC is the primary accountability mechanism in the Safecloud network.
 
 ### CoC wire format
 
@@ -1658,7 +1808,7 @@ reading the evidence array.
 Examples of valid contradictions:
 - Two challenge responses for the same `(cid, nonce)` pair that produce
   different `proof` values
-- A Drop's `Safe/drop/announce` claiming it has a certain Prolly root, and a
+- A Drop's `Safecloud/drop/announce` claiming it has a certain Prolly root, and a
   subsequent challenge response proving it lacks a chunk that root implies
 
 Examples of invalid CoCs (would result in claimant being penalised):
@@ -1676,9 +1826,9 @@ classify it as frivolous and the claimant loses stake.
 ### Gossip and slash mechanics
 
 **Gossip:** CoCs are broadcast between Jets over hyperswarm Noise connections
-(not over the `/Safe` socket.io namespace). Each Jet maintains a local CoC
+(not over the `/Safecloud/` socket.io namespace). Each Jet maintains a local CoC
 store and forwards new CoCs to peer Jets. A CoC is accepted for gossip only if:
-1. The claimant's SafeBux stake is above the minimum threshold
+1. The claimant's Safebux stake is above the minimum threshold
    (`Q.Config.get(['Safe', 'coc', 'minClaimantStake'], '1000')`)
 2. The evidence claims are all validly signed by the stated subject key
 3. The CoC itself is validly signed by the claimant
@@ -1687,7 +1837,7 @@ Jets that receive a CoC run the decidability check locally. If it passes, they
 add the subject's OCP key to their local "corrupt actors" list and deprioritize
 or disconnect that actor.
 
-**Slash on claim:** When a corrupt actor attempts to claim SafeBux on-chain
+**Slash on claim:** When a corrupt actor attempts to claim Safebux on-chain
 by calling `paymentsExecute()`, the transaction is observable by all. If any
 honest participant has a valid CoC for that actor's key, they may call the
 on-chain slash function with the CoC evidence before the corrupt actor can
@@ -1704,13 +1854,13 @@ stake as a spam-prevention deposit. If the CoC is deemed valid by the network
 (honest nodes converge on the same verdict), the deposit is returned and the
 subject is slashed. If the CoC is deemed frivolous (honest nodes running the
 same code reject it), the claimant loses their deposit. The deposit size is
-`Q.Config.get(['Safe', 'coc', 'depositStake'], '100')` SafeBux.
+`Q.Config.get(['Safe', 'coc', 'depositStake'], '100')` Safebux.
 
 ---
 
 ## Attack vectors
 
-This section catalogs known attack vectors in the SafeCloud protocol, the harm
+This section catalogs known attack vectors in the Safecloud protocol, the harm
 each can cause, and the protocol properties that limit or prevent them.
 
 ---
@@ -1741,7 +1891,7 @@ Drop2, relaying traffic between them in both directions.
 
 **What Mallory cannot do:**
 
-- **Impersonate Drop2 to Jet1.** MalloryDrop's `Safe/drop/register` must
+- **Impersonate Drop2 to Jet1.** MalloryDrop's `Safecloud/drop/register` must
   include a delegation claim signed by its own wallet private key. It cannot
   present `evmAddress = Drop2` without Drop2's wallet key — the EIP-712
   wallet signature in the delegation claim would fail verification.
@@ -1760,7 +1910,7 @@ This is the critical question. We walk through every message MalloryJet can
 send to Drop2 and examine whether honest Drop2 responses could constitute a
 CoC-worthy contradiction.
 
-**Challenge-response (`Safe/drop/challenge`):**
+**Challenge-response (`Safecloud/drop/challenge`):**
 
 MalloryJet sends `{ cid, nonce }`. Drop2 signs `keccak256(cid ‖ nonce)` with
 its P-256 OCP key. The proof is a **deterministic pure function** of the input.
@@ -1777,7 +1927,7 @@ claimed to hold that CID (as long as its Prolly root doesn't imply it).
 
 **Verdict: challenge-response cannot be weaponized against an honest Drop.**
 
-**Chunk push (`Safe/drop/put`) with garbage data:**
+**Chunk push (`Safecloud/drop/put`) with garbage data:**
 
 MalloryJet sends chunks with invalid ciphertext, wrong CIDs, or arbitrary
 garbage. Drop2 stores them honestly and includes them in its Prolly root.
@@ -1795,7 +1945,7 @@ previously held legitimate chunks. Drop2's Prolly root previously announced to
 the network implied those now-evicted CIDs were present. If Drop2 fails a
 subsequent challenge for an evicted CID, the evidence looks like:
 
-1. Drop2 signed `Safe/drop/announce` with Prolly root X (implying CID Y)
+1. Drop2 signed `Safecloud/drop/announce` with Prolly root X (implying CID Y)
 2. Drop2 failed challenge for CID Y
 
 This is a *structurally valid* CoC — an honest node running the protocol would
@@ -1806,7 +1956,7 @@ announced it honestly, and later evicted it under legitimate storage pressure
 induced by Mallory.
 
 **Mitigation (protocol requirement):** A Drop MUST send an updated
-`Safe/drop/announce` with its new Prolly root *before* evicting any chunks.
+`Safecloud/drop/announce` with its new Prolly root *before* evicting any chunks.
 This ensures the signed inventory commitment is always current. CoC validation
 MUST require that the announce and the failed challenge are temporally
 consistent — an announce that predates a storage-flood attack is not valid
@@ -1821,7 +1971,7 @@ If the announce was updated between the two events, the CoC is invalid.
 validation does not require temporal consistency. Both are addressed by the
 announce-before-evict requirement and the decidability rule.**
 
-**False `Safe/drop/announce` ack:**
+**False `Safecloud/drop/announce` ack:**
 
 MalloryJet sends a false ack to Drop2's announce — for example, claiming
 `cold: true` when the Jet has valid Prolly state, to force Drop2 to re-send
@@ -1876,7 +2026,7 @@ decisions.
 
 **Mitigation:** Routing weight is `stakedSafebux × reliabilityScore ×
 availableStorage`. Zero-stake Drops receive near-zero routing weight. To
-capture significant routing share, Mallory must stake real SafeBux across all
+capture significant routing share, Mallory must stake real Safebux across all
 her Drops, which costs her proportionally and provides slashable collateral.
 
 ---
@@ -1884,11 +2034,11 @@ her Drops, which costs her proportionally and provides slashable collateral.
 ### Payment withholding by a malicious Jet
 
 MalloryJet routes retrieval requests to Drop2 but issues payment tokens with
-`stm.max = 0` (zero ceiling) or with a payer address that has zero SafeBux
+`stm.max = 0` (zero ceiling) or with a payer address that has zero Safebux
 balance.
 
 **Drop2's defense:** Before serving, Drop2 independently checks MalloryJet's
-SafeBux balance on BSC. If the balance is insufficient for the request cost,
+Safebux balance on BSC. If the balance is insufficient for the request cost,
 Drop2 returns null or disconnects. Drop2 is never obligated to serve without
 payment — it simply stops serving Mallory's Jet and the routing weight for that
 Jet drops as its reliability score falls.
@@ -1901,7 +2051,7 @@ sign anything that could be used against it.
 
 
 **Safe plugin depends on Streams and Assets:**
-The Jet server (`classes/Safe/Jets.js`) requires the Streams plugin for access
+The Jet server (`classes/Safecloud/Jets.js`) requires the Streams plugin for access
 checks when `publisherId`/`streamName` are present in requests: `WRITE_LEVEL.post`
 (20) for chunk uploads, `READ_LEVEL.content` (23) for chunk downloads. On-chain
 payment execution is delegated to the Assets plugin (`Q.Assets.OpenClaim`) rather
@@ -1921,8 +2071,8 @@ for payment routing, stake accounting, and CoC slashing. Session anonymity
 (the Jet does not know which browser user owns a Drop) is preserved, but the
 Drop's economic identity is fully public within the network.
 
-**SafeBux is on BNB Chain (BSC, eip155:56).** This chain is hardcoded into all
-participants. The SafeBux ERC-20 contract address and the OpenClaiming contract
+**Safebux is on BNB Chain (BSC, eip155:56).** This chain is hardcoded into all
+participants. The Safebux ERC-20 contract address and the OpenClaiming contract
 address (`0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999`) are constants in the
 protocol implementation.
 

@@ -1,0 +1,73 @@
+/* Safecloud/upload Tool
+ * Classes: .Safecloud_upload_tool, .Safecloud_upload_zone, .Safecloud_upload_icon,
+ *   .Safecloud_upload_label, .Safecloud_upload_sub, .Safecloud_upload_input,
+ *   .Safecloud_upload_progress, .Safecloud_upload_progress_fill, .Safecloud_upload_status
+ */
+
+.Safecloud_upload_tool {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-family: 'IBM Plex Mono', 'Courier New', monospace;
+}
+
+.Safecloud_upload_zone {
+    border: 2px dashed rgba(0,255,136,.28);
+    background: rgba(0,255,136,.02);
+    padding: 44px 24px;
+    text-align: center;
+    cursor: pointer;
+    user-select: none;
+    transition: border-color .2s, background .2s;
+}
+.Safecloud_upload_zone:hover  { border-color: rgba(0,255,136,.6); background: rgba(0,255,136,.04); }
+.Safecloud_upload_dragover    { border-color: #00ff88 !important; background: rgba(0,255,136,.07) !important; }
+
+.Safecloud_upload_icon {
+    font-size: 48px;
+    color: #00ff88;
+    text-shadow: 0 0 16px rgba(0,255,136,.4);
+    margin-bottom: 12px;
+    line-height: 1;
+}
+
+.Safecloud_upload_label {
+    font-size: 14px;
+    color: #c8e0c8;
+    margin-bottom: 5px;
+}
+
+.Safecloud_upload_sub {
+    font-size: 10px;
+    color: #5a7a5a;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+}
+
+/* file input is display:none in the template */
+.Safecloud_upload_input { display: none; }
+
+.Safecloud_upload_progress {
+    height: 3px;
+    background: #1e281e;
+    overflow: hidden;
+    border-radius: 0;
+}
+.Safecloud_upload_progress_fill {
+    height: 100%;
+    width: 0%;
+    background: #00ff88;
+    box-shadow: 0 0 6px rgba(0,255,136,.7);
+    transition: width .4s cubic-bezier(.4,0,.2,1);
+}
+
+.Safecloud_upload_status {
+    font-size: 11px;
+    color: #5a7a5a;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    min-height: 18px;
+}
+.Safecloud_upload_status.working { color: #ffaa00; }
+.Safecloud_upload_status.ok      { color: #00ff88; }
+.Safecloud_upload_status.error   { color: #ff3344; }

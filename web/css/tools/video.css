@@ -1,0 +1,38 @@
+/* Safecloud/video Tool
+ * Classes: .Safecloud_video_tool, .Safecloud_video_status,
+ *   .Safecloud_video_wrap, .Safecloud_video_el
+ */
+
+.Safecloud_video_tool {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-family: 'IBM Plex Mono', 'Courier New', monospace;
+}
+
+.Safecloud_video_status {
+    font-size: 11px;
+    color: #5a7a5a;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    min-height: 18px;
+}
+.Safecloud_video_status.working { color: #ffaa00; }
+.Safecloud_video_status.ok      { color: #00ff88; }
+.Safecloud_video_status.error   { color: #ff3344; }
+
+/* Hidden until stream.js sets videoEl.src and .show() is called */
+.Safecloud_video_wrap {
+    display: none;
+    background: #000;
+    border: 1px solid #1e281e;
+    position: relative;
+}
+
+.Safecloud_video_el {
+    width: 100%;
+    display: block;
+    max-height: 60vh;
+    background: #000;
+    outline: none;
+}

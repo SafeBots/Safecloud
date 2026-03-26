@@ -1,0 +1,28 @@
+{
+    "Safecloud": {
+        "requirePayment": false,
+        "jetUrl": null,
+        "drop": {
+            "storageGB": 10,
+            "offlineGraceMs": 60000,
+            "balanceCacheTtlMs": 3600000,
+            "sessionExpDays": 30,
+            "claimThresholdSafebux": "100000",
+            "claimBatchSize": 10,
+            "minStakeSafebux": "0",
+            "minSlashFailures": 3,
+            "slashWindowMs": 3600000
+        },
+        "safebux": {
+            "address": null,
+            "chainId": "eip155:56",
+            "perChunkWei": "0"
+        },
+        "jet": {
+            "address": null
+        },
+        "openclaiming": {
+            "address": null
+        }
+    }
+}

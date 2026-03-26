@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Safecloud Drop</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Barlow+Condensed:wght@300;400;500;700;800&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg:    #0a0c0a; --bg2: #0f120f; --bg3: #141814;
+  --bdr:   #1e281e; --grn: #00ff88; --grn2:#00cc6a;
+  --grn3:  #004422; --amb: #ffaa00; --red: #ff3344;
+  --dim:   #3a4a3a; --mut: #5a7a5a; --txt: #c8e0c8;
+  --mono:  'IBM Plex Mono',monospace; --cond:'Barlow Condensed',sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{background:var(--bg);color:var(--txt);font-family:var(--mono);min-height:100vh;overflow-x:hidden}
+body::before{content:'';position:fixed;inset:0;pointer-events:none;z-index:1000;
+  background:repeating-linear-gradient(0deg,transparent,transparent 2px,rgba(0,0,0,.13) 2px,rgba(0,0,0,.13) 4px)}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:999;
+  background:radial-gradient(ellipse at 50% 0%,rgba(0,255,136,.04) 0%,transparent 70%)}
+
+/* TOPBAR */
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:12px 24px;
+  border-bottom:1px solid var(--bdr);background:var(--bg2);position:sticky;top:0;z-index:100}
+.logo{display:flex;align-items:center;gap:12px}
+.logo-icon{width:28px;height:28px;border:2px solid var(--grn);display:grid;place-items:center;
+  box-shadow:0 0 8px rgba(0,255,136,.4)}
+.logo-icon::before{content:'';width:10px;height:10px;background:var(--grn);
+  box-shadow:0 0 8px var(--grn);animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.6;transform:scale(.8)}}
+.logo-text{font-family:var(--cond);font-weight:800;font-size:18px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--grn);text-shadow:0 0 12px rgba(0,255,136,.5)}
+.logo-sub{font-size:10px;color:var(--mut);letter-spacing:.2em;text-transform:uppercase;font-weight:300}
+.topbar-right{display:flex;align-items:center;gap:20px}
+.status-pill{display:flex;align-items:center;gap:8px;font-size:11px;letter-spacing:.1em;
+  text-transform:uppercase;color:var(--mut)}
+.sdot{width:7px;height:7px;border-radius:50%;background:var(--grn);
+  box-shadow:0 0 6px var(--grn);animation:blink 1.4s ease-in-out infinite}
+.sdot.amber{background:var(--amb);box-shadow:0 0 6px var(--amb)}
+.sdot.off{background:var(--dim);box-shadow:none;animation:none}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.3}}
+.clock{font-size:12px;color:var(--dim);letter-spacing:.05em;font-weight:300}
+
+/* CONNECT SCREEN */
+.connect-screen{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  min-height:80vh;gap:24px;padding:40px}
+.connect-screen.hidden{display:none}
+.connect-logo{font-family:var(--cond);font-size:72px;font-weight:800;letter-spacing:-.02em;
+  color:var(--grn);text-shadow:0 0 40px rgba(0,255,136,.4);text-align:center;line-height:1}
+.connect-sub{font-size:13px;color:var(--mut);letter-spacing:.15em;text-transform:uppercase;
+  text-align:center;margin-top:-8px}
+.connect-desc{max-width:480px;text-align:center;font-size:12px;color:var(--dim);
+  line-height:1.8;letter-spacing:.03em}
+.jet-url-row{display:flex;gap:8px;width:100%;max-width:480px}
+.jet-url-input{flex:1;background:var(--bg2);border:1px solid var(--bdr);color:var(--txt);
+  font-family:var(--mono);font-size:12px;padding:10px 14px;outline:none;
+  transition:border-color .2s}
+.jet-url-input:focus{border-color:var(--grn3)}
+.connect-btn{padding:16px 40px;background:transparent;border:1px solid var(--grn);
+  color:var(--grn);font-family:var(--cond);font-size:18px;font-weight:700;
+  letter-spacing:.2em;text-transform:uppercase;cursor:pointer;width:100%;max-width:480px;
+  position:relative;overflow:hidden;transition:all .2s;
+  box-shadow:0 0 20px rgba(0,255,136,.15)}
+.connect-btn:hover:not(:disabled){background:rgba(0,255,136,.08);letter-spacing:.28em;
+  box-shadow:0 0 30px rgba(0,255,136,.3)}
+.connect-btn:disabled{border-color:var(--dim);color:var(--dim);box-shadow:none;cursor:default}
+.connect-btn::before{content:'';position:absolute;inset:0;
+  background:linear-gradient(90deg,transparent,rgba(0,255,136,.1),transparent);
+  transform:translateX(-100%);transition:transform .6s}
+.connect-btn:hover:not(:disabled)::before{transform:translateX(100%)}
+.connect-status{font-size:11px;color:var(--mut);letter-spacing:.1em;text-transform:uppercase;
+  text-align:center;min-height:20px}
+.connect-status.error{color:var(--red)}
+.connect-status.ok{color:var(--grn)}
+
+/* MAIN LAYOUT */
+.main{display:none;padding:24px;max-width:1400px;margin:0 auto;display:none;gap:20px;flex-direction:column}
+.main.visible{display:flex}
+.sec{font-family:var(--cond);font-size:10px;font-weight:500;letter-spacing:.25em;
+  text-transform:uppercase;color:var(--mut);margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.sec::after{content:'';flex:1;height:1px;background:var(--bdr)}
+
+/* HERO */
+.hero-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+@media(max-width:900px){.hero-row{grid-template-columns:1fr}}
+.hcard{background:var(--bg2);border:1px solid var(--bdr);padding:28px 28px 24px;
+  position:relative;overflow:hidden;transition:border-color .2s}
+.hcard:hover{border-color:var(--grn3)}
+.hcard::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,transparent,var(--grn),transparent);opacity:.6}
+.hcard.amber::before{background:linear-gradient(90deg,transparent,var(--amb),transparent)}
+.hcard.white::before{background:linear-gradient(90deg,transparent,var(--txt),transparent);opacity:.2}
+.hlbl{font-family:var(--cond);font-size:11px;font-weight:500;letter-spacing:.2em;
+  text-transform:uppercase;color:var(--mut);margin-bottom:16px}
+.hval{font-family:var(--cond);font-size:60px;font-weight:800;line-height:1;
+  color:var(--grn);text-shadow:0 0 20px rgba(0,255,136,.35);letter-spacing:-.01em;
+  display:flex;align-items:baseline;gap:8px}
+.hval.amber{color:var(--amb);text-shadow:0 0 20px rgba(255,170,0,.35)}
+.hval.white{color:var(--txt);text-shadow:none}
+.hunit{font-size:18px;font-weight:400;color:var(--mut)}
+.hsub{margin-top:10px;font-size:11px;color:var(--dim)}
+.hrate{color:var(--grn)}
+
+/* CARDS */
+.mid-row{display:grid;grid-template-columns:2fr 1fr;gap:16px}
+.bot-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px}
+@media(max-width:900px){.mid-row,.bot-row{grid-template-columns:1fr}}
+.card{background:var(--bg2);border:1px solid var(--bdr);padding:20px 24px}
+
+/* CHART */
+.chart-wrap{height:140px;margin-top:12px}
+canvas#ec{width:100%!important;height:140px!important}
+
+/* STATS */
+.sl{display:flex;flex-direction:column}
+.sr{display:flex;justify-content:space-between;align-items:center;padding:11px 0;
+  border-bottom:1px solid var(--bdr);font-size:12px}
+.sr:last-child{border-bottom:none}
+.sk{color:var(--mut);letter-spacing:.05em;text-transform:uppercase;font-size:10px;font-weight:500}
+.sv{color:var(--txt);text-align:right}
+.sv.g{color:var(--grn)} .sv.a{color:var(--amb)} .sv.d{color:var(--dim);font-size:10px}
+
+/* LOG */
+.log{margin-top:12px;height:160px;overflow-y:auto;font-size:11px;line-height:1.8;
+  color:var(--dim);scrollbar-width:thin;scrollbar-color:var(--bdr) transparent}
+.ll{display:flex;gap:12px;padding:1px 0;animation:fi .3s ease}
+@keyframes fi{from{opacity:0;transform:translateY(4px)}to{opacity:1}}
+.lts{color:var(--dim);flex-shrink:0}
+.ltag{flex-shrink:0;padding:0 6px;font-size:9px;font-weight:600;letter-spacing:.1em;
+  text-transform:uppercase;border:1px solid}
+.ltag.get{color:var(--amb);border-color:rgba(255,170,0,.3)}
+.ltag.put{color:var(--grn);border-color:rgba(0,255,136,.3)}
+.ltag.ann{color:#44aaff;border-color:rgba(68,170,255,.3)}
+.ltag.reg{color:#cc88ff;border-color:rgba(200,136,255,.3)}
+.ltag.sys{color:var(--dim);border-color:var(--bdr)}
+.ltag.err{color:var(--red);border-color:rgba(255,51,68,.3)}
+.lm{color:var(--txt)} .lm .hl{color:var(--grn)} .lm .hl2{color:var(--amb)}
+
+/* PROGRESS */
+.pw{margin-top:14px;display:flex;flex-direction:column;gap:12px}
+.ph{display:flex;justify-content:space-between;font-size:10px;margin-bottom:6px;
+  color:var(--mut);text-transform:uppercase;letter-spacing:.08em}
+.pp{color:var(--txt)}
+.pb{height:4px;background:var(--bdr);overflow:hidden}
+.pf{height:100%;background:var(--grn);box-shadow:0 0 6px var(--grn);
+  transition:width 1s cubic-bezier(.4,0,.2,1)}
+.pf.a{background:var(--amb);box-shadow:0 0 6px var(--amb)}
+
+/* ID fields */
+.if{font-size:10px;color:var(--mut);margin-bottom:4px;text-transform:uppercase;letter-spacing:.12em}
+.iv{font-size:10px;color:var(--txt);word-break:break-all;line-height:1.5;
+  padding:8px 10px;background:var(--bg3);border:1px solid var(--bdr);margin-bottom:12px}
+.iv.g{color:var(--grn);border-color:rgba(0,255,136,.2);font-size:11px}
+
+/* CLAIM */
+.claim-btn{width:100%;margin-top:14px;padding:12px;background:transparent;
+  border:1px solid var(--grn);color:var(--grn);font-family:var(--cond);font-size:14px;
+  font-weight:700;letter-spacing:.2em;text-transform:uppercase;cursor:pointer;
+  overflow:hidden;transition:all .2s;box-shadow:0 0 12px rgba(0,255,136,.1);position:relative}
+.claim-btn:hover:not(:disabled){background:rgba(0,255,136,.08);letter-spacing:.3em;
+  box-shadow:0 0 20px rgba(0,255,136,.25)}
+.claim-btn:disabled{border-color:var(--dim);color:var(--dim);box-shadow:none;cursor:default}
+.claim-thresh{font-size:10px;color:var(--mut);margin-bottom:8px;text-transform:uppercase;letter-spacing:.1em}
+
+.cursor{display:inline-block;width:7px;height:13px;background:var(--grn);
+  vertical-align:middle;animation:cb 1s step-end infinite;margin-left:3px}
+@keyframes cb{0%,100%{opacity:1}50%{opacity:0}}
+@keyframes tk{0%{opacity:.4}100%{opacity:1}}
+.tked{animation:tk .15s ease}
+
+/* FOOTER */
+.footer{border-top:1px solid var(--bdr);padding:12px 24px;display:flex;justify-content:space-between;
+  align-items:center;font-size:10px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase}
+</style>
+</head>
+<body>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="logo">
+    <div class="logo-icon"></div>
+    <div>
+      <div class="logo-text">Safecloud Drop</div>
+      <div class="logo-sub">Drop Node Dashboard</div>
+    </div>
+  </div>
+  <div class="topbar-right">
+    <div class="status-pill"><div class="sdot off" id="jDot"></div><span id="jStatus">Not connected</span></div>
+    <div class="status-pill"><div class="sdot amber"></div>0.02 SBUX/MB</div>
+    <div class="clock" id="clk">--:--:--</div>
+  </div>
+</div>
+
+<!-- CONNECT SCREEN -->
+<div class="connect-screen" id="connectScreen">
+  <div class="connect-logo">SafeCloud<br>Drop</div>
+  <div class="connect-sub">Node Operator Dashboard</div>
+  <div class="connect-desc">
+    Become a storage node on the Safecloud network.<br>
+    Your browser stores encrypted chunks and earns Safebux tokens.<br>
+    WebAuthn derives your stable EVM identity from hardware — no wallet needed.
+  </div>
+  <div class="jet-url-row">
+    <input class="jet-url-input" id="jetUrlInput" type="text"
+      placeholder="Jet URL (e.g. https://jet.example.com)"
+      value="">
+  </div>
+  <button class="connect-btn" id="connectBtn" onclick="connectDrop()">
+    ⬡ Connect to Safecloud
+  </button>
+  <div class="connect-status" id="connectStatus"></div>
+</div>
+
+<!-- MAIN DASHBOARD (hidden until connected) -->
+<div class="main" id="mainDash">
+
+  <div>
+    <div class="sec">Live Performance</div>
+    <div class="hero-row">
+      <div class="hcard">
+        <div class="hlbl">◈ Data Served</div>
+        <div class="hval"><span id="servedMB">0.000</span><span class="hunit">MB</span></div>
+        <div class="hsub"><span id="servedChunks">0</span> chunks &nbsp;·&nbsp;
+          <span class="hrate" id="servedRate">0.000 MB/hr</span></div>
+      </div>
+      <div class="hcard amber">
+        <div class="hlbl">◆ Safebux Earned</div>
+        <div class="hval amber"><span id="sbuxTotal">0.000000</span><span class="hunit">SBUX</span></div>
+        <div class="hsub">@ 0.02 SBUX/MB &nbsp;·&nbsp;
+          <span id="sbuxClaimed" style="color:var(--dim)">0.000000 claimed</span></div>
+      </div>
+      <div class="hcard white">
+        <div class="hlbl">◉ Data Stored</div>
+        <div class="hval white"><span id="storedMB">0.000</span><span class="hunit">MB</span></div>
+        <div class="hsub"><span id="storedChunks">0</span> chunks in store</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mid-row">
+    <div class="card">
+      <div class="sec">Earnings Rate (real-time)</div>
+      <div class="chart-wrap"><canvas id="ec"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="sec">Node Identity</div>
+      <div class="if">EVM Address</div>
+      <div class="iv g" id="evmAddr">–</div>
+      <div class="if">Drop ID</div>
+      <div class="iv" id="dropId">–</div>
+      <div class="if">Prolly Root</div>
+      <div class="iv d" id="prollyRoot" style="color:var(--dim);font-size:10px">null</div>
+    </div>
+  </div>
+
+  <div class="bot-row">
+    <div class="card">
+      <div class="sec">Storage</div>
+      <div class="pw">
+        <div>
+          <div class="ph"><span>Configured Cap (10 GB)</span><span class="pp"><span id="capPct">0.00</span>%</span></div>
+          <div class="pb"><div class="pf" id="capFill" style="width:0%"></div></div>
+        </div>
+        <div>
+          <div class="ph"><span>Browser Quota Used</span><span class="pp"><span id="qPct">0.0</span>%</span></div>
+          <div class="pb"><div class="pf a" id="qFill" style="width:0%"></div></div>
+        </div>
+      </div>
+      <div class="sl" style="margin-top:16px">
+        <div class="sr"><span class="sk">Stored (IDB)</span><span class="sv g"><span id="storedMB2">0.000</span> MB</span></div>
+        <div class="sr"><span class="sk">Quota Available</span><span class="sv" id="qAvail">Checking…</span></div>
+        <div class="sr"><span class="sk">Uptime</span><span class="sv g" id="uptime">00:00:00</span></div>
+        <div class="sr"><span class="sk">Jet URL</span><span class="sv" id="jetUrlDisplay">–</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="sec">Earnings</div>
+      <div class="sl" style="margin-top:8px">
+        <div class="sr"><span class="sk">Total Earned</span><span class="sv g" id="earnTotal">0.000000 SBUX</span></div>
+        <div class="sr"><span class="sk">Pending Claim</span><span class="sv a" id="earnPend">0.000000 SBUX</span></div>
+        <div class="sr"><span class="sk">Claimed</span><span class="sv d" id="earnClaim">0.000000 SBUX</span></div>
+        <div class="sr"><span class="sk">Rate</span><span class="sv" id="earnRate">0.000000 SBUX/hr</span></div>
+      </div>
+      <div style="margin-top:16px">
+        <div class="claim-thresh" id="claimThresh">Need 10.000000 more SBUX to claim</div>
+        <button class="claim-btn" id="claimBtn" disabled onclick="handleClaim()">⬡ Claim Safebux</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="sec">Activity Log</div>
+      <div class="log" id="logFeed"></div>
+      <div class="sl" style="margin-top:8px">
+        <div class="sr"><span class="sk">GET Requests</span><span class="sv g" id="getReqs">0</span></div>
+        <div class="sr"><span class="sk">PUT Requests</span><span class="sv" id="putReqs">0</span></div>
+        <div class="sr"><span class="sk">Announces</span><span class="sv" id="annCount">0</span></div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<div class="footer">
+  <div style="display:flex;gap:24px">
+    <span>Safecloud Drop v0.1.0</span>
+    <span>0.02 SBUX / MB served</span>
+  </div>
+  <span id="footerMsg">Awaiting connection…</span>
+</div>
+
+<script>
+'use strict';
+
+/* ── Constants ─────────────────────────────────────────────── */
+var SBUX_PER_MB   = 0.02;
+var CLAIM_THRESH  = 10;
+var CAP_BYTES     = 10 * 1073741824;
+var POLL_MS       = 1000;
+
+/* ── State ─────────────────────────────────────────────────── */
+var startTime     = Date.now();
+var claimed       = 0;
+var chartData     = new Array(60).fill(0);
+var prevEarned    = 0;
+var prevStats     = null;
+var getReqCount   = 0;
+var putReqCount   = 0;
+var annCount      = 0;
+var connected     = false;
+
+/* ── Helpers ───────────────────────────────────────────────── */
+function pad2(n) { return String(n).padStart(2,'0'); }
+function fmt(n,d) { return (typeof n==='number'?n:0).toFixed(d!=null?d:6); }
+
+function setEl(id, val) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  if (el.textContent !== String(val)) {
+    el.textContent = val;
+    el.classList.remove('tked');
+    void el.offsetWidth;
+    el.classList.add('tked');
+  }
+}
+
+/* ── Clock ─────────────────────────────────────────────────── */
+function updateClock() {
+  var now = new Date();
+  var tz = -now.getTimezoneOffset()/60;
+  document.getElementById('clk').textContent =
+    pad2(now.getHours())+':'+pad2(now.getMinutes())+':'+pad2(now.getSeconds())+
+    ' UTC'+(tz>=0?'+':'')+tz;
+  var e = Math.floor((Date.now()-startTime)/1000);
+  document.getElementById('uptime').textContent =
+    pad2(Math.floor(e/3600))+':'+pad2(Math.floor((e%3600)/60))+':'+pad2(e%60);
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+/* ── Log ───────────────────────────────────────────────────── */
+function addLog(tag, msg) {
+  var feed = document.getElementById('logFeed');
+  if (!feed) return;
+  var now = new Date();
+  var ts  = pad2(now.getHours())+':'+pad2(now.getMinutes())+':'+pad2(now.getSeconds());
+  var line = document.createElement('div');
+  line.className = 'll';
+  line.innerHTML =
+    '<span class="lts">'+ts+'</span>'+
+    '<span class="ltag '+tag+'">'+tag.toUpperCase()+'</span>'+
+    '<span class="lm">'+msg+'</span>';
+  feed.appendChild(line);
+  feed.scrollTop = feed.scrollHeight;
+  while (feed.children.length > 120) feed.removeChild(feed.firstChild);
+}
+
+/* ── Quota ─────────────────────────────────────────────────── */
+function updateQuota() {
+  if (!navigator.storage || !navigator.storage.estimate) {
+    document.getElementById('qAvail').textContent = 'N/A';
+    return;
+  }
+  navigator.storage.estimate().then(function(est) {
+    var pct = est.usage / est.quota * 100;
+    var gbAv = (est.quota - est.usage) / 1073741824;
+    document.getElementById('qPct').textContent = pct.toFixed(1);
+    document.getElementById('qFill').style.width = Math.min(pct,100)+'%';
+    document.getElementById('qAvail').textContent = gbAv.toFixed(2)+' GB free';
+  });
+}
+updateQuota();
+setInterval(updateQuota, 30000);
+
+/* ── Chart ─────────────────────────────────────────────────── */
+function drawChart() {
+  var canvas = document.getElementById('ec');
+  if (!canvas) return;
+  var rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width  = Math.floor(rect.width);
+  canvas.height = 140;
+  var ctx = canvas.getContext('2d');
+  var W = canvas.width, H = canvas.height;
+  var max = Math.max.apply(null, chartData.concat([0.000001]));
+  var pts = chartData.map(function(v,i) {
+    return {x:(i/(chartData.length-1))*W, y:H-8-(v/max)*(H-28)};
+  });
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle='rgba(30,40,30,0.8)'; ctx.lineWidth=1;
+  for (var gi=0;gi<=4;gi++){var gy=Math.round((gi/4)*(H-24)+8);ctx.beginPath();ctx.moveTo(0,gy);ctx.lineTo(W,gy);ctx.stroke();}
+  var grad=ctx.createLinearGradient(0,0,0,H);
+  grad.addColorStop(0,'rgba(0,255,136,0.2)');grad.addColorStop(1,'rgba(0,255,136,0.01)');
+  ctx.beginPath();ctx.moveTo(pts[0].x,H);
+  pts.forEach(function(p){ctx.lineTo(p.x,p.y);});
+  ctx.lineTo(pts[pts.length-1].x,H);ctx.closePath();ctx.fillStyle=grad;ctx.fill();
+  ctx.beginPath();ctx.moveTo(pts[0].x,pts[0].y);
+  for(var li=1;li<pts.length;li++){var cx1=pts[li-1].x+(pts[li].x-pts[li-1].x)/3;var cx2=pts[li].x-(pts[li].x-pts[li-1].x)/3;ctx.bezierCurveTo(cx1,pts[li-1].y,cx2,pts[li].y,pts[li].x,pts[li].y);}
+  ctx.strokeStyle='#00ff88';ctx.lineWidth=1.5;ctx.shadowColor='#00ff88';ctx.shadowBlur=6;ctx.stroke();ctx.shadowBlur=0;
+  ctx.fillStyle='rgba(90,122,90,0.8)';ctx.font='9px IBM Plex Mono,monospace';
+  ctx.fillText(fmt(max,6)+' SBUX',4,16);
+  ctx.fillText('0.000000',4,H-4);ctx.textAlign='right';ctx.fillText('now',W-4,H-4);ctx.textAlign='left';
+}
+window.addEventListener('resize', drawChart);
+setTimeout(drawChart, 50);
+
+/* ── Claim ─────────────────────────────────────────────────── */
+function handleClaim() {
+  var stats = getStats();
+  var pending = Math.max(0, stats.safebuxEarned - claimed);
+  if (pending < CLAIM_THRESH) return;
+
+  // Real: Q.Safecloud.Drops.claimPayments({ direct: false })
+  if (typeof Q !== 'undefined' && Q.Safecloud && Q.Safecloud.Drops &&
+      typeof Q.Safecloud.Drops.claimPayments === 'function') {
+    Q.Safecloud.Drops.claimPayments({}).then(function(r) {
+      addLog('pay', 'Claimed via Jet relay: '+(r.claimed||0)+' tokens');
+    }).catch(function(e) {
+      addLog('err', 'Claim failed: '+e.message);
+    });
+  } else {
+    // Simulated claim
+    claimed += pending;
+    addLog('pay', 'Claimed <span class="hl">'+fmt(pending,6)+' SBUX</span> (simulated)');
+    var btn = document.getElementById('claimBtn');
+    btn.textContent = '✓ Claimed';
+    setTimeout(function(){ btn.textContent = '⬡ Claim Safebux'; }, 2500);
+  }
+  updateDashboard(stats);
+}
+
+/* ── Stats bridge — reads from real Q.Safecloud.Drops or zeros ── */
+function getStats() {
+  try {
+    if (typeof Q !== 'undefined' && Q.Safecloud && Q.Safecloud.Drops) {
+      if (typeof Q.Safecloud.Drops.getStats === 'function') {
+        return Q.Safecloud.Drops.getStats();
+      }
+      // Fallback: read _state directly
+      var s = Q.Safecloud.Drops._ && Q.Safecloud.Drops._._state;
+      if (s) return {
+        servedBytes:   s.servedBytes   || 0,
+        servedMB:      (s.servedBytes  || 0)/1048576,
+        servedChunks:  s.servedChunks  || 0,
+        storedChunks:  s.storedChunks  || 0,
+        storedBytes:   s.usedBytes     || 0,
+        storedMB:      (s.usedBytes    || 0)/1048576,
+        safebuxEarned: s.safebuxEarned || 0,
+        dropId:        s.dropId        || null,
+        evmAddress:    s.evmAddress    || null,
+        prollyRoot:    s.prollyRoot    || null
+      };
+    }
+  } catch(e) {}
+  return {servedBytes:0,servedMB:0,servedChunks:0,storedChunks:0,
+    storedBytes:0,storedMB:0,safebuxEarned:0,dropId:null,evmAddress:null,prollyRoot:null};
+}
+
+/* ── Main render loop ──────────────────────────────────────── */
+function updateDashboard(stats) {
+  if (!connected) return;
+  if (!stats) stats = getStats();
+  var elap  = (Date.now()-startTime)/3600000;
+  var rate  = elap>0 ? stats.servedMB/elap : 0;
+  var eRate = elap>0 ? stats.safebuxEarned/elap : 0;
+  var pending = Math.max(0, stats.safebuxEarned - claimed);
+
+  setEl('servedMB',    fmt(stats.servedMB,3));
+  setEl('servedChunks',stats.servedChunks.toLocaleString());
+  setEl('servedRate',  fmt(rate,3)+' MB/hr');
+  setEl('sbuxTotal',   fmt(stats.safebuxEarned,6));
+  setEl('sbuxClaimed', fmt(claimed,6)+' claimed');
+  setEl('storedMB',    fmt(stats.storedMB,3));
+  setEl('storedChunks',stats.storedChunks.toLocaleString());
+  setEl('storedMB2',   fmt(stats.storedMB,3));
+
+  var capPct = Math.min(stats.storedBytes/CAP_BYTES*100,100);
+  document.getElementById('capPct').textContent = capPct.toFixed(2);
+  document.getElementById('capFill').style.width = capPct+'%';
+
+  if (stats.evmAddress) {
+    document.getElementById('evmAddr').textContent = stats.evmAddress;
+    document.getElementById('evmAddr').innerHTML = stats.evmAddress;
+  }
+  if (stats.dropId) document.getElementById('dropId').textContent = stats.dropId;
+  if (stats.prollyRoot) {
+    var pr = stats.prollyRoot;
+    document.getElementById('prollyRoot').textContent =
+      pr.length > 24 ? pr.slice(0,12)+'…'+pr.slice(-6) : pr;
+  }
+
+  setEl('earnTotal',fmt(stats.safebuxEarned,6)+' SBUX');
+  setEl('earnPend', fmt(pending,6)+' SBUX');
+  setEl('earnClaim',fmt(claimed,6)+' SBUX');
+  setEl('earnRate', fmt(eRate,6)+' SBUX/hr');
+
+  var claimBtn = document.getElementById('claimBtn');
+  if (pending >= CLAIM_THRESH) {
+    claimBtn.disabled = false;
+    document.getElementById('claimThresh').textContent =
+      fmt(pending,6)+' SBUX ready to claim';
+  } else {
+    claimBtn.disabled = true;
+    document.getElementById('claimThresh').textContent =
+      'Need '+fmt(Math.max(0,CLAIM_THRESH-pending),6)+' more SBUX to claim';
+  }
+
+  var delta = stats.safebuxEarned - prevEarned;
+  prevEarned = stats.safebuxEarned;
+  chartData.push(delta);
+  if (chartData.length > 60) chartData.shift();
+  drawChart();
+
+  // Log new activity vs previous poll
+  if (prevStats) {
+    var ns = stats.servedChunks - prevStats.servedChunks;
+    var np = stats.storedChunks - prevStats.storedChunks;
+    var ne = stats.safebuxEarned - prevStats.safebuxEarned;
+    if (ns > 0) {
+      getReqCount++;
+      document.getElementById('getReqs').textContent = getReqCount;
+      addLog('get','Served '+ns+' chunk'+(ns>1?'s':'')+
+        ' → <span class="hl">+'+fmt(ne,6)+' SBUX</span>');
+    }
+    if (np > 0) {
+      putReqCount++;
+      document.getElementById('putReqs').textContent = putReqCount;
+      addLog('put','Stored '+np+' chunk'+(np>1?'s':'')+
+        ' (<span class="hl2">'+fmt((stats.storedMB-prevStats.storedMB),3)+' MB</span>)');
+    }
+  }
+  prevStats = Object.assign({}, stats);
+}
+
+/* ── Connect ────────────────────────────────────────────────── */
+function connectDrop() {
+  var btn    = document.getElementById('connectBtn');
+  var status = document.getElementById('connectStatus');
+  var url    = document.getElementById('jetUrlInput').value.trim()
+               || window.location.origin;
+
+  btn.disabled = true;
+  status.className = 'connect-status';
+  status.textContent = 'Initializing WebAuthn PRF…';
+
+  if (typeof Q === 'undefined' || !Q.Safecloud || !Q.Safecloud.Drops) {
+    // No Qbix environment — show a clear message
+    status.className = 'connect-status error';
+    status.textContent = 'Qbix + Safecloud plugin not loaded. Load this page through your Qbix app.';
+    btn.disabled = false;
+    return;
+  }
+
+  status.textContent = 'Deriving EVM identity via WebAuthn PRF…';
+
+  Q.Safecloud.Drops.init({ jetUrl: url }, function(err) {
+    if (err) {
+      status.className = 'connect-status error';
+      status.textContent = 'Error: ' + (err.message || String(err));
+      btn.disabled = false;
+      return;
+    }
+    onConnected(url);
+  });
+}
+
+function onConnected(jetUrl) {
+  connected = true;
+
+  // Update UI
+  document.getElementById('connectScreen').classList.add('hidden');
+  document.getElementById('mainDash').classList.add('visible');
+  document.getElementById('jDot').classList.remove('off');
+  document.getElementById('jStatus').textContent = 'Connected to Jet';
+  document.getElementById('jetUrlDisplay').textContent =
+    jetUrl.replace(/^https?:\/\//, '');
+  document.getElementById('footerMsg').textContent = 'Drop node active';
+
+  // Hook Jet events for announce counter
+  try {
+    if (Q.Safecloud.Jets && Q.Safecloud.Jets.onDropAnnounce) {
+      Q.Safecloud.Jets.onDropAnnounce.add(function() {
+        annCount++;
+        document.getElementById('annCount').textContent = annCount;
+        addLog('ann','Announce #'+annCount+' sent to Jet');
+      });
+    }
+  } catch(e) {}
+
+  addLog('reg','Drop registered with Jet at <span class="hl">'+
+    jetUrl.replace(/^https?:\/\//,'')+'</span>');
+  addLog('sys','WebAuthn PRF: EVM identity derived deterministically');
+
+  // Start polling
+  setInterval(function(){ updateDashboard(); }, POLL_MS);
+  updateDashboard();
+  startTime = Date.now(); // reset uptime from connection point
+}
+
+/* ── Auto-detect if already connected (page reload in Qbix) ── */
+(function checkAlreadyInit() {
+  try {
+    if (typeof Q !== 'undefined' && Q.Safecloud && Q.Safecloud.Drops) {
+      var s = Q.Safecloud.Drops._ && Q.Safecloud.Drops._._state;
+      if (s && s.dropId) {
+        // Already initialized — go straight to dashboard
+        onConnected(
+          (Q.Safecloud.Jets && Q.Safecloud.Jets.url) ||
+          window.location.origin
+        );
+        return;
+      }
+    }
+  } catch(e) {}
+  // Show connect screen
+  document.getElementById('connectScreen').style.display = 'flex';
+})();
+</script>
+</body>
+</html>
