@@ -1552,14 +1552,17 @@ function _checkPayments(payments, chunkCount) {
         var jetAddr = jetWallet ? jetWallet.toLowerCase().replace(/^0x/i,'') : null;
         if (jetAddr && stm.recipientsHash &&
             stm.recipientsHash !== '0x' + '00'.repeat(32)) {
-            // Verify using Q.Crypto.OpenClaim.EVM if available
-            // Compute keccak256(abi.encode([jetAddress])) = keccak256(padLeft32(addr))
-            // This is the OpenClaiming recipientsHash for a single recipient
+            // Compute keccak256(abi.encode([jetAddress])) matching Solidity paymentsHashRecipients()
+            // abi.encode(address[]) = offset(32) + length(32) + padded_address(32)
             try {
-                var addrPadded = Buffer.alloc(32, 0);
-                Buffer.from(jetAddr, 'hex').copy(addrPadded, 12); // right-aligned in 32 bytes
-                // Use ethers.keccak256 (always available since ethers is required)
-                var keccakHex  = ethers.keccak256(addrPadded).replace(/^0x/i,'').toLowerCase();
+                var addrBytes  = Buffer.from(jetAddr.padStart(40, '0'), 'hex');
+                var addrPadded = Buffer.concat([Buffer.alloc(12, 0), addrBytes]); // 32 bytes
+                var abiEncoded = Buffer.concat([
+                    Buffer.from('0000000000000000000000000000000000000000000000000000000000000020', 'hex'), // offset
+                    Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex'), // length=1
+                    addrPadded                                                                              // element
+                ]);
+                var keccakHex  = ethers.keccak256(abiEncoded).replace(/^0x/i,'').toLowerCase();
                 var actualHash = stm.recipientsHash.replace(/^0x/i,'').toLowerCase();
                 if (keccakHex !== actualHash) {
                     return Promise.resolve(false); // Jet not in recipients
@@ -1624,7 +1627,9 @@ function _fetchFromDrops(drops, cids, payload) {
             line:           0,
             nbf:            0,
             exp:            0,
-            chainId:        SAFEBUX_CHAIN,
+            chainId:        SAFEBUX_CHAIN.indexOf('eip155:') === 0
+                                ? parseInt(SAFEBUX_CHAIN.slice(7), 10)
+                                : SAFEBUX_CHAIN,
             contract:       Q.Config.get(['Users', 'web3', 'contracts', 'Safecloud/openclaiming', _chainIdToHex(SAFEBUX_CHAIN)], OC_ADDRESS)
         },
         sig: [] // TODO Phase 3: sign with Jet EIP-712 session key
