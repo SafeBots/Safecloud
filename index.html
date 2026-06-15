@@ -136,11 +136,11 @@
 <div class="hero">
   <div class="hero-pill">Safecloud Protocol</div>
   <h1>Encrypted Streaming Storage,<br><span>Distributed Across Browsers</span></h1>
-  <p>Every file stored with Safecloud is end-to-end encrypted before it leaves your device, chunked into a Merkle tree, and distributed across a network of browser-based storage nodes — with on-chain payment settlement.</p>
+  <p>Every file stored with Safecloud is end-to-end encrypted before it leaves your device, chunked into a <a href="https://en.wikipedia.org/wiki/Merkle_tree" target="_blank" style="color:var(--blue);text-decoration:none">Merkle tree</a>, and distributed across a network of browser-based storage nodes — with on-chain payment settlement.</p>
   <div class="hero-links">
-    <a class="btn btn-blue" href="https://intercoin.org">Learn More</a>
-    <a class="btn btn-ghost" href="https://bscscan.com/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code">OpenClaiming Contract ↗</a>
-    <a class="btn btn-ghost" href="https://github.com/Safecloud">GitHub ↗</a>
+    <a class="btn btn-ghost" href="https://arxiv.org/pdf/2606.09870" target="_blank">Safecloud Whitepaper</a>
+    <a class="btn btn-ghost" href="https://openclaiming.org" target="_blank">OpenClaiming Protocol</a>
+    <a class="btn btn-blue" href="https://github.com/Safebots/Safecloud" target="_blank">GitHub</a>
   </div>
 </div>
 
@@ -154,14 +154,15 @@
       <a href="#upload"><span>03</span>Upload Flow</a>
       <a href="#fetch"><span>04</span>Fetch Flow</a>
       <a href="#streaming"><span>05</span>Streaming Audio &amp; Video</a>
-      <a href="#access"><span>06</span>Encrypted Access Control</a>
-      <a href="#pos"><span>07</span>Proof of Storage</a>
-      <a href="#crypto"><span>08</span>Two Signing Tracks</a>
-      <a href="#settlement"><span>09</span>Payment Settlement</a>
-      <a href="#earn"><span>10</span>Earn Safebux as a Drop</a>
-      <a href="#storage"><span>11</span>Browser Storage Quotas</a>
-      <a href="#jet"><span>12</span>Run a Jet Node</a>
-      <a href="#status"><span>13</span>Current Status</a>
+      <a href="#keydist"><span>06</span>Key Distribution &amp; Access Models</a>
+      <a href="#access"><span>07</span>Encrypted Access Control</a>
+      <a href="#pos"><span>08</span>Proof of Storage</a>
+      <a href="#crypto"><span>09</span>Two Signing Tracks</a>
+      <a href="#settlement"><span>10</span>Payment Settlement</a>
+      <a href="#earn"><span>11</span>Earn Safebux as a Drop</a>
+      <a href="#storage"><span>12</span>Browser Storage Quotas</a>
+      <a href="#jet"><span>13</span>Run a Jet Node</a>
+      <a href="#status"><span>14</span>Current Status</a>
     </div>
   </div>
 </div>
@@ -178,11 +179,11 @@
         <h3>Cloud (Client)</h3>
         <p>The end user's browser. Encrypts files locally, builds the Merkle tree, and manages access grants. Never sends plaintext to the network.</p>
         <ul>
-          <li>AES-256-GCM encryption</li>
-          <li>N-ary Prolly tree chunking</li>
+          <li><a href="https://en.wikipedia.org/wiki/Galois/Counter_Mode" target="_blank" style="color:var(--blue);text-decoration:none">AES-256-GCM</a> encryption</li>
+          <li>N-ary <a href="https://github.com/attic-labs/noms/blob/master/doc/intro.md#prolly-trees" target="_blank" style="color:var(--blue);text-decoration:none">Prolly tree</a> chunking</li>
           <li>Key derivation per subtree</li>
-          <li>Signs EIP-712 payment tokens</li>
-          <li>Streams HLS video via Service Worker</li>
+          <li>Signs <a href="https://eips.ethereum.org/EIPS/eip-712" target="_blank" style="color:var(--blue);text-decoration:none">EIP-712</a> payment tokens</li>
+          <li>Streams <a href="https://en.wikipedia.org/wiki/HTTP_Live_Streaming" target="_blank" style="color:var(--blue);text-decoration:none">HLS</a> video via <a href="https://developer.mozilla.org/en-US/docs/Web/API/Service_Worker_API" target="_blank" style="color:var(--blue);text-decoration:none">Service Worker</a></li>
         </ul>
       </div>
       <div class="card">
@@ -200,13 +201,13 @@
       <div class="card">
         <div class="icon">💧</div>
         <h3>Drop (Storage Node)</h3>
-        <p>Any browser tab that opts in to store chunks in IndexedDB. Earns Safebux tokens for each chunk served. Derives its EVM identity from a WebAuthn PRF — no seed phrase.</p>
+        <p>Any browser tab that opts in to store chunks in <a href="https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API" target="_blank" style="color:var(--blue);text-decoration:none">IndexedDB</a>. Earns Safebux tokens for each chunk served. Derives its EVM identity from a <a href="https://github.com/w3c/webauthn/wiki/Explainer:-PRF-extension" target="_blank" style="color:var(--blue);text-decoration:none">WebAuthn PRF</a> — no seed phrase.</p>
         <ul>
-          <li>IndexedDB chunk store + LRU eviction</li>
+          <li>IndexedDB chunk store + <a href="https://en.wikipedia.org/wiki/Cache_replacement_policies#LRU" target="_blank" style="color:var(--blue);text-decoration:none">LRU</a> eviction</li>
           <li>Prolly tree diff announcements</li>
           <li>Responds to proof-of-storage challenges</li>
           <li>Accumulates and claims Safebux on-chain</li>
-          <li>Identity via WebAuthn Secure Enclave</li>
+          <li>Identity via WebAuthn <a href="https://support.apple.com/guide/security/secure-enclave-sec59b0b31ff/web" target="_blank" style="color:var(--blue);text-decoration:none">Secure Enclave</a></li>
         </ul>
       </div>
     </div>
@@ -222,74 +223,83 @@
 
     <!-- Architecture SVG -->
     <div class="diagram">
-      <svg viewBox="0 0 780 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:780px">
+      <svg viewBox="0 0 780 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:780px">
         <defs>
-          <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L8,3 z" fill="#3B82F6"/>
-          </marker>
-          <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L8,3 z" fill="#a78bfa"/>
-          </marker>
-          <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
-            <path d="M0,0 L0,6 L8,3 z" fill="#4CAF50"/>
-          </marker>
+          <marker id="arr"  markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#3B82F6"/></marker>
+          <marker id="arr-gray" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#9090a0"/></marker>
+          <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#a78bfa"/></marker>
+          <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#4CAF50"/></marker>
+          <marker id="arr4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#E8A020"/></marker>
         </defs>
 
-        <!-- Cloud box -->
-        <rect x="30" y="120" width="150" height="100" rx="10" fill="#26262c" stroke="#3B82F6" stroke-width="1.5"/>
-        <text x="105" y="150" text-anchor="middle" fill="#fff" font-size="13" font-weight="700" font-family="system-ui">☁️ Cloud</text>
-        <text x="105" y="168" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Browser / Client</text>
-        <text x="105" y="184" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Encrypts locally</text>
-        <text x="105" y="200" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Signs EIP-712 tokens</text>
+        <!--
+          Layout:
+          All three actor boxes share the same top (y=30) and same height (200px), midline y=130.
+          Cloud:  x=20  w=160  → right edge x=180
+          Jet:    x=310 w=160  → left edge x=310, right edge x=470
+          Drop:   x=600 w=160  → left edge x=600
+          Contract: centered x=295 w=190, top y=275
+        -->
 
-        <!-- Jet box -->
-        <rect x="315" y="60" width="150" height="220" rx="10" fill="#26262c" stroke="#a78bfa" stroke-width="1.5"/>
-        <text x="390" y="92" text-anchor="middle" fill="#fff" font-size="13" font-weight="700" font-family="system-ui">✈️ Jet</text>
-        <text x="390" y="110" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Node.js router</text>
-        <text x="390" y="128" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Verifies grants</text>
-        <text x="390" y="146" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Issues challenges</text>
-        <text x="390" y="164" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Routes chunks</text>
-        <text x="390" y="182" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Pays Drops</text>
-        <text x="390" y="200" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Signs payment tokens</text>
-        <text x="390" y="218" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Relays on-chain claims</text>
-        <text x="390" y="256" text-anchor="middle" fill="#E8A020" font-size="10" font-weight="600" font-family="system-ui">EIP-712 session key</text>
-        <text x="390" y="270" text-anchor="middle" fill="#a78bfa" font-size="10" font-family="system-ui">P-256 for verifying</text>
+        <!-- ── Cloud box ── -->
+        <rect x="20" y="30" width="160" height="200" rx="10" fill="#26262c" stroke="#3B82F6" stroke-width="1.5"/>
+        <text x="100" y="62"  text-anchor="middle" fill="#fff"     font-size="14" font-weight="700" font-family="system-ui">☁️ Cloud</text>
+        <text x="100" y="84"  text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Browser / Client</text>
+        <text x="100" y="102" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Encrypts locally</text>
+        <text x="100" y="120" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Signs EIP-712 tokens</text>
+        <text x="100" y="138" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Manages access grants</text>
+        <text x="100" y="156" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Streams &amp; decrypts</text>
+        <text x="100" y="174" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">locally in browser</text>
 
-        <!-- Drop box -->
-        <rect x="600" y="120" width="150" height="100" rx="10" fill="#26262c" stroke="#4CAF50" stroke-width="1.5"/>
-        <text x="675" y="150" text-anchor="middle" fill="#fff" font-size="13" font-weight="700" font-family="system-ui">💧 Drop</text>
-        <text x="675" y="168" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Browser / IndexedDB</text>
-        <text x="675" y="184" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Stores ciphertext</text>
-        <text x="675" y="200" text-anchor="middle" fill="#9090a0" font-size="10" font-family="system-ui">Earns Safebux</text>
+        <!-- ── Jet box ── -->
+        <rect x="310" y="30" width="160" height="200" rx="10" fill="#26262c" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="390" y="62"  text-anchor="middle" fill="#fff"     font-size="14" font-weight="700" font-family="system-ui">✈️ Jet</text>
+        <text x="390" y="84"  text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Node.js router</text>
+        <text x="390" y="102" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Verifies grants</text>
+        <text x="390" y="120" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Issues challenges</text>
+        <text x="390" y="138" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Routes chunks</text>
+        <text x="390" y="156" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Signs payment tokens</text>
+        <text x="390" y="174" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Relays on-chain claims</text>
+        <text x="390" y="196" text-anchor="middle" fill="#E8A020"  font-size="10" font-weight="600" font-family="system-ui">EIP-712 session key</text>
+        <text x="390" y="212" text-anchor="middle" fill="#a78bfa"  font-size="10" font-family="system-ui">P-256 for verifying</text>
 
-        <!-- Smart contract box -->
-        <rect x="315" y="300" width="150" height="35" rx="8" fill="#16161a" stroke="#E8A020" stroke-width="1.5"/>
-        <text x="390" y="322" text-anchor="middle" fill="#E8A020" font-size="11" font-weight="700" font-family="system-ui">OpenClaiming Contract</text>
+        <!-- ── Drop box ── -->
+        <rect x="600" y="30" width="160" height="200" rx="10" fill="#26262c" stroke="#4CAF50" stroke-width="1.5"/>
+        <text x="680" y="62"  text-anchor="middle" fill="#fff"     font-size="14" font-weight="700" font-family="system-ui">💧 Drop</text>
+        <text x="680" y="84"  text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Browser / IndexedDB</text>
+        <text x="680" y="102" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Stores ciphertext</text>
+        <text x="680" y="120" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Serves chunks</text>
+        <text x="680" y="138" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">Earns Safebux</text>
+        <text x="680" y="156" text-anchor="middle" fill="#9090a0"  font-size="10" font-family="system-ui">WebAuthn identity</text>
 
-        <!-- Arrows Cloud → Jet (straight horizontal) -->
-        <line x1="181" y1="158" x2="313" y2="158" stroke="#3B82F6" stroke-width="1.5" marker-end="url(#arr)"/>
-        <text x="247" y="148" text-anchor="middle" fill="#3B82F6" font-size="9.5" font-family="system-ui">encrypted chunks</text>
-        <text x="247" y="159" text-anchor="middle" fill="#3B82F6" font-size="9.5" font-family="system-ui">+ grants + payment tokens</text>
+        <!-- ── Contract box ── -->
+        <rect x="295" y="278" width="190" height="38" rx="8" fill="#16161a" stroke="#E8A020" stroke-width="1.5"/>
+        <text x="390" y="302" text-anchor="middle" fill="#E8A020" font-size="11" font-weight="700" font-family="system-ui">OpenClaiming Contract</text>
 
-        <!-- Arrows Jet → Cloud (straight horizontal return) -->
-        <line x1="313" y1="178" x2="181" y2="178" stroke="#9090a0" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr)"/>
-        <text x="247" y="193" text-anchor="middle" fill="#9090a0" font-size="9" font-family="system-ui">ciphertext chunks</text>
+        <!-- ── Cloud → Jet: top arrow (solid blue, going right) ── -->
+        <line x1="181" y1="100" x2="308" y2="100" stroke="#3B82F6" stroke-width="1.5" marker-end="url(#arr)"/>
+        <text x="245" y="90" text-anchor="middle" fill="#3B82F6" font-size="9" font-family="system-ui">encrypted chunks</text>
+        <text x="245" y="101" text-anchor="middle" fill="#3B82F6" font-size="9" font-family="system-ui">+ grants + payment tokens</text>
 
-        <!-- Arrows Jet → Drop -->
-        <line x1="467" y1="155" x2="598" y2="155" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arr2)"/>
-        <text x="533" y="148" text-anchor="middle" fill="#a78bfa" font-size="9.5" font-family="system-ui">chunks + payment token</text>
+        <!-- ── Jet → Cloud: bottom arrow (dashed gray, going left) ── -->
+        <line x1="308" y1="122" x2="181" y2="122" stroke="#9090a0" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr-gray)"/>
+        <text x="245" y="137" text-anchor="middle" fill="#9090a0" font-size="9" font-family="system-ui">ciphertext chunks</text>
 
-        <!-- Arrows Drop → Jet (ack + challenge response) -->
-        <line x1="598" y1="175" x2="467" y2="175" stroke="#9090a0" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr)"/>
-        <text x="533" y="190" text-anchor="middle" fill="#9090a0" font-size="9" font-family="system-ui">ack / challenge response</text>
+        <!-- ── Jet → Drop: top arrow (solid purple, going right) ── -->
+        <line x1="471" y1="100" x2="598" y2="100" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arr2)"/>
+        <text x="535" y="92" text-anchor="middle" fill="#a78bfa" font-size="9" font-family="system-ui">chunks + payment token</text>
 
-        <!-- Drop → Contract -->
-        <line x1="640" y1="221" x2="470" y2="305" stroke="#4CAF50" stroke-width="1.5" marker-end="url(#arr3)"/>
-        <text x="590" y="275" text-anchor="middle" fill="#4CAF50" font-size="9.5" font-family="system-ui">paymentsExecute()</text>
+        <!-- ── Drop → Jet: bottom arrow (dashed gray, going left) ── -->
+        <line x1="598" y1="122" x2="471" y2="122" stroke="#9090a0" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arr-gray)"/>
+        <text x="535" y="137" text-anchor="middle" fill="#9090a0" font-size="9" font-family="system-ui">ack / challenge response</text>
 
-        <!-- Jet → Contract -->
-        <line x1="390" y1="282" x2="390" y2="298" stroke="#E8A020" stroke-width="1.5" marker-end="url(#arr3)"/>
-        <text x="420" y="295" fill="#E8A020" font-size="9" font-family="system-ui">relay claim</text>
+        <!-- ── Jet → Contract: straight down (amber) ── -->
+        <line x1="390" y1="231" x2="390" y2="276" stroke="#E8A020" stroke-width="1.5" marker-end="url(#arr4)"/>
+        <text x="360" y="258" text-anchor="middle" fill="#E8A020" font-size="9" font-family="system-ui">relay claim</text>
+
+        <!-- ── Drop → Contract: angled down-left (green) ── -->
+        <line x1="660" y1="231" x2="488" y2="276" stroke="#4CAF50" stroke-width="1.5" marker-end="url(#arr3)"/>
+        <text x="618" y="268" text-anchor="middle" fill="#4CAF50" font-size="9" font-family="system-ui">paymentsExecute()</text>
       </svg>
     </div>
 
@@ -301,7 +311,7 @@
         <div class="flow-num">☁️</div>
         <div class="flow-body">
           <h3>Cloud identity</h3>
-          <p>The Cloud user's existing wallet (MetaMask, WalletConnect, etc.) acts as the root. A single interactive EIP-712 signature derives two non-extractable session keys: a P-256 key for off-chain signing and a secp256k1 key for on-chain payment authorization. Both live in IndexedDB as Web Crypto <code>CryptoKey</code> objects with <code>extractable: false</code>. The ceremony runs once per 30-day session.</p>
+          <p>The Cloud user's existing wallet (<a href="https://metamask.io/" target="_blank" style="color:var(--blue);text-decoration:none">MetaMask</a>, <a href="https://walletconnect.com/" target="_blank" style="color:var(--blue);text-decoration:none">WalletConnect</a>, etc.) acts as the root. A single interactive EIP-712 signature derives two non-extractable session keys: a <a href="https://en.wikipedia.org/wiki/P-256" target="_blank" style="color:var(--blue);text-decoration:none">P-256</a> key for off-chain signing and a <a href="https://en.wikipedia.org/wiki/Elliptic_curve_cryptography" target="_blank" style="color:var(--blue);text-decoration:none">secp256k1</a> key for on-chain payment authorization. Both live in IndexedDB as <a href="https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API" target="_blank" style="color:var(--blue);text-decoration:none">Web Crypto</a> <code>CryptoKey</code> objects with <code>extractable: false</code>. The ceremony runs once per 30-day session.</p>
         </div>
       </div>
       <div class="flow-step">
@@ -323,7 +333,10 @@
         <div class="flow-body">
           <h3>OpenClaiming contract</h3>
           <p>The settlement layer. Deployed at the same vanity address on every supported chain. Immutable — no proxy, no upgrade path. Accepts EIP-712 signed Payment structs, verifies the signature, enforces spending lines, and transfers Safebux tokens. Anyone can inspect the source on any chain's block explorer.</p>
-          <div class="addr-box">0x99999febd42cad798fe10ab0b1c563002fc99999</div>
+          <p style="font-family:var(--mono);font-size:.9rem;margin:12px 0">
+            <a href="https://bscscan.com/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--purple);text-decoration:none">0x99999febd42cad798fe10ab0b1c563002fc99999</a>
+            — verified on <a href="https://bscscan.com/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--blue)">BSC</a> and <a href="https://etherscan.io/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--blue)">Ethereum</a>
+          </p>
         </div>
       </div>
     </div>
@@ -391,7 +404,7 @@
     <p>From the moment you pick a file to the moment it's replicated across Drops, every step preserves end-to-end encryption. The Jet never sees plaintext. The Drop never sees the decryption key.</p>
     <div class="flow">
       <div class="flow-step"><div class="flow-num">1</div><div class="flow-body"><h3>Key Derivation</h3><p>The Cloud derives an encryption root and access root from a random file key. Each subtree node in the Merkle tree gets its own AES key, derived deterministically by path — so any branch can be granted independently without revealing sibling keys.</p></div></div>
-      <div class="flow-step"><div class="flow-num">2</div><div class="flow-body"><h3>Chunk and Encrypt</h3><p>The file is split into fixed-size chunks. Each chunk is encrypted with AES-256-GCM using its leaf subtree key and a chunk-specific IV. The CID of each chunk is SHA-256(ciphertext ∥ tag) — a content address over the encrypted data, not the plaintext.</p></div></div>
+      <div class="flow-step"><div class="flow-num">2</div><div class="flow-body"><h3>Chunk and Encrypt</h3><p>The file is split into fixed-size chunks. Each chunk is encrypted with AES-256-GCM using its leaf subtree key and a chunk-specific IV. The CID of each chunk is <a href="https://en.wikipedia.org/wiki/SHA-2" target="_blank" style="color:var(--blue);text-decoration:none">SHA-256</a>(ciphertext ∥ tag) — a content address over the encrypted data, not the plaintext.</p></div></div>
       <div class="flow-step"><div class="flow-num">3</div><div class="flow-body"><h3>Build Merkle Tree</h3><p>CIDs are arranged into an N-ary Merkle tree. The root CID commits to the entire encrypted file. An optional index chunk (for HLS video manifests) sits alongside under a separate subtree.</p></div></div>
       <div class="flow-step"><div class="flow-num">4</div><div class="flow-body"><h3>Send to Jet with Grants and Payments</h3><p>The Cloud sends encrypted chunks, OCP Role A grants (authorizing the Jet to accept this upload), and signed EIP-712 payment tokens (authorizing Drops to be paid in Safebux) to the Jet over an encrypted socket connection.</p></div></div>
       <div class="flow-step"><div class="flow-num">5</div><div class="flow-body"><h3>Jet Fans Out to Drops</h3><p>The Jet verifies the Role A grant, then forwards chunks to connected Drops. The Jet passes each Drop a signed payment token — its authorization to be paid for storing these chunks. Drops store chunks in IndexedDB and confirm.</p></div></div>
@@ -408,7 +421,7 @@
     <p>Retrieval is the mirror of upload. The Cloud reconstructs the Merkle tree from chunk responses, verifies each CID, and decrypts locally. The Jet and Drop only ever see ciphertext.</p>
     <div class="flow">
       <div class="flow-step"><div class="flow-num">1</div><div class="flow-body"><h3>Cloud Requests Root CID</h3><p>The Cloud fetches the manifest (stored as a separate encrypted index chunk). The manifest contains the root CID, tree shape (N, depth), and chunk count.</p></div></div>
-      <div class="flow-step"><div class="flow-num">2</div><div class="flow-body"><h3>Jet Selects Drops via Bloom Filter</h3><p>Each Drop maintains a Bloom filter of its stored CIDs. The Jet uses these filters to route chunk requests to Drops that are likely to have the chunks — without asking Drops to enumerate their entire inventory.</p></div></div>
+      <div class="flow-step"><div class="flow-num">2</div><div class="flow-body"><h3>Jet Selects Drops via Bloom Filter</h3><p>Each Drop maintains a <a href="https://en.wikipedia.org/wiki/Bloom_filter" target="_blank" style="color:var(--blue);text-decoration:none">Bloom filter</a> of its stored CIDs. The Jet uses these filters to route chunk requests to Drops that are likely to have the chunks — without asking Drops to enumerate their entire inventory.</p></div></div>
       <div class="flow-step"><div class="flow-num">3</div><div class="flow-body"><h3>Drop Checks Payment Token and Serves Chunks</h3><p>Before serving any chunk, the Drop checks the Jet's Safebux balance on-chain (cached for 1 hour). If sufficient, it stores the payment token in IndexedDB for later claiming and responds with the requested encrypted chunks.</p></div></div>
       <div class="flow-step"><div class="flow-num">4</div><div class="flow-body"><h3>Cloud Verifies CIDs and Decrypts</h3><p>For each chunk received, the Cloud recomputes SHA-256(ciphertext ∥ tag) and checks it matches the expected CID. Then it derives the per-chunk decryption key and decrypts with AES-256-GCM. Any tampered chunk fails CID verification before decryption is attempted.</p></div></div>
     </div>
@@ -449,7 +462,7 @@
       <div class="card">
         <div class="icon">📺</div>
         <h3>Media Source Extensions</h3>
-        <p>Used on iOS Safari 16.4+ and other browsers with fMP4 support. A prefetch loop decrypts chunks slightly ahead of playback and feeds them directly into a SourceBuffer. Smooth adaptive quality switching between video resolutions is supported.</p>
+        <p>Used on iOS Safari 16.4+ and other browsers with <a href="https://en.wikipedia.org/wiki/ISO_base_media_file_format" target="_blank" style="color:var(--blue);text-decoration:none">fMP4</a> support. A prefetch loop decrypts chunks slightly ahead of playback and feeds them directly into a SourceBuffer. Smooth adaptive quality switching between video resolutions is supported.</p>
       </div>
       <div class="card">
         <div class="icon">🔄</div>
@@ -461,7 +474,7 @@
     <h3 style="margin-top:36px">How it works under the hood</h3>
     <p>Each video is stored as a Merkle tree of encrypted chunks across two tracks: a <strong>data track</strong> containing the actual fMP4 video segments, and an <strong>index track</strong> containing the HLS manifest and codec initialization data. The index track is requested first — it tells the player how many chunks there are, their timestamps (PTS values), and what codec to use. Then chunks are requested on demand as the player advances.</p>
 
-    <p>Encryption keys are derived per-chunk via an HKDF tree rooted at the file's master key. The path through the tree <code>["track","data","0","1"]</code> uniquely identifies a chunk's position, and its encryption key is derived by chaining HKDF delegations down that path. This means two identical plaintext chunks at different positions in a video get <em>different</em> ciphertext — so the network sees no repeated patterns even for identical data, while deduplication still works on the ciphertext level (same position = same ciphertext, safely cached).</p>
+    <p>Encryption keys are derived per-chunk via an <a href="https://en.wikipedia.org/wiki/HKDF" target="_blank" style="color:var(--blue);text-decoration:none">HKDF</a> tree rooted at the file's master key. The path through the tree <code>["track","data","0","1"]</code> uniquely identifies a chunk's position, and its encryption key is derived by chaining HKDF delegations down that path. This means two identical plaintext chunks at different positions in a video get <em>different</em> ciphertext — so the network sees no repeated patterns even for identical data, while deduplication still works on the ciphertext level (same position = same ciphertext, safely cached).</p>
 
     <p>For more on the key tree, see <a href="#access" style="color:var(--blue)">Encrypted Access Control</a> below.</p>
 
@@ -469,7 +482,50 @@
     <p>A creator can upload multiple quality versions of the same video — 1080p, 720p, 360p — each derived from the same master video key via a version label. The player switches between quality levels automatically based on bandwidth, just like adaptive bitrate streaming on any major platform. Each version has its own encrypted chunk tree, and a viewer's access capability covers whichever versions they've been granted access to.</p>
 
     <h3 style="margin-top:28px">Privacy: your IP stays between you and your Jet</h3>
-    <p>Drops never connect directly to viewers. All chunk requests flow through Jets, which are the only parties that know which IP address is requesting which chunks. Drops only see requests from Jets — not from the viewers behind them. There is no WebRTC between viewers and Drops, so your IP is not exposed to the storage network. Only the Jet you're connected to knows who you are, and even then it only sees your connection, not the decryption keys.</p>
+    <p>Drops never connect directly to viewers. All chunk requests flow through Jets, which are the only parties that know which IP address is requesting which chunks. Drops only see requests from Jets — not from the viewers behind them. There is no <a href="https://en.wikipedia.org/wiki/WebRTC" target="_blank" style="color:var(--blue);text-decoration:none">WebRTC</a> between viewers and Drops, so your IP is not exposed to the storage network. Only the Jet you're connected to knows who you are, and even then it only sees your connection, not the decryption keys.</p>
+
+    <h3 id="keydist" style="margin-top:28px">How channels control access — and distribute keys</h3>
+    <p>The encrypted chunks on the network are useless without the keys to decrypt them. The channel author decides exactly who gets those keys, when, and under what conditions. This is where the business model lives — not in server-side access checks, but in cryptographic key release.</p>
+
+    <div class="flow">
+      <div class="flow-step">
+        <div class="flow-num">🎬</div>
+        <div class="flow-body">
+          <h3>Teasers and tiered access</h3>
+          <p>A channel can publish a free preview — the first few minutes — by releasing decryption keys only for those chunks. The rest of the video remains encrypted and inaccessible. Viewers who want to watch beyond the teaser purchase access, at which point the channel releases keys for the remaining segments. Each tier is a distinct set of subtree grants over the <a href="#access" style="color:var(--blue)">HKDF key tree</a>.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">🔑</div>
+        <div class="flow-body">
+          <h3>Buying access keys from the channel</h3>
+          <p>The channel itself is the key authority. A viewer pays (via subscription, one-time purchase, or crypto payment) and the channel releases a signed capability — a bundle of subtree grants covering the purchased content. This capability travels in the URL or is stored in the viewer's wallet. No third party can grant or revoke access; the channel author controls the keys end to end.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">📺</div>
+        <div class="flow-body">
+          <h3>Embedding in third-party aggregators</h3>
+          <p>The player can be embedded as an <code>&lt;iframe&gt;</code> on any site — Netflix-style aggregators, social platforms, fan communities — without the host site ever seeing the decryption keys. The iframe loads the channel's own player page, which holds the keys in its own origin. The embedding site sees only the video output, not the cryptographic material behind it. This is standard <a href="https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy" target="_blank" style="color:var(--blue);text-decoration:none">same-origin isolation</a> working as designed.</p>
+        </div>
+      </div>
+      <div class="flow-step">
+        <div class="flow-num">🛡️</div>
+        <div class="flow-body">
+          <h3>Trusted iframe environments — the enforcement point</h3>
+          <p>The decryption keys are only ever released inside an iframe environment the channel author explicitly trusts. The channel author defines which origins are permitted to receive key material. Two trusted environments today:</p>
+          <ul style="margin-top:10px;padding-left:20px;color:var(--muted);font-size:.95rem">
+            <li style="margin-bottom:8px"><strong style="color:#fff">A website hosted on an attested <a href="https://safebots.ai/safebox.html" target="_blank" style="color:var(--blue);text-decoration:none">Safebox</a> domain</strong> — the channel author (or a trusted aggregator) runs a Safebox node, which cryptographically attests that the server is running unmodified, audited code. The keys are released only to iframes whose parent origin is a verified Safebox domain. A shared trusted domain like <a href="https://safestrea.ms" target="_blank" style="color:var(--blue);text-decoration:none">safestrea.ms</a> could serve as the universal trusted player host — any channel can point their iframe at it.</li>
+            <li style="margin-bottom:8px"><strong style="color:#fff">Native iOS app with a Safari Web Extension</strong> — the app intercepts iframes at the OS level via a Safari Web Extension, injects the key release logic into a trusted execution context, and ensures the keys never leak to the embedding page. The channel author trusts the app's bundle ID and code signature rather than a domain.</li>
+          </ul>
+          <p style="margin-top:12px">In both cases, the guarantee is the same: the decryption keys only materialize inside a context the channel author has cryptographically verified. An aggregator site cannot extract the keys from the iframe, even if it controls the surrounding page.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="callout">
+      <strong>The key release point is the business model.</strong> Safecloud doesn't enforce access by controlling who can download encrypted bytes — anyone can download the ciphertext, it's useless without keys. The enforcement happens at the moment of key release, in a trusted context, after payment or subscription verification. This is fundamentally more censorship-resistant than server-side access control: there is no server to pressure, no account to suspend, no content to take down.
+    </div>
   </div>
 </section>
 
@@ -484,61 +540,86 @@
 
     <!-- HKDF tree SVG -->
     <div class="diagram">
-      <svg viewBox="0 0 780 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:780px">
+      <svg viewBox="0 0 780 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;max-width:780px">
         <defs>
           <marker id="ha" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
             <path d="M0,0 L0,6 L7,3 z" fill="#a78bfa"/>
           </marker>
+          <marker id="ha-blue" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L7,3 z" fill="#3B82F6"/>
+          </marker>
+          <marker id="ha-amber" markerWidth="7" markerHeight="7" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L7,3 z" fill="#E8A020"/>
+          </marker>
         </defs>
-        <!-- Root -->
-        <rect x="320" y="10" width="140" height="36" rx="8" fill="#26262c" stroke="#a78bfa" stroke-width="1.5"/>
-        <text x="390" y="33" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700" font-family="system-ui">encryptionRoot</text>
 
-        <!-- Track level -->
-        <rect x="100" y="80" width="140" height="36" rx="8" fill="#26262c" stroke="#a78bfa" stroke-width="1.5"/>
-        <text x="170" y="100" text-anchor="middle" fill="#fff" font-size="11" font-family="system-ui">track.data key</text>
-        <rect x="540" y="80" width="140" height="36" rx="8" fill="#26262c" stroke="#a78bfa" stroke-width="1.5"/>
-        <text x="610" y="100" text-anchor="middle" fill="#fff" font-size="11" font-family="system-ui">track.index key</text>
+        <!--
+          Row layout (more vertical breathing room):
+          Row 0 — encryptionRoot:  y=16  h=36  bottom=52
+          gap 40px — label at y=62
+          Row 1 — track boxes:     y=76  h=36  bottom=112
+          gap 50px — label at y=124
+          Row 2 — node boxes:      y=148 h=36  bottom=184
+          gap 50px — label at y=196
+          Row 3 — chunk boxes:     y=220 h=30  bottom=250
+          Grant annotation: y=150  right side
+        -->
 
-        <!-- Node level -->
-        <rect x="20"  y="160" width="120" height="36" rx="8" fill="#26262c" stroke="#3B82F6" stroke-width="1.5"/>
-        <text x="80"  y="180" text-anchor="middle" fill="#fff" font-size="11" font-family="system-ui">node[0] key</text>
-        <rect x="160" y="160" width="120" height="36" rx="8" fill="#26262c" stroke="#3B82F6" stroke-width="1.5"/>
-        <text x="220" y="180" text-anchor="middle" fill="#fff" font-size="11" font-family="system-ui">node[1] key</text>
+        <!-- ── Row 0: encryptionRoot ── -->
+        <rect x="320" y="16" width="140" height="36" rx="8" fill="#26262c" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="390" y="39" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700" font-family="system-ui">encryptionRoot</text>
 
-        <!-- Leaf level -->
-        <rect x="20"  y="240" width="60" height="30" rx="6" fill="#16161a" stroke="#4CAF50" stroke-width="1"/>
-        <text x="50"  y="260" text-anchor="middle" fill="#4CAF50" font-size="10" font-family="system-ui">chunk 0</text>
-        <rect x="90"  y="240" width="60" height="30" rx="6" fill="#16161a" stroke="#4CAF50" stroke-width="1"/>
-        <text x="120" y="260" text-anchor="middle" fill="#4CAF50" font-size="10" font-family="system-ui">chunk 1</text>
-        <rect x="160" y="240" width="60" height="30" rx="6" fill="#16161a" stroke="#4CAF50" stroke-width="1"/>
-        <text x="190" y="260" text-anchor="middle" fill="#4CAF50" font-size="10" font-family="system-ui">chunk 2</text>
-        <rect x="230" y="240" width="60" height="30" rx="6" fill="#16161a" stroke="#4CAF50" stroke-width="1"/>
-        <text x="260" y="260" text-anchor="middle" fill="#4CAF50" font-size="10" font-family="system-ui">chunk 3</text>
+        <!-- Label between root and tracks -->
+        <text x="390" y="64" text-anchor="middle" fill="#9090a0" font-size="9" font-family="system-ui">HKDF label: safecloud.track.data / safecloud.track.index</text>
+
+        <!-- ── Row 1: track boxes ── -->
+        <rect x="80"  y="76" width="150" height="36" rx="8" fill="#26262c" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="155" y="99" text-anchor="middle" fill="#fff" font-size="11" font-family="system-ui">track.data key</text>
+        <rect x="550" y="76" width="150" height="36" rx="8" fill="#26262c" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="625" y="99" text-anchor="middle" fill="#fff" font-size="11" font-family="system-ui">track.index key</text>
 
         <!-- Arrows root → tracks -->
-        <line x1="360" y1="46" x2="218" y2="80" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ha)"/>
-        <line x1="420" y1="46" x2="562" y2="80" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ha)"/>
-        <!-- track.data → nodes -->
-        <line x1="145" y1="116" x2="90"  y2="160" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ha)"/>
-        <line x1="195" y1="116" x2="230" y2="160" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ha)"/>
-        <!-- node[0] → chunks 0,1 -->
-        <line x1="65"  y1="196" x2="50"  y2="240" stroke="#3B82F6" stroke-width="1.5" marker-end="url(#ha)"/>
-        <line x1="95"  y1="196" x2="120" y2="240" stroke="#3B82F6" stroke-width="1.5" marker-end="url(#ha)"/>
-        <!-- node[1] → chunks 2,3 -->
-        <line x1="205" y1="196" x2="190" y2="240" stroke="#3B82F6" stroke-width="1.5" marker-end="url(#ha)"/>
-        <line x1="235" y1="196" x2="260" y2="240" stroke="#3B82F6" stroke-width="1.5" marker-end="url(#ha)"/>
+        <line x1="350" y1="52" x2="218" y2="76" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ha)"/>
+        <line x1="430" y1="52" x2="568" y2="76" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ha)"/>
 
-        <!-- Grant annotations -->
-        <rect x="430" y="155" width="175" height="50" rx="8" fill="rgba(232,160,32,0.1)" stroke="#E8A020" stroke-width="1" stroke-dasharray="4,3"/>
-        <text x="517" y="175" text-anchor="middle" fill="#E8A020" font-size="10" font-weight="700" font-family="system-ui">Grant at node[1]</text>
-        <text x="517" y="191" text-anchor="middle" fill="#E8A020" font-size="10" font-family="system-ui">→ unlocks chunks 2 &amp; 3 only</text>
-        <line x1="430" y1="178" x2="295" y2="178" stroke="#E8A020" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#ha)"/>
+        <!-- Label between tracks and nodes — placed ABOVE node boxes -->
+        <text x="170" y="136" text-anchor="middle" fill="#9090a0" font-size="9" font-family="system-ui">safecloud.node.0 / safecloud.node.1</text>
 
-        <!-- Labels -->
-        <text x="390" y="68" text-anchor="middle" fill="#9090a0" font-size="9" font-family="system-ui">HKDF label: safecloud.track.data / safecloud.track.index</text>
-        <text x="170" y="148" text-anchor="middle" fill="#9090a0" font-size="9" font-family="system-ui">safecloud.node.0 / safecloud.node.1</text>
-        <text x="160" y="228" text-anchor="middle" fill="#9090a0" font-size="9" font-family="system-ui">safecloud.chunk.key.i / safecloud.chunk.iv.i</text>
+        <!-- ── Row 2: node boxes ── -->
+        <rect x="20"  y="148" width="130" height="36" rx="8" fill="#26262c" stroke="#3B82F6" stroke-width="1.5"/>
+        <text x="85"  y="171" text-anchor="middle" fill="#fff" font-size="11" font-family="system-ui">node[0] key</text>
+        <rect x="170" y="148" width="130" height="36" rx="8" fill="#26262c" stroke="#3B82F6" stroke-width="1.5"/>
+        <text x="235" y="171" text-anchor="middle" fill="#fff" font-size="11" font-family="system-ui">node[1] key</text>
+
+        <!-- Arrows track.data → nodes -->
+        <line x1="130" y1="112" x2="82"  y2="148" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ha)"/>
+        <line x1="180" y1="112" x2="238" y2="148" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#ha)"/>
+
+        <!-- Label between nodes and chunks — placed ABOVE chunk boxes -->
+        <text x="170" y="208" text-anchor="middle" fill="#9090a0" font-size="9" font-family="system-ui">safecloud.chunk.key.i / safecloud.chunk.iv.i</text>
+
+        <!-- ── Row 3: chunk boxes ── -->
+        <rect x="20"  y="220" width="65" height="30" rx="6" fill="#16161a" stroke="#4CAF50" stroke-width="1"/>
+        <text x="52"  y="240" text-anchor="middle" fill="#4CAF50" font-size="10" font-family="system-ui">chunk 0</text>
+        <rect x="95"  y="220" width="65" height="30" rx="6" fill="#16161a" stroke="#4CAF50" stroke-width="1"/>
+        <text x="127" y="240" text-anchor="middle" fill="#4CAF50" font-size="10" font-family="system-ui">chunk 1</text>
+        <rect x="170" y="220" width="65" height="30" rx="6" fill="#16161a" stroke="#4CAF50" stroke-width="1"/>
+        <text x="202" y="240" text-anchor="middle" fill="#4CAF50" font-size="10" font-family="system-ui">chunk 2</text>
+        <rect x="245" y="220" width="65" height="30" rx="6" fill="#16161a" stroke="#4CAF50" stroke-width="1"/>
+        <text x="277" y="240" text-anchor="middle" fill="#4CAF50" font-size="10" font-family="system-ui">chunk 3</text>
+
+        <!-- Arrows node[0] → chunks 0,1 -->
+        <line x1="68"  y1="184" x2="52"  y2="220" stroke="#3B82F6" stroke-width="1.5" marker-end="url(#ha-blue)"/>
+        <line x1="102" y1="184" x2="127" y2="220" stroke="#3B82F6" stroke-width="1.5" marker-end="url(#ha-blue)"/>
+        <!-- Arrows node[1] → chunks 2,3 -->
+        <line x1="218" y1="184" x2="202" y2="220" stroke="#3B82F6" stroke-width="1.5" marker-end="url(#ha-blue)"/>
+        <line x1="252" y1="184" x2="277" y2="220" stroke="#3B82F6" stroke-width="1.5" marker-end="url(#ha-blue)"/>
+
+        <!-- ── Grant annotation ── -->
+        <rect x="430" y="148" width="185" height="50" rx="8" fill="rgba(232,160,32,0.1)" stroke="#E8A020" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="522" y="169" text-anchor="middle" fill="#E8A020" font-size="10" font-weight="700" font-family="system-ui">Grant at node[1]</text>
+        <text x="522" y="185" text-anchor="middle" fill="#E8A020" font-size="10" font-family="system-ui">→ unlocks chunks 2 &amp; 3 only</text>
+        <line x1="430" y1="173" x2="302" y2="166" stroke="#E8A020" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#ha-amber)"/>
       </svg>
     </div>
 
@@ -647,8 +728,14 @@
       <div class="flow-step"><div class="flow-num">3</div><div class="flow-body"><h3>Drop Accumulates Tokens in IndexedDB</h3><p>Each valid payment token is stored locally, deduplicated by SHA-256 of its canonical JSON. The Drop tracks total earned Safebux across all tokens.</p></div></div>
       <div class="flow-step"><div class="flow-num">4</div><div class="flow-body"><h3>Drop Claims On-Chain When Threshold Is Reached</h3><p>When accumulated tokens exceed the configured threshold, the Drop calls <code>OpenClaiming.paymentsExecute()</code> on-chain. The contract verifies the EIP-712 signature, checks the spending line, and transfers Safebux from the payer to the Drop's EVM address in a single transaction.</p></div></div>
     </div>
-    <div class="addr-box">0x99999febd42cad798fe10ab0b1c563002fc99999</div>
-    <p style="font-size:.9rem;color:var(--muted)">OpenClaiming contract — immutable, no proxy, verified on BSC mainnet and Ethereum mainnet.</p>
+    <div class="callout green">
+      <strong>No crypto wallet required for viewers — unless they want one.</strong> The payer on a payment token can be anyone: the domain operator running the site, a sponsor, a record label, a DAO treasury. Most viewers never touch crypto at all — the site operator absorbs the Safebux cost and recoups it however they choose: a credit card subscription, ad revenue, a one-time fee, or a free tier. There is zero friction for the end user. For viewers who prefer direct control, they can fund their own Safebux balance, declare themselves as payer, and bypass the operator entirely. The protocol supports both flows identically — same signed Payment struct, same contract, same settlement.
+    </div>
+
+    <p style="font-family:var(--mono);font-size:.9rem;margin:20px 0">
+      <a href="https://bscscan.com/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--purple);text-decoration:none">0x99999febd42cad798fe10ab0b1c563002fc99999</a>
+      — immutable, no proxy, verified on <a href="https://bscscan.com/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--blue)">BSC mainnet</a> and <a href="https://etherscan.io/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--blue)">Ethereum mainnet</a>
+    </p>
   </div>
 </section>
 
@@ -798,7 +885,7 @@ sudo nano /etc/hosts
       <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">HLS streaming via Service Worker</div><div class="status-desc">Encrypted video streams with prefetch loop</div></div>
       <div class="status-row"><div class="status-dot dot-amber"></div><div class="status-name">Jet payment token signing</div><div class="status-desc">Jet sends unsigned stub tokens to Drops — EIP-712 signing in progress</div></div>
       <div class="status-row"><div class="status-dot dot-amber"></div><div class="status-name">Relay claiming (Jet covers gas)</div><div class="status-desc">Relay path wired but not yet executing on-chain transactions</div></div>
-      <div class="status-row"><div class="status-dot dot-amber"></div><div class="status-name">Safebux ERC-20 token</div><div class="status-desc">Contract designed, deployment imminent</div></div>
+      <div class="status-row"><div class="status-dot dot-amber"></div><div class="status-name">Safebux <a href="https://en.wikipedia.org/wiki/ERC-20" target="_blank" style="color:var(--blue);text-decoration:none">ERC-20</a> token</div><div class="status-desc">Contract designed, deployment imminent</div></div>
     </div>
   </div>
 </section>
