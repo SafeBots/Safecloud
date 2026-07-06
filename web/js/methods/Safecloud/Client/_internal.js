@@ -224,7 +224,32 @@ Q.exports(function (Q) {
             accessRootPublicKey:     p.accessRootPublicKey,
             bindingProof:            p.bindingProof,
             jurisdiction:            p.jurisdiction  || null,
-            aiAttestation:           p.aiAttestation || null
+            aiAttestation:           p.aiAttestation || null,
+
+            // ── Revenue routing ───────────────────────────────────────────────
+            // Optional. When present, the Jet routes creator royalty and protocol
+            // treasury shares on every chunk serve.
+            //
+            // revenue: {
+            //   creatorAddress:  String   — content creator's EVM address
+            //   incomeContract:  String   — IncomeContract address for batched distribution
+            //   split: {                  — basis points (default: drop:6000 jet:2000
+            //     drop:     Number        —   creator:1500 protocol:500, total must = 10000)
+            //     jet:      Number
+            //     creator:  Number
+            //     protocol: Number
+            //   }
+            // }
+            revenue: p.revenue || null,
+            // metaCid — CID of the encrypted metadata chunk at track/meta.
+            // Contains perChunkWei, creatorAddress, incomeContract, split.
+            // Fetch and decrypt with Client.fetchMeta(manifest, rootKey) to read.
+            metaCid: p.metaCid || null,
+            // perChunkWei — publisher price summary (plaintext convenience field).
+            // Copied from metadata fork so Clouds can build payment tokens without
+            // a separate meta fetch. Full metadata (creator address etc) requires
+            // fetchMeta() with the root key.
+            perChunkWei: p.perChunkWei || null
         };
     };
 

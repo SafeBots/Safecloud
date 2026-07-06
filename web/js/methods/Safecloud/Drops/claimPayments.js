@@ -14,7 +14,7 @@ Q.exports(function (Q, _) {
 
         var threshold = Q.Config.get(['Safecloud', 'drop', 'claimThresholdSafebux'], '100000');
         var batchSize = Q.Config.get(['Safecloud', 'drop', 'claimBatchSize'], 10);
-        var OC_ADDR   = Q.Config.get(['Safecloud', 'openclaiming', 'address'], '0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999');
+        var OC_ADDR   = Q.Config.get(['Safecloud', 'openclaiming', 'address'], '0x99999febd42cad798fe10ab0b1c563002fc99999');
 
         var _promise = _.openDB().then(function (db) {
             // Load all unredeemed tokens
@@ -162,16 +162,96 @@ Q.exports(function (Q, _) {
     // ── Relay path — Jet submits on-chain, covering gas ──────────────────────
 
     function _claimRelay(db, tokens, records) {
-        return Q.Safecloud.Jets.dropClaimPayments({
+        // Build the relay request struct — Drop signs this to prove ownership
+        // of the payment tokens and authorize the Jet to submit on its behalf.
+        var relayRequest = {
             dropId:        _._state.dropId,
             paymentTokens: tokens,
-            signature:     null // TODO: sign with EIP-712 session key
+            nonce:         Math.floor(Date.now() / 1000), // replay protection
+            dropEVM:       _._state.evmAddress
+        };
+
+        // Sign the relay request with the Drop's EVM private key (secp256k1 EIP-712).
+        // The Jet verifies this signature before submitting on-chain.
+        return _signRelayRequest(relayRequest).then(function (sig) {
+            relayRequest.signature = sig;
+            return Q.Safecloud.Jets.dropClaimPayments(relayRequest);
         }).then(function (result) {
             var txHash = result && result.txHash;
+            if (!txHash) {
+                // Jet returned null txHash — relay not yet implemented server-side
+                // or Jet wallet not configured. Return without marking redeemed.
+                return { claimed: 0, txHashes: [] };
+            }
             return _markRedeemed(db, records).then(function () {
-                return { claimed: tokens.length, txHashes: txHash ? [txHash] : [] };
+                return { claimed: tokens.length, txHashes: [txHash] };
             });
         });
+    }
+
+    /**
+     * Sign a relay request with the Drop's EVM private key (EIP-712).
+     *
+     * The relay request struct is:
+     *   {
+     *     dropId:        string,
+     *     dropEVM:       address,
+     *     nonce:         uint256,
+     *     tokenCount:    uint256
+     *   }
+     *
+     * Domain: OpenClaiming contract, same chainId as payment tokens.
+     * The Jet recovers the signer and verifies it matches drop.evmAddress.
+     *
+     * @param {Object} req  relay request object
+     * @return {Promise<String>}  hex signature
+     */
+    function _signRelayRequest(req) {
+        if (typeof ethers === 'undefined') {
+            return Promise.resolve(null);
+        }
+        if (!_._state.evmPrivateKey) {
+            return Promise.resolve(null);
+        }
+
+        var chainId  = Q.Config.get(['Safecloud', 'safebux', 'chainId'], 'eip155:56');
+        var chainNum = chainId.indexOf('eip155:') === 0
+            ? parseInt(chainId.slice(7), 10) : parseInt(chainId, 10);
+        var ocAddr   = Q.Config.get(['Safecloud', 'openclaiming', 'address'],
+                           '0x99999febd42cad798fe10ab0b1c563002fc99999');
+
+        var domain = {
+            name:              'OpenClaiming',
+            version:           '1',
+            chainId:           chainNum,
+            verifyingContract: ocAddr
+        };
+
+        var types = {
+            RelayRequest: [
+                { name: 'dropId',     type: 'string'  },
+                { name: 'dropEVM',    type: 'address' },
+                { name: 'nonce',      type: 'uint256' },
+                { name: 'tokenCount', type: 'uint256' }
+            ]
+        };
+
+        var value = {
+            dropId:     req.dropId     || '',
+            dropEVM:    req.dropEVM    || ethers.ZeroAddress,
+            nonce:      BigInt(req.nonce      || 0),
+            tokenCount: BigInt(req.paymentTokens ? req.paymentTokens.length : 0)
+        };
+
+        try {
+            var pk     = _._state.evmPrivateKey;
+            var wallet = new ethers.Wallet(pk.startsWith('0x') ? pk : '0x' + pk);
+            return wallet.signTypedData(domain, types, value).catch(function () {
+                return null;
+            });
+        } catch (e) {
+            return Promise.resolve(null);
+        }
     }
 
     function _markRedeemed(db, records) {

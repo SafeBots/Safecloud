@@ -28,6 +28,24 @@ Q.exports(function (Q) {
         _defaultHandlersWired:  false  // prevents duplicate handler registration
     };
 
+    // ── Cloud EVM payment signing state ──────────────────────────────────────
+    // Set by Cloud.init() after WebAuthn PRF key derivation, same pattern as Drops/init.js.
+    // Used by Jets/get.js to sign Cloud→Jet payment tokens.
+    //
+    // Usage in Cloud.init() (or wherever the Cloud derives its identity):
+    //
+    //   Q.Crypto.internalKeypair({ secret: identitySecret, format: 'EIP712' })
+    //       .then(function (evmKP) {
+    //           Q.Safecloud.Jets.cloudEvmPrivateKey = Q.Data.toHex(evmKP.privateKey);
+    //           Q.Safecloud.Jets.cloudEvmAddress    = evmKP.address;
+    //       });
+    //
+    // These are module-level properties on Q.Safecloud.Jets (not on _._state)
+    // so they survive across method file invocations and are readable from Jets/get.js.
+    if (!Q.Safecloud.Jets.cloudEvmPrivateKey) { Q.Safecloud.Jets.cloudEvmPrivateKey = null; }
+    if (!Q.Safecloud.Jets.cloudEvmAddress)    { Q.Safecloud.Jets.cloudEvmAddress    = null; }
+    if (!Q.Safecloud.Jets.jetEvmAddress)      { Q.Safecloud.Jets.jetEvmAddress      = null; }
+
     // ─────────────────────────────────────────────────────────────────────
     // jetUrl — resolve the Jet server URL
     // ─────────────────────────────────────────────────────────────────────

@@ -271,7 +271,78 @@ Q.exports(function (Q, _) {
                                         }
 
                                         return Promise.all(putPromises).then(function () {
+                                            // ── Step 12a: metadata fork ───────────────────────────
+                                            // Encrypt and upload a single metadata chunk at track/meta.
+                                            // Contains pricing, creator info, and content metadata.
+                                            // Readable by anyone with the meta subtree key (Jets, Clouds).
+                                            // Never sent to Drops (they enforce their own minPerChunkWei).
+                                            var metaObj = {
+                                                perChunkWei:    options.perChunkWei    || Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], '1000'),
+                                                creatorAddress: options.creatorAddress || null,
+                                                incomeContract: options.incomeContract || null,
+                                                split:          options.split          || { drop: 6000, jet: 2000, creator: 1500, protocol: 500 },
+                                                title:          file.name              || '',
+                                                description:    options.description    || '',
+                                                type:           file.type              || '',
+                                                size:           fileSize,
+                                                created:        Math.floor(Date.now() / 1000)
+                                            };
+                                            // Collapse revenue into metaObj for backwards compat
+                                            if (options.revenue) {
+                                                Q.extend(metaObj, options.revenue);
+                                            }
+
+                                            var metaBytes = new TextEncoder().encode(JSON.stringify(metaObj));
+
+                                            // Derive meta track key: encRoot → HKDF("safecloud.track.meta")
+                                            var metaUploadPromise = Q.Crypto.delegate({
+                                                rootSecret: encRoot,
+                                                label:      'safecloud.track.meta',
+                                                context:    '{}',
+                                                format:     'ES256'
+                                            }).then(function (metaDel) {
+                                                return Promise.all([
+                                                    _.deriveChunkKey(metaDel.secret, 0),
+                                                    _.deriveChunkIV(metaDel.secret, 0)
+                                                ]).then(function (kv) {
+                                                    return Q.Data.importKey(kv[0]).then(function (cryptoKey) {
+                                                        return Q.Data.encrypt(cryptoKey, metaBytes.buffer, {
+                                                            iv:         kv[1],
+                                                            additional: _.chunkAAD(0)
+                                                        });
+                                                    }).then(function (enc) {
+                                                        return _.chunkCid(enc.ciphertext, enc.tag)
+                                                            .then(function (metaCid) {
+                                                                return Q.Safecloud.Jets.put({
+                                                                    chunks: [{
+                                                                        cid:        metaCid,
+                                                                        iv:         enc.iv,
+                                                                        ciphertext: enc.ciphertext,
+                                                                        tag:        enc.tag,
+                                                                        size:       metaBytes.length,
+                                                                        // Price tag: Jet reads this to enforce
+                                                                        // pricing without decrypting the chunk.
+                                                                        // format: "safecloud.price:{wei}"
+                                                                        tags:       [
+                                                                            'safecloud.track.meta',
+                                                                            'safecloud.price:' + metaObj.perChunkWei
+                                                                        ]
+                                                                    }],
+                                                                    link:    ['track', 'meta'],
+                                                                    rootCid: rootCid,
+                                                                    grants:  []
+                                                                }, {
+                                                                    skipPayment: true
+                                                                }).then(function () {
+                                                                    return metaCid;
+                                                                });
+                                                            });
+                                                    });
+                                                });
+                                            });
+
                                             // ── Step 12: manifest ─────────
+                                            return metaUploadPromise.then(function (metaCid) {
                                             var manifest = _.buildManifest({
                                                 rootCid:                 rootCid,
                                                 treeN:                   treeN,
@@ -289,7 +360,13 @@ Q.exports(function (Q, _) {
                                                     proof:     bindingProof
                                                 },
                                                 jurisdiction:  options.jurisdiction  || null,
-                                                aiAttestation: options.aiAttestation || null
+                                                aiAttestation: options.aiAttestation || null,
+                                                revenue:       options.revenue       || null,
+                                                // metaCid — CID of the encrypted metadata chunk
+                                                // Contains perChunkWei, creatorAddress, incomeContract, split
+                                                metaCid:       metaCid               || null,
+                                                // perChunkWei summary — plaintext for Cloud convenience
+                                                perChunkWei:   metaObj.perChunkWei   || null
                                             });
 
                                             var result = {
@@ -298,6 +375,7 @@ Q.exports(function (Q, _) {
                                             };
                                             if (callback) { callback(null, result); }
                                             return result;
+                                            }); // metaUploadPromise.then
                                         });
                                     });
                                 });
