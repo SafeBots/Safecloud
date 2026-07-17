@@ -1,0 +1,21 @@
+{
+  "name": "safecloud",
+  "version": "1.0.0-beta.3",
+  "description": "Safecloud Jet server \u2014 distributed encrypted storage network",
+  "main": "classes/Safecloud.js",
+  "dependencies": {
+    "ethers": "^6.17.0",
+    "express": "^4.18.0",
+    "hypercore-crypto": "^3.4.0",
+    "hyperswarm": "^4.17.0",
+    "socket.io": "^4.6.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "test": "NODE_PATH=test/shims node test/validateManifest.test.js && NODE_PATH=test/shims node test/delegation.test.js && NODE_PATH=test/shims node test/recipientsHash.test.js",
+    "jet": "node demo/jet.js"
+  }
+}

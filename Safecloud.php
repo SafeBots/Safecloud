@@ -37,5 +37,6 @@ class Safecloud
     static function Q_responseExtras()
     {
         Q_Response::addScript('{{Safecloud}}/js/Safecloud.js', 'head');
+        Q_Response::addStylesheet('{{Safecloud}}/css/Safecloud.css');
     }
 }

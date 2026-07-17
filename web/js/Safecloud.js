@@ -30,6 +30,19 @@ Q.Tool.define({
         css:  "{{Safecloud}}/css/tools/upload.css",
         text: ["Safecloud/content"]
     },
+    "Safecloud/player": {
+        js:   "{{Safecloud}}/js/tools/player.js",
+        css:  "{{Safecloud}}/css/tools/player.css",
+        text: ["Safecloud/content"]
+    },
+    // Safecloud-aware video player. Same file also (re)defines "Q/video" as a
+    // drop-in replacement adding the 'safecloud' adapter — see js/Q/video.js.
+    "Safecloud/video": {
+        js: "{{Safecloud}}/js/Q/video.js"
+    },
+    // Uncommenting this remaps the core Q/video tool to the drop-in above for
+    // the whole app (all existing adapters preserved):
+    // "Q/video": { js: "{{Safecloud}}/js/Q/video.js" },
     "Safecloud/video": {
         js:   "{{Safecloud}}/js/tools/video.js",
         css:  "{{Safecloud}}/css/tools/video.css",
@@ -227,7 +240,85 @@ Q.Safecloud.Client = Q.Method.define({
      * @param {Object} handle   Return value of play()
      * @return {void}
      */
-    pause: new Q.Method()
+    pause: new Q.Method(),
+
+    /**
+     * Establish the Cloud's payer identity for micropayments.
+     * Derives a stable EVM keypair via WebAuthn PRF (label
+     * "safecloud.cloud.session"), or uses options.privateKey directly.
+     * Sets Q.Safecloud.Jets.cloudEvmPrivateKey/cloudEvmAddress so
+     * Jets.get() auto-signs Cloud→Jet payment tokens.
+     *
+     * @method init
+     * @param {Object}   [options]  { privateKey, interactive }
+     * @param {Function} [callback]
+     * @return {Promise<{ evmAddress: String|null, anonymous: Boolean }>}
+     */
+    init: new Q.Method(),
+
+    /**
+     * Persist a {manifest, capability} pair to IndexedDB under its rootCid,
+     * so players (including iframe embeds in a pristine environment) can
+     * later stream with only the rootCid.
+     *
+     * @method saveCapability
+     * @param {String}   rootCid
+     * @param {Object}   data      { manifest, capability }
+     * @param {Function} [callback]
+     * @return {Promise<void>}
+     */
+    saveCapability: new Q.Method(),
+
+    /**
+     * Load a previously saved {manifest, capability} pair by rootCid.
+     *
+     * @method loadCapability
+     * @param {String}   rootCid
+     * @param {Function} [callback]
+     * @return {Promise<{ manifest, capability }|null>}
+     */
+    loadCapability: new Q.Method(),
+
+    /**
+     * Create a share link with split-entropy bootstrap.
+     * Returns { url, passphrase, split } — the URL goes through Channel 1,
+     * the passphrase through Channel 2 (voice, QR, separate message).
+     * Neither alone can decrypt the content.
+     *
+     * @method createShareLink
+     * @param {Object}   manifest
+     * @param {String}   rootKey
+     * @param {Object}   [options]  { split: true, words: 4, embed: true }
+     * @param {Function} [callback]
+     * @return {Promise<Object>}
+     */
+    createShareLink: new Q.Method(),
+
+    /**
+     * Recover rootKey from a split-entropy share link.
+     * Combines URL token + mask (Channel 1) with passphrase (Channel 2).
+     *
+     * @method recoverSplitKey
+     * @param {String}   rootCid
+     * @param {String}   tokenHex   from URL fragment 'st='
+     * @param {String}   maskB64    from URL fragment 'sm='
+     * @param {String}   passphrase from out-of-band channel
+     * @param {Function} [callback]
+     * @return {Promise<String>} rootKey as base64
+     */
+    recoverSplitKey: new Q.Method(),
+
+    /**
+     * Fetch and decrypt the metadata fork (price, royalty split, title).
+     *
+     * @method fetchMeta
+     * @param {Object}   manifest
+     * @param {String}   rootKey
+     * @param {Object}   [options]
+     * @param {Function} [callback]
+     * @return {Promise<Object>}
+     */
+    fetchMeta: new Q.Method()
 
 }, "{{Safecloud}}/js/methods/Safecloud/Client", function () {
     return [Q];
@@ -318,7 +409,15 @@ Q.Safecloud.Jets = Q.Method.define({
      * @param {Function} [callback]
      * @return {Promise<{ txHash: String|null }>}
      */
-    dropClaimPayments: new Q.Method()
+    dropClaimPayments: new Q.Method(),
+
+    /**
+     * Live Cloud payer statistics for in-tab dashboards.
+     * @method getCloudStats
+     * @return {Object} { chunksFetched, bytesFetched, chunksUploaded,
+     *                    bytesUploaded, paymentsSigned, paidWei, paidSbux }
+     */
+    getCloudStats: new Q.Method()
 
 }, "{{Safecloud}}/js/methods/Safecloud/Jets", function () {
     return [Q];
@@ -346,6 +445,9 @@ Q.Safecloud.Jets.onDropChallenge = new Q.Event();
 
 /** Incoming Safecloud/drop/slashed push from Jet. @event onDropSlashed */
 Q.Safecloud.Jets.onDropSlashed = new Q.Event();
+
+/** Fired when the Jet publishes its payment/network info. @event onInfo @param {Object} info */
+Q.Safecloud.Jets.onInfo = new Q.Event();
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -443,7 +545,15 @@ Q.Safecloud.Drops = Q.Method.define({
      * @method getStats
      * @return {Object} { servedMB, servedChunks, storedMB, storedChunks, safebuxEarned, dropId, evmAddress, prollyRoot, uptime }
      */
-    getStats: new Q.Method()
+    getStats: new Q.Method(),
+
+    /**
+     * Asynchronous payment-token statistics from IndexedDB.
+     * @method getPaymentStats
+     * @param {Function} [callback]
+     * @return {Promise<{ tokens, totalWei, totalSbux, thresholdWei, claimable }>}
+     */
+    getPaymentStats: new Q.Method()
 
 }, "{{Safecloud}}/js/methods/Safecloud/Drops", function () {
     return [Q];

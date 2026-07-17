@@ -4,15 +4,16 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Safecloud Drop</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500;600&family=Barlow+Condensed:wght@300;400;500;700;800&display=swap" rel="stylesheet">
+<!-- Fonts: system stacks only — no third-party requests from a privacy product.
+     Self-host IBM Plex Mono / Barlow Condensed here via @font-face if desired. -->
 <style>
 :root {
   --bg:    #0a0c0a; --bg2: #0f120f; --bg3: #141814;
   --bdr:   #1e281e; --grn: #00ff88; --grn2:#00cc6a;
   --grn3:  #004422; --amb: #ffaa00; --red: #ff3344;
   --dim:   #3a4a3a; --mut: #5a7a5a; --txt: #c8e0c8;
-  --mono:  'IBM Plex Mono',monospace; --cond:'Barlow Condensed',sans-serif;
+  --mono:  'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  --cond:  'Barlow Condensed','Arial Narrow',Arial,sans-serif;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{background:var(--bg);color:var(--txt);font-family:var(--mono);min-height:100vh;overflow-x:hidden}
@@ -228,7 +229,7 @@ canvas#ec{width:100%!important;height:140px!important}
       <div class="hcard amber">
         <div class="hlbl">◆ Safebux Earned</div>
         <div class="hval amber"><span id="sbuxTotal">0.000000</span><span class="hunit">SBUX</span></div>
-        <div class="hsub">@ 0.02 SBUX/MB &nbsp;·&nbsp;
+        <div class="hsub">@ <span id="sbuxRateLabel">0.02</span> SBUX/MB &nbsp;·&nbsp;
           <span id="sbuxClaimed" style="color:var(--dim)">0.000000 claimed</span></div>
       </div>
       <div class="hcard white">
@@ -315,7 +316,8 @@ canvas#ec{width:100%!important;height:140px!important}
 'use strict';
 
 /* ── Constants ─────────────────────────────────────────────── */
-var SBUX_PER_MB   = 0.02;
+var SBUX_PER_MB   = (typeof Q !== 'undefined' && Q.Config && Q.Config.get)
+                    ? Q.Config.get(['Safecloud','drop','sbuxPerMB'], 0.02) : 0.02;
 var CLAIM_THRESH  = 10;
 var CAP_BYTES     = 10 * 1073741824;
 var POLL_MS       = 1000;
@@ -359,6 +361,7 @@ function updateClock() {
 }
 setInterval(updateClock, 1000);
 updateClock();
+(function(){ var r=document.getElementById('sbuxRateLabel'); if(r) r.textContent=String(SBUX_PER_MB); })();
 
 /* ── Log ───────────────────────────────────────────────────── */
 function addLog(tag, msg) {
@@ -501,7 +504,6 @@ function updateDashboard(stats) {
 
   if (stats.evmAddress) {
     document.getElementById('evmAddr').textContent = stats.evmAddress;
-    document.getElementById('evmAddr').innerHTML = stats.evmAddress;
   }
   if (stats.dropId) document.getElementById('dropId').textContent = stats.dropId;
   if (stats.prollyRoot) {
@@ -610,7 +612,7 @@ function onConnected(jetUrl) {
 
   addLog('reg','Drop registered with Jet at <span class="hl">'+
     jetUrl.replace(/^https?:\/\//,'')+'</span>');
-  addLog('sys','WebAuthn PRF: EVM identity derived deterministically');
+  addLog('sys','Drop identity established (WebAuthn PRF when supported)');
 
   // Start polling
   setInterval(function(){ updateDashboard(); }, POLL_MS);

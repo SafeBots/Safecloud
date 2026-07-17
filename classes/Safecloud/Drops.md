@@ -327,7 +327,8 @@ via ethers.js. For each accumulated token, the Drop passes:
 - The Jet's EIP-712 signature from `token.sig[0]`
 - `recipient = dropEVMAddress` (this Drop)
 - `amount = chunks served × perChunkSafebux`
-- `incomeContract = address(0)` (direct ERC-20 transferFrom)
+- `hook = address(0)` (direct ERC-20 transferFrom; a non-zero hook would
+  receive the funds and be notified via `pay(recipient, amount)`)
 
 *Relay path (no gas):*
 The Drop sends `Safecloud/drop/claimPayments` to the Jet with the accumulated
@@ -660,7 +661,7 @@ const balance = await safebux.balanceOf(jetEVMAddress);  // BigInt
 // Payment claiming (direct path):
 const signer   = new ethers.Wallet(dropSecp256k1PrivateKey, provider);
 const ocpContract = new ethers.Contract(
-    '0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999',
+    OC_ADDRESS, // from Users.web3.contracts["Safecloud/openclaiming"]
     OC_ABI,
     signer
 );

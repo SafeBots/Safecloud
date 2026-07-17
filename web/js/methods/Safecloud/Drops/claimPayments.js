@@ -12,9 +12,13 @@ Q.exports(function (Q, _) {
         if (typeof options === 'function') { callback = options; options = {}; }
         options = options || {};
 
-        var threshold = Q.Config.get(['Safecloud', 'drop', 'claimThresholdSafebux'], '100000');
+        var threshold = _.jetInfo(['drop', 'claimThresholdSafebux'],
+                            ['Safecloud', 'drop', 'claimThresholdSafebux'], '100000');
         var batchSize = Q.Config.get(['Safecloud', 'drop', 'claimBatchSize'], 10);
-        var OC_ADDR   = Q.Config.get(['Safecloud', 'openclaiming', 'address'], '0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999');
+        var OC_ADDR   = _.jetInfo(['openclaiming', 'address'],
+                            ['Safecloud', 'openclaiming', 'address'],
+                            // PLACEHOLDER fallback — real address from config
+                            '0x99999febd42cad798fe10ab0b1c563002fc99999');
 
         var _promise = _.openDB().then(function (db) {
             // Load all unredeemed tokens
@@ -26,8 +30,10 @@ Q.exports(function (Q, _) {
                 req.onerror   = function (e) { reject(e.target.error); };
             }).then(function (tokenRecords) {
                 // Filter to tokens matching configured Safebux token and chainId
-                var acceptedToken   = Q.Config.get(['Safecloud', 'safebux', 'address'], null);
-                var acceptedChainId = Q.Config.get(['Safecloud', 'safebux', 'chainId'], 'eip155:56');
+                var acceptedToken   = _.jetInfo(['safebux', 'address'],
+                                          ['Safecloud', 'safebux', 'address'], null);
+                var acceptedChainId = _.jetInfo(['safebux', 'chainId'],
+                                          ['Safecloud', 'safebux', 'chainId'], 'eip155:56');
                 if (acceptedToken) {
                     tokenRecords = tokenRecords.filter(function (r) {
                         var stm = r && r.token && r.token.stm;
@@ -72,10 +78,12 @@ Q.exports(function (Q, _) {
     // ── Direct path — Drop calls OpenClaiming.paymentsExecute ───────────────
 
     function _claimDirect(db, tokens, records, OC_ADDR) {
-        if (typeof ethers === 'undefined') {
-            return Promise.reject(new Error('ethers.js required for direct claiming'));
-        }
+        return Q.Safecloud.ensureEthers().then(function () {
+            return _claimDirectWithEthers(db, tokens, records, OC_ADDR);
+        });
+    }
 
+    function _claimDirectWithEthers(db, tokens, records, OC_ADDR) {
         var dropEVM  = _._state.evmAddress;
         var chainId  = Q.Config.get(['Safecloud', 'safebux', 'chainId'], 'eip155:56');
         var hexId    = chainId.indexOf('eip155:') === 0
@@ -101,60 +109,86 @@ Q.exports(function (Q, _) {
         var OC_ABI   = [
             'function paymentsExecute(' +
             '(address payer,address token,bytes32 recipientsHash,uint256 max,' +
-            'uint256 line,uint256 nbf,uint256 exp) payment,' +
+            'uint256 line,uint256 nbf,uint256 exp,address contractAddr) payment,' +
             'address[] recipients, bytes signature, address recipient,' +
-            'uint256 amount, address incomeContract) external'
+            'uint256 amount, address hook) external'
         ];
-        var contract = new ethers.Contract(OC_ADDR, OC_ABI, signer);
+        var contract = new ethers.Contract(OC_ADDR, OC_ABI.concat([
+            'function lineAvailable(address account, uint256 line, uint256 claimMax)'
+            + ' view returns (uint256)'
+        ]), signer);
         var txHashes = [];
-        var perChunkBig = BigInt(perChunk);
 
-        // Batch tokens
-        var batches = [];
-        for (var i = 0; i < tokens.length; i += batchSize) {
-            batches.push(tokens.slice(i, i + batchSize));
-        }
+        // ── WATERMARK SETTLEMENT ──────────────────────────────────────────────
+        // OpenClaiming lines are cumulative channels: every claim's max is
+        // checked against lines[payer][line].spent, so only the LATEST
+        // (highest-max) claim per (payer, line) is settleable — older ones
+        // are superseded, not additive. Group, keep the newest per channel,
+        // ask the chain what is actually available, and settle exactly that.
+        var byChannel = {};
+        tokens.forEach(function (token) {
+            if (!token || !token.stm || !token.sig || !token.sig[0]) { return; }
+            var stm = token.stm;
+            var key = String(stm.payer || '').toLowerCase()
+                + ':' + String(stm.line || '0');
+            var prev = byChannel[key];
+            try {
+                if (!prev || BigInt(stm.max || '0') > BigInt(prev.stm.max || '0')) {
+                    byChannel[key] = token;
+                }
+            } catch (e) { /* skip malformed */ }
+        });
+        var latest = Object.keys(byChannel).map(function (k) {
+            return byChannel[k];
+        });
 
-        return batches.reduce(function (prev, batch) {
+        return latest.reduce(function (prev, token) {
             return prev.then(function () {
-                return batch.reduce(function (p2, token) {
-                    return p2.then(function () {
-                        if (!token || !token.stm) { return; }
-                        var stm = token.stm;
-                        // Skip unsigned tokens (Phase 3 stubs from Jet have sig:[])
-                        if (!token.sig || !token.sig[0]) { return; }
-                        var sigBytes = ethers.getBytes(
-                            '0x' + Q.Data.toHex(Q.Data.fromBase64(token.sig[0]))
-                        );
-                        var amount = stm.max !== '0'
-                            ? BigInt(stm.max)
-                            : perChunkBig;
+                var stm = token.stm;
+                var sig0 = token.sig[0];
+                var sigHex = sig0.signature || sig0;
+                var sigBytes;
+                try {
+                    sigBytes = ethers.getBytes(
+                        sigHex.indexOf && sigHex.indexOf('0x') === 0
+                            ? sigHex
+                            : '0x' + Q.Data.toHex(Q.Data.fromBase64(sigHex))
+                    );
+                } catch (e) { return; }
 
-                        return contract.paymentsExecute(
-                            {
-                                payer:          stm.payer,
-                                token:          stm.token,
-                                recipientsHash: stm.recipientsHash,
-                                max:            BigInt(stm.max),
-                                line:           BigInt(stm.line || 0),
-                                nbf:            BigInt(stm.nbf || 0),
-                                exp:            BigInt(stm.exp || 0)
-                            },
-                            [dropEVM],
-                            sigBytes,
-                            dropEVM,
-                            amount,
-                            ethers.ZeroAddress
-                        ).then(function (tx) {
-                            txHashes.push(tx.hash);
-                            return tx.wait();
-                        });
+                return contract.lineAvailable(
+                    stm.payer, BigInt(stm.line || 0), BigInt(stm.max || '0')
+                ).then(function (available) {
+                    if (available <= 0n) { return; }
+                    return contract.paymentsExecute(
+                        {
+                            payer:          stm.payer,
+                            token:          stm.token,
+                            recipientsHash: stm.recipientsHash,
+                            max:            BigInt(stm.max || '0'),
+                            line:           BigInt(stm.line || 0),
+                            nbf:            BigInt(stm.nbf || 0),
+                            exp:            BigInt(stm.exp || 0),
+                            contractAddr:   stm.contract || OC_ADDR
+                        },
+                        [dropEVM],
+                        sigBytes,
+                        dropEVM,
+                        available,   // settle everything the channel allows
+                        ethers.ZeroAddress
+                    ).then(function (tx) {
+                        txHashes.push(tx.hash);
+                        return tx.wait();
                     });
-                }, Promise.resolve());
+                }).catch(function (err) {
+                    Q.log('Q.Safecloud.Drops.claimPayments: channel settle failed: '
+                        + (err && err.message), 'Safecloud');
+                });
             });
         }, Promise.resolve()).then(function () {
+            // All records in a settled channel are superseded together
             return _markRedeemed(db, records).then(function () {
-                return { claimed: tokens.length, txHashes: txHashes };
+                return { claimed: latest.length, txHashes: txHashes };
             });
         });
     }
@@ -162,16 +196,97 @@ Q.exports(function (Q, _) {
     // ── Relay path — Jet submits on-chain, covering gas ──────────────────────
 
     function _claimRelay(db, tokens, records) {
-        return Q.Safecloud.Jets.dropClaimPayments({
+        // Build the relay request struct — Drop signs this to prove ownership
+        // of the payment tokens and authorize the Jet to submit on its behalf.
+        var relayRequest = {
             dropId:        _._state.dropId,
             paymentTokens: tokens,
-            signature:     null // TODO: sign with EIP-712 session key
+            nonce:         Math.floor(Date.now() / 1000), // replay protection
+            dropEVM:       _._state.evmAddress
+        };
+
+        // Sign the relay request with the Drop's EVM private key (secp256k1 EIP-712).
+        // The Jet verifies this signature before submitting on-chain.
+        return _signRelayRequest(relayRequest).then(function (sig) {
+            relayRequest.signature = sig;
+            return Q.Safecloud.Jets.dropClaimPayments(relayRequest);
         }).then(function (result) {
             var txHash = result && result.txHash;
+            if (!txHash) {
+                // Jet returned null txHash — relay not yet implemented server-side
+                // or Jet wallet not configured. Return without marking redeemed.
+                return { claimed: 0, txHashes: [] };
+            }
             return _markRedeemed(db, records).then(function () {
-                return { claimed: tokens.length, txHashes: txHash ? [txHash] : [] };
+                return { claimed: tokens.length, txHashes: [txHash] };
             });
         });
+    }
+
+    /**
+     * Sign a relay request with the Drop's EVM private key (EIP-712).
+     *
+     * The relay request struct is:
+     *   {
+     *     dropId:        string,
+     *     dropEVM:       address,
+     *     nonce:         uint256,
+     *     tokenCount:    uint256
+     *   }
+     *
+     * Domain: OpenClaiming contract, same chainId as payment tokens.
+     * The Jet recovers the signer and verifies it matches drop.evmAddress.
+     *
+     * @param {Object} req  relay request object
+     * @return {Promise<String>}  hex signature
+     */
+    function _signRelayRequest(req) {
+        if (typeof ethers === 'undefined') {
+            return Promise.resolve(null);
+        }
+        if (!_._state.evmPrivateKey) {
+            return Promise.resolve(null);
+        }
+
+        var chainId  = Q.Config.get(['Safecloud', 'safebux', 'chainId'], 'eip155:56');
+        var chainNum = chainId.indexOf('eip155:') === 0
+            ? parseInt(chainId.slice(7), 10) : parseInt(chainId, 10);
+        var ocAddr   = Q.Config.get(['Safecloud', 'openclaiming', 'address'],
+                           // PLACEHOLDER fallback — real address from config
+                           '0x99999febd42cad798fe10ab0b1c563002fc99999');
+
+        var domain = {
+            name:              'Safecloud.dropRelay',
+            version:           '1',
+            chainId:           chainNum,
+            verifyingContract: ocAddr
+        };
+
+        var types = {
+            RelayRequest: [
+                { name: 'dropId',     type: 'string'  },
+                { name: 'dropEVM',    type: 'address' },
+                { name: 'nonce',      type: 'uint256' },
+                { name: 'tokenCount', type: 'uint256' }
+            ]
+        };
+
+        var value = {
+            dropId:     req.dropId     || '',
+            dropEVM:    req.dropEVM    || ethers.ZeroAddress,
+            nonce:      BigInt(req.nonce      || 0),
+            tokenCount: BigInt(req.paymentTokens ? req.paymentTokens.length : 0)
+        };
+
+        try {
+            var pk     = _._state.evmPrivateKey;
+            var wallet = new ethers.Wallet(pk.startsWith('0x') ? pk : '0x' + pk);
+            return wallet.signTypedData(domain, types, value).catch(function () {
+                return null;
+            });
+        } catch (e) {
+            return Promise.resolve(null);
+        }
     }
 
     function _markRedeemed(db, records) {

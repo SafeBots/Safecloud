@@ -28,6 +28,87 @@ Q.exports(function (Q) {
         _defaultHandlersWired:  false  // prevents duplicate handler registration
     };
 
+    // ── Cloud EVM payment signing state ──────────────────────────────────────
+    // Set by Cloud.init() after WebAuthn PRF key derivation, same pattern as Drops/init.js.
+    // Used by Jets/get.js to sign Cloud→Jet payment tokens.
+    //
+    // Usage in Cloud.init() (or wherever the Cloud derives its identity):
+    //
+    //   Q.Crypto.internalKeypair({ secret: identitySecret, format: 'EIP712' })
+    //       .then(function (evmKP) {
+    //           Q.Safecloud.Jets.cloudEvmPrivateKey = Q.Data.toHex(evmKP.privateKey);
+    //           Q.Safecloud.Jets.cloudEvmAddress    = evmKP.address;
+    //       });
+    //
+    // These are module-level properties on Q.Safecloud.Jets (not on _._state)
+    // so they survive across method file invocations and are readable from Jets/get.js.
+    if (!Q.Safecloud.Jets.cloudEvmPrivateKey) { Q.Safecloud.Jets.cloudEvmPrivateKey = null; }
+    if (!Q.Safecloud.Jets.cloudEvmAddress)    { Q.Safecloud.Jets.cloudEvmAddress    = null; }
+    if (!Q.Safecloud.Jets.jetEvmAddress)      { Q.Safecloud.Jets.jetEvmAddress      = null; }
+
+    // ── Jet-published payment/network info ────────────────────────────────────
+    // Populated by connect.js from the 'Safecloud/jet/info' socket event, so the
+    // browser never depends on PHP exposing plugin config. Shape mirrors the
+    // server handler in classes/Safecloud/Jets.js (_handleJetInfo).
+    if (!Q.Safecloud.Jets.info) { Q.Safecloud.Jets.info = null; }
+
+    /**
+     * Read a payment-related setting: Jet-published info first, then browser
+     * Q.Config (if the app exposed it), then the supplied default.
+     * @param {Array}  infoPath   path within Q.Safecloud.Jets.info
+     * @param {Array}  configPath path for Q.Config.get fallback
+     * @param {*}      def
+     */
+    _.paymentSetting = function (infoPath, configPath, def) {
+        var v = Q.getObject(infoPath, Q.Safecloud.Jets.info);
+        if (v !== undefined && v !== null) { return v; }
+        if (configPath && Q.Config && Q.Config.get) {
+            return Q.Config.get(configPath, def);
+        }
+        return def;
+    };
+
+    // ── Cloud payer statistics (for in-tab dashboards) ────────────────────────
+    _.cloudStats = {
+        chunksFetched:  0,
+        bytesFetched:   0,
+        chunksUploaded: 0,
+        bytesUploaded:  0,
+        paymentsSigned: 0,
+        paidWei:        '0'   // decimal string (BigInt-safe accumulation)
+    };
+    // Cumulative line-0 watermark for this payer (see Jets/get.js).
+    // In-memory per page load; when Safebux + OC are live, recover across
+    // sessions from OpenClaiming.lines(payer, 0).spent before first signing.
+    _.line0Watermark = '0';
+
+    _.addPaidWei = function (wei) {
+        try {
+            _.cloudStats.paidWei = String(BigInt(_.cloudStats.paidWei) + BigInt(wei));
+        } catch (e) { /* keep counter consistent even on bad input */ }
+    };
+
+    // ── ensureEthers — lazy-load the vendored ethers UMD bundle ───────────────
+    // ethers is only needed when payments or on-chain reads are configured, so
+    // it is not part of the base page weight. Served from this plugin (no CDN).
+    var _ethersPromise = null;
+    _.ensureEthers = function () {
+        if (typeof ethers !== 'undefined') { return Promise.resolve(ethers); }
+        if (_ethersPromise) { return _ethersPromise; }
+        _ethersPromise = new Promise(function (resolve, reject) {
+            Q.addScript(Q.url('{{Safecloud}}/js/ethers/ethers.umd.min.js'), function (err) {
+                if (err || typeof ethers === 'undefined') {
+                    _ethersPromise = null;
+                    return reject(err || new Error('ethers failed to load'));
+                }
+                resolve(ethers);
+            });
+        });
+        return _ethersPromise;
+    };
+    // Cross-namespace access (Drops methods receive their own _, not this one)
+    if (!Q.Safecloud.ensureEthers) { Q.Safecloud.ensureEthers = _.ensureEthers; }
+
     // ─────────────────────────────────────────────────────────────────────
     // jetUrl — resolve the Jet server URL
     // ─────────────────────────────────────────────────────────────────────

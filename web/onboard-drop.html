@@ -1,0 +1,96 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Become a Safecloud Drop</title>
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--line:#30363d;--txt:#e6edf3;--dim:#8b949e;
+        --green:#3fb950;--purple:#bc8cff;--blue:#58a6ff;--amber:#d29922}
+  body{font-family:system-ui;background:var(--bg);color:var(--txt);margin:0;
+       padding:24px;max-width:680px;margin:0 auto;line-height:1.55}
+  h1{font-size:1.6rem}h2{font-size:1.1rem;margin-top:28px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:16px;margin:14px 0}
+  .step{display:flex;gap:12px;margin:10px 0}
+  .n{background:var(--green);color:#000;font-weight:700;border-radius:50%;
+     width:26px;height:26px;min-width:26px;display:flex;align-items:center;
+     justify-content:center;font-size:.9rem}
+  .dim{color:var(--dim);font-size:.9rem}
+  a{color:var(--blue)}
+  button.cta{background:var(--green);color:#000;font-weight:600;border:0;
+     border-radius:10px;padding:14px 26px;font-size:1.05rem;cursor:pointer;
+     width:100%}
+  details{margin:8px 0}summary{cursor:pointer;color:var(--blue)}
+  .warn{color:var(--amber)}
+</style>
+</head>
+<body>
+<h1>⬢ Become a Drop</h1>
+<p class="dim">Rent out spare disk space and bandwidth from a browser tab.
+Earn streaming credits for every chunk you serve. One tap to start.</p>
+
+<div class="card">
+  <button class="cta" onclick="location.href='./drop'">Start serving — takes one tap</button>
+  <p class="dim" style="margin-top:10px;text-align:center">
+    Your device will ask to create a <b>passkey</b> (Face ID / fingerprint /
+    PIN). That's your entire setup.</p>
+</div>
+
+<h2>What just happened?</h2>
+<div class="card">
+  <div class="step"><div class="n">1</div><div>
+    <b>Your passkey became your identity.</b> Your earning address is
+    mathematically derived from it — same address every time, on this
+    device, and <i>no secret is ever stored anywhere</i>. Clear your
+    browser data and the passkey re-derives the same identity.</div></div>
+  <div class="step"><div class="n">2</div><div>
+    <b>You started receiving encrypted chunks.</b> Pieces of videos and
+    files, encrypted before they ever reached you. You cannot see what
+    they are — and that's your protection: you host ciphertext,
+    indistinguishable from random data.</div></div>
+  <div class="step"><div class="n">3</div><div>
+    <b>You earn per chunk served.</b> Payments arrive as signed IOUs
+    (watermarks) that accumulate instantly, off-chain, with no fees.
+    Cash them on-chain whenever you like.</div></div>
+</div>
+
+<h2>Your earnings</h2>
+<div class="card">
+  <p>Open the <a href="drop-dashboard.html">Drop dashboard</a> any time:
+  chunks stored, credits accumulated, lifetime claimed.</p>
+  <p><b>Claiming:</b> when your accumulated credits pass the threshold,
+  claim from the dashboard. Two ways:</p>
+  <p style="margin-left:12px">• <b>Relay</b> (default): the Jet submits for
+  you and covers the transaction fee — you need nothing but the passkey.<br>
+  • <b>Direct</b>: submit yourself — needs a few cents of BNB once.</p>
+  <p class="dim">Before serving big volumes, the dashboard also shows the
+  Jet's own balance — a Jet can only promise what it can pay.</p>
+</div>
+
+<h2>Privacy &amp; safety</h2>
+<div class="card">
+  <div class="step"><div class="n">✓</div><div><b>Fully anonymous.</b>
+    No registration, no email, no name. Your only footprint is an earning
+    address and a connection to your Jet.</div></div>
+  <div class="step"><div class="n">✓</div><div><b>Can't-know hosting.</b>
+    Chunks are encrypted before you get them. You can't read them, and
+    nobody can make serving decisions based on content — including
+    you.</div></div>
+  <div class="step"><div class="n">✓</div><div><b>Outbound-only.</b>
+    Your browser dials out; nothing connects in. No ports, no domain,
+    no server.</div></div>
+</div>
+
+<details><summary>Tips for earning more</summary>
+  <div class="card dim">
+    <p><b>Stay online.</b> Reliability is scored; reliable Drops are offered
+    full price, flaky ones half. Install this page as an app (browser menu →
+    "Add to Home Screen") and allow the wake-lock prompt so the tab isn't
+    put to sleep.</p>
+    <p><b>Offer more storage.</b> More chunks hosted → more chunks served.</p>
+    <p><b>Desktop &gt; phone</b> for uptime, but phones work.</p>
+  </div>
+</details>
+</body>
+</html>

@@ -224,7 +224,32 @@ Q.exports(function (Q) {
             accessRootPublicKey:     p.accessRootPublicKey,
             bindingProof:            p.bindingProof,
             jurisdiction:            p.jurisdiction  || null,
-            aiAttestation:           p.aiAttestation || null
+            aiAttestation:           p.aiAttestation || null,
+
+            // ── Revenue routing ───────────────────────────────────────────────
+            // Optional. When present, the Jet routes creator royalty and protocol
+            // treasury shares on every chunk serve.
+            //
+            // revenue: {
+            //   creatorAddress:  String   — content creator's EVM address
+            //   incomeContract:  String   — IncomeContract address for batched distribution
+            //   split: {                  — basis points (default: drop:6000 jet:2000
+            //     drop:     Number        —   creator:1500 protocol:500, total must = 10000)
+            //     jet:      Number
+            //     creator:  Number
+            //     protocol: Number
+            //   }
+            // }
+            revenue: p.revenue || null,
+            // metaCid — CID of the encrypted metadata chunk at track/meta.
+            // Contains perChunkWei, creatorAddress, incomeContract, split.
+            // Fetch and decrypt with Client.fetchMeta(manifest, rootKey) to read.
+            metaCid: p.metaCid || null,
+            // perChunkWei — publisher price summary (plaintext convenience field).
+            // Copied from metadata fork so Clouds can build payment tokens without
+            // a separate meta fetch. Full metadata (creator address etc) requires
+            // fetchMeta() with the root key.
+            perChunkWei: p.perChunkWei || null
         };
     };
 
@@ -453,6 +478,77 @@ Q.exports(function (Q) {
         }, Promise.resolve(grantSecret));
     };
 
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Client IndexedDB — capabilities + session (shared with the service
+    // worker, which lazy-restores streaming sessions from the same DB)
+    // ─────────────────────────────────────────────────────────────────────
+
+    // ── URL-safe base64 JSON helpers (shared by createShareLink, demo.js) ──
+    _.jsonToB64url = function (obj) {
+        var b64 = btoa(unescape(encodeURIComponent(JSON.stringify(obj))));
+        return b64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    };
+    _.b64urlToJSON = function (s) {
+        try {
+            s = s.replace(/-/g, '+').replace(/_/g, '/');
+            while (s.length % 4) { s += '='; }
+            return JSON.parse(decodeURIComponent(escape(atob(s))));
+        } catch (e) { return null; }
+    };
+
+    _.CLIENT_DB     = 'Safecloud.Client';
+    _.CLIENT_STORES = {
+        capabilities: 'capabilities',  // rootCid → { manifest, capability, savedAt }
+        session:      'session',       // key → value (e.g. WebAuthn credentialId)
+        swSessions:   'swSessions',    // videoId → { manifest, capability, versions }
+        authorTokens: 'authorTokens'   // retained author-share payment tokens
+    };
+
+    var _clientDbPromise = null;
+    _.clientDB = function () {
+        if (_clientDbPromise) { return _clientDbPromise; }
+        _clientDbPromise = new Promise(function (resolve, reject) {
+            var req = indexedDB.open(_.CLIENT_DB, 1);
+            req.onupgradeneeded = function () {
+                var db = req.result;
+                Object.keys(_.CLIENT_STORES).forEach(function (k) {
+                    var name = _.CLIENT_STORES[k];
+                    if (!db.objectStoreNames.contains(name)) {
+                        db.createObjectStore(name);
+                    }
+                });
+            };
+            req.onsuccess = function () { resolve(req.result); };
+            req.onerror   = function () {
+                _clientDbPromise = null;
+                reject(req.error || new Error('IndexedDB open failed'));
+            };
+        });
+        return _clientDbPromise;
+    };
+
+    _.clientDbGet = function (store, key) {
+        return _.clientDB().then(function (db) {
+            return new Promise(function (resolve, reject) {
+                var tx  = db.transaction(store, 'readonly');
+                var req = tx.objectStore(store).get(key);
+                req.onsuccess = function () { resolve(req.result || null); };
+                req.onerror   = function () { reject(req.error); };
+            });
+        });
+    };
+
+    _.clientDbPut = function (store, key, value) {
+        return _.clientDB().then(function (db) {
+            return new Promise(function (resolve, reject) {
+                var tx  = db.transaction(store, 'readwrite');
+                var req = tx.objectStore(store).put(value, key);
+                req.onsuccess = function () { resolve(); };
+                req.onerror   = function () { reject(req.error); };
+            });
+        });
+    };
 
     return _;
 });

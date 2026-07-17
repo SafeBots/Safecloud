@@ -85,6 +85,7 @@ Q.exports(function (Q, _) {
                             }).then(function () {
                                 _._state.usedBytes    = (_._state.usedBytes    || 0) + chunkSize;
                                 _._state.storedChunks = (_._state.storedChunks || 0) + 1;
+                                _.logActivity('put', { bytes: chunkSize });
                                 batchDiff.push({ cid: cid, added: true });
 
                                 // Incremental Bloom update (add-only — eviction rebuilds)

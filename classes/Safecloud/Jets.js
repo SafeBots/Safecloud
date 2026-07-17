@@ -35,6 +35,7 @@ var express   = require('express');
 // Server-side Safe layer helpers (same plugin, sibling files)
 var Safecloud_Client = require('./Client');
 var Safecloud_Drops  = require('./Drops');
+var JetSwarm         = require('./JetSwarm');
 
 // Q.Crypto.OpenClaim.EVM — load lazily so Jets works without it (Phase 3)
 try {
@@ -50,6 +51,14 @@ try {
 
 Q.makeEventEmitter(Safecloud_Jets);
 module.exports = Safecloud_Jets;
+
+// ── Server-fragment store (split-entropy, Patent #1 trusted server T) ────
+// The Jet holds one random entropy fragment per rootCid — NOT a decryption
+// key. The fragment is one of two HKDF inputs; the other travels in the URL.
+// Neither alone decrypts anything. The Jet releases its fragment via HTTP,
+// optionally gated by rate limiting, payment proof, or device attestation.
+// In-memory for now; production: persist to DB with TTL.
+var _serverFragments = {};  // rootCid → hex string
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constructor / namespace object
@@ -98,6 +107,123 @@ var _dropProllyStores = {};
 /** @private chainId (CAIP-2) → ethers.JsonRpcProvider */
 var _providers = {};
 
+/** @private Jet EVM wallet — used to sign payment tokens sent to Drops */
+var _jetWallet = null;
+
+/**
+ * Initialise (or return cached) the Jet's ethers.Wallet for payment signing.
+ * The private key is read from Safecloud.jet.privateKey in config.
+ * If not configured, payment tokens remain unsigned (Phase 3 fallback).
+ * @private
+ */
+function _getJetWallet() {
+    if (_jetWallet) { return _jetWallet; }
+    var privKey = Q.Config.get(['Safecloud', 'jet', 'privateKey'], null);
+    if (!privKey) { return null; }
+    try {
+        _jetWallet = new ethers.Wallet(privKey);
+        return _jetWallet;
+    } catch (e) {
+        Q.log('Q.Safecloud.Jets: invalid jet.privateKey — payment tokens will be unsigned: '
+            + e.message, 'Safecloud');
+        return null;
+    }
+}
+
+/**
+ * Sign an EIP-712 Payment struct and return the { stm, sig } OCP envelope.
+ *
+ * EIP-712 domain + types mirror OpenClaiming.sol Payment struct exactly.
+ * The payer is the Jet's EVM address (jetWallet.address).
+ * The payee (recipients) is the Drop's EVM address.
+ *
+ * @param {Object} stm     Payment statement (unsigned)
+ * @param {String} dropEVM Drop's EVM address (the payee / recipient)
+ * @return {Promise<{stm, sig}>|{stm, sig}}  signed OCP envelope, or stub if no wallet
+ * @private
+ */
+function _signPaymentToken(stm, dropEVM) {
+    var wallet = _getJetWallet();
+    if (!wallet || typeof ethers === 'undefined') {
+        // No wallet configured — return unsigned stub (Drop will skip sig check)
+        return Promise.resolve({ stm: stm, sig: [] });
+    }
+
+    var ocAddress = stm.contract ||
+        Q.Config.get(['Users', 'web3', 'contracts', 'Safecloud/openclaiming',
+            _chainIdToHex(stm.chainId || SAFEBUX_CHAIN)], OC_ADDRESS);
+
+    // keccak256(abi.encode([dropEVM])) — the recipientsHash
+    var dropAddrBytes  = Buffer.from(dropEVM.toLowerCase().replace(/^0x/i,'').padStart(40,'0'), 'hex');
+    var dropAddrPadded = Buffer.concat([Buffer.alloc(12, 0), dropAddrBytes]);
+    var abiEncoded     = Buffer.concat([
+        Buffer.from('0000000000000000000000000000000000000000000000000000000000000020', 'hex'),
+        Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex'),
+        dropAddrPadded
+    ]);
+    var recipientsHash = ethers.keccak256(abiEncoded);
+
+    // EIP-712 domain — byte-exact against OpenClaiming.sol:
+    // NAME_HASH = keccak256("OpenClaiming"), VERSION "1".
+    var domain = {
+        name:              'OpenClaiming',
+        version:           '1',
+        chainId:           typeof stm.chainId === 'number'
+                               ? stm.chainId
+                               : parseInt((stm.chainId || SAFEBUX_CHAIN).replace('eip155:', ''), 10),
+        verifyingContract: ocAddress
+    };
+
+    // EIP-712 types — byte-exact against PAYMENTS_TYPEHASH:
+    // Payment(address payer,address token,bytes32 recipientsHash,
+    //         uint256 max,uint256 line,uint256 nbf,uint256 exp,
+    //         address contract)
+    var types = {
+        Payment: [
+            { name: 'payer',          type: 'address' },
+            { name: 'token',          type: 'address' },
+            { name: 'recipientsHash', type: 'bytes32' },
+            { name: 'max',            type: 'uint256' },
+            { name: 'line',           type: 'uint256' },
+            { name: 'nbf',            type: 'uint256' },
+            { name: 'exp',            type: 'uint256' },
+            { name: 'contract',       type: 'address' }
+        ]
+    };
+
+    // Values — must exactly match on-chain struct. The signed 'contract'
+    // field is validated == address(this) by the rail (wallet-visible
+    // binding on top of the domain's verifyingContract).
+    var value = {
+        payer:          wallet.address,
+        token:          stm.token          || ethers.ZeroAddress,
+        recipientsHash: recipientsHash,
+        max:            BigInt(stm.max     || '0'),
+        line:           BigInt(stm.line    || '0'),
+        nbf:            BigInt(stm.nbf     || '0'),
+        exp:            BigInt(stm.exp     || '0'),
+        contract:       ocAddress
+    };
+
+    // Update stm with computed fields
+    var signedStm = Object.assign({}, stm, {
+        payer:          wallet.address,
+        recipientsHash: recipientsHash,
+        contract:       ocAddress
+    });
+
+    return wallet.signTypedData(domain, types, value).then(function (sigHex) {
+        // OCP sig array: [ { format: 'EIP712', signature: hex } ]
+        return {
+            stm: signedStm,
+            sig: [{ format: 'EIP712', signature: sigHex }]
+        };
+    }).catch(function (err) {
+        Q.log('Q.Safecloud.Jets: payment signing failed: ' + err.message, 'Safecloud');
+        return { stm: signedStm, sig: [] };
+    });
+}
+
 /**
  * Balance cache.
  * _balanceCache[chainId][payerAddress][tokenAddress] = { balance: BigInt, cachedAt: Number }
@@ -127,8 +253,50 @@ var BALANCE_CACHE_TTL_DEFAULT = 3600000;
 var CALL_DROP_TIMEOUT_DEFAULT = 10000;
 var REPLICATION_DEFAULT       = 2;
 var PER_CHUNK_WEI_DEFAULT     = '1000';
-var OC_ADDRESS                = '0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999';
-var SAFEBUX_CHAIN             = 'eip155:56';
+
+// ── Safebux is the ONLY accepted payment token for Safecloud ─────────────────
+// All payments (Cloud→Jet and Jet→Drop) must be denominated in Safebux.
+// The token address is set at deploy time via Safecloud.safebux.address config.
+// The chain is BSC mainnet (eip155:56) initially; additional chains added as
+// OpenClaiming is deployed there (currently: BSC + Ethereum).
+// OC_ADDRESS: canonical OpenClaiming contract (same on all EVM chains)
+// PLACEHOLDER — replace with the OpenClaiming address after deployment, or
+// (preferred) set Users.web3.contracts["Safecloud/openclaiming"][chainHex]
+// in local/app.json, which overrides this fallback everywhere.
+var OC_ADDRESS                = '0x99999febd42cad798fe10ab0b1c563002fc99999';
+var SAFEBUX_CHAIN             = 'eip155:56';   // BSC mainnet default
+
+// Revenue split defaults (basis points out of 10000):
+//
+// Two economic models, same infrastructure:
+//
+//   CONSUMPTION (video streaming, paid content):
+//     Viewer pays. Content creator keeps 90%, infra earns 10%.
+//     SPLIT_CREATOR:  90% — content royalty (→ manifest.revenue.incomeContract)
+//     SPLIT_INFRA:    10% — subdivided by the Jet between itself and its Drops
+//                           (default: 6% Jet / 4% Drop, adjustable via
+//                           _dropOfferPrice reliability curve)
+//     Active when manifest carries revenue.incomeContract or creatorAddress.
+//
+//   STORAGE (Safebox backup, encrypted archives):
+//     Owner pays to store their own data. No creator royalty — the author IS
+//     the customer. 100% to infra. Active when no revenue metadata in manifest.
+//
+// manifest.revenue.split overrides per-channel (author/publisher can adjust).
+var SPLIT_CREATOR_BP          = 9000;
+var SPLIT_PROTOCOL_BP         =  200;
+// Infra share = 10000 - SPLIT_CREATOR_BP - SPLIT_PROTOCOL_BP = 800 bps (8%).
+// Subdivided by the Jet between itself and its Drops.
+var SPLIT_DROP_BP             = 500;   // within infra: ~5% of total to Drop
+var SPLIT_JET_BP              = 300;   // within infra: ~3% of total to Jet
+var SPLIT_TOTAL_BP            = 10000;
+
+// Protocol treasury — receives SPLIT_PROTOCOL_BP share
+// Set to Safebots treasury address before mainnet launch
+var PROTOCOL_TREASURY         = Q.Config.get(
+    ['Safecloud', 'safebux', 'treasury'],
+    '0x0000000000000000000000000000000000000000'
+);
 
 var ERC20_ABI = [
     'function balanceOf(address) view returns (uint256)',
@@ -276,6 +444,12 @@ Safecloud_Jets._checkPayerBalance = function (payer, token, amount, chainId, lin
 
     // OpenClaiming.lineAvailable(address account, uint256 line, uint256 claimMax)
     //   → uint256  (remaining collectable amount on this line)
+    //
+    // QUIRK (see references/OpenClaiming.sol): for line 0 the view returns
+    // claimMax WITHOUT subtracting lines[payer][0].spent, while execution
+    // DOES enforce max − spent. This pre-flight is therefore optimistic on
+    // the default line; settlement-time truth comes from the public
+    // lines(payer, 0) getter (max, spent, open).
     var OC_ABI_LINE = [
         'function lineAvailable(address account, uint256 line, uint256 claimMax) view returns (uint256)'
     ];
@@ -348,6 +522,27 @@ Safecloud_Jets.callDrop = function (drop, method, payload, timeoutMs) {
  * @param {Object} [options]  { replicationFactor, exclude, forGet }
  * @return {Promise<Array>}   Array of drop records
  */
+/**
+ * _dropOfferPrice — reliability-adjusted per-chunk offer price for a Drop.
+ * High-reliability Drops (score→1.0) get the full publisher price.
+ * Lower-reliability Drops get less, which may fall below their minPerChunkWei.
+ * Formula: offerPrice = publisherPrice × (0.5 + 0.5 × reliabilityScore)
+ * Score 1.0 → 100% of publisher price
+ * Score 0.5 → 75% of publisher price
+ * Score 0.0 → 50% of publisher price
+ * @param {Object} drop           Drop record
+ * @param {String} publisherPrice perChunkWei from manifest metadata
+ * @return {BigInt}
+ * @private
+ */
+function _dropOfferPrice(drop, publisherPrice) {
+    var pubWei = BigInt(publisherPrice || PER_CHUNK_WEI_DEFAULT);
+    var score  = typeof drop.reliabilityScore === 'number'
+        ? Math.min(1, Math.max(0, drop.reliabilityScore)) : 0.5;
+    var factor = 0.5 + 0.5 * score;
+    return BigInt(Math.floor(Number(pubWei) * factor));
+}
+
 Safecloud_Jets.selectDrops = function (cids, options) {
     options = options || {};
     if (options.forGet && Q.Safecloud.Router && Q.Safecloud.Router.selectForGet) {
@@ -360,12 +555,19 @@ Safecloud_Jets.selectDrops = function (cids, options) {
         return Q.Safecloud.Router.selectForPut(cids, options);
     }
 
-    // v1 fallback: round-robin
-    var rf      = options.replicationFactor || REPLICATION_DEFAULT;
-    var exclude = options.exclude || [];
+    // v1 fallback: round-robin with price filter
+    var rf             = options.replicationFactor || REPLICATION_DEFAULT;
+    var exclude        = options.exclude || [];
+    var publisherPrice = options.publisherPrice || PER_CHUNK_WEI_DEFAULT;
+
     var online  = Object.keys(Safecloud_Jets.drops).filter(function (id) {
         var d = Safecloud_Jets.drops[id];
-        return d.offlineSince === null && exclude.indexOf(id) < 0;
+        if (d.offlineSince !== null) { return false; }
+        if (exclude.indexOf(id) >= 0) { return false; }
+        // Price filter: only route to Drops whose minPerChunkWei <= offerPrice
+        var offer    = _dropOfferPrice(d, publisherPrice);
+        var minPrice = BigInt(d.minPerChunkWei || PER_CHUNK_WEI_DEFAULT);
+        return offer >= minPrice;
     });
     // Shuffle for load distribution, then take up to rf unique drops
     var shuffled = online.slice().sort(function () { return Math.random() - 0.5; });
@@ -504,6 +706,27 @@ function _leafRangeStart(linkPath, manifest) {
     return Math.floor(start);
 }
 
+
+/**
+ * Compute {start, end} chunk range for a link path within a manifest.
+ * @param {Array}  link     e.g. ["track","data","0","1"]
+ * @param {Object} manifest { treeN, treeDepth, chunkCount }
+ * @return {Object} { start, end }
+ */
+Safecloud_Jets._chunkRangeForLink = function (link, manifest) {
+    var treeN     = (manifest && manifest.treeN)     || 2;
+    var treeDepth = (manifest && manifest.treeDepth) || 1;
+    var total     = Math.pow(treeN, treeDepth);
+    var nodeSegs  = (link || []).slice(2);
+    var start = 0, width = total;
+    for (var i = 0; i < nodeSegs.length; i++) {
+        width = width / treeN;
+        start += parseInt(nodeSegs[i], 10) * width;
+    }
+    var end = Math.min(Math.floor(start + width),
+        (manifest && manifest.chunkCount) || total);
+    return { start: Math.floor(start), end: end };
+};
 
 /**
  * Check Streams read/admin access for a Cloud user on a specific stream.
@@ -743,9 +966,277 @@ Safecloud_Jets.listen = function (options) {
 
     options = Q.extend({}, Safecloud_Jets.listen.options, options);
 
+    // ── 0. Turnkey wallet bootstrap ───────────────────────────────────────────
+    // A Jet without a signing key serves unsigned tokens (Drops serve on
+    // trust). To make `node server.js` a complete setup step, generate a
+    // wallet on first start, persist it to local/app.json, and print the
+    // address with funding instructions. Never overwrites an existing key.
+    if (!Q.Config.get(['Safecloud', 'jet', 'privateKey'], null)) {
+        try {
+            var newWallet = ethers.Wallet.createRandom();
+            var appJsonPath = Q.app.DIR + '/local/app.json';
+            var fs2 = require('fs');
+            var appJson = {};
+            try { appJson = JSON.parse(fs2.readFileSync(appJsonPath, 'utf8')); }
+            catch (eRead) { /* file may not exist yet */ }
+            appJson.Safecloud = appJson.Safecloud || {};
+            appJson.Safecloud.jet = appJson.Safecloud.jet || {};
+            if (!appJson.Safecloud.jet.privateKey) {
+                appJson.Safecloud.jet.privateKey = newWallet.privateKey;
+                appJson.Safecloud.jet.address    = newWallet.address;
+                fs2.writeFileSync(appJsonPath,
+                    JSON.stringify(appJson, null, '\t'), { mode: 0o600 });
+                Q.Config.set(['Safecloud', 'jet', 'privateKey'], newWallet.privateKey);
+                Q.Config.set(['Safecloud', 'jet', 'address'],    newWallet.address);
+                Q.log('════════════════════════════════════════════════════', 'Safecloud');
+                Q.log('Q.Safecloud.Jets: generated new Jet wallet', 'Safecloud');
+                Q.log('  address: ' + newWallet.address, 'Safecloud');
+                Q.log('  saved to local/app.json (mode 600) — BACK IT UP', 'Safecloud');
+                Q.log('  fund with ~0.01 BNB for settlement gas', 'Safecloud');
+                Q.log('════════════════════════════════════════════════════', 'Safecloud');
+            }
+        } catch (eGen) {
+            Q.log('Q.Safecloud.Jets: wallet bootstrap failed (' + eGen.message
+                + ') — running unsigned; set Safecloud.jet.privateKey manually',
+                'Safecloud');
+        }
+    }
+
     // ── 1. Internal HTTP server ───────────────────────────────────────────────
     var server = Q.listen();
     server.attached.express.post('/Q/node', Safecloud_Jets_request_handler);
+
+    // ── 0b. Auto-settlement cron ─────────────────────────────────────────────
+    // Every settleIntervalSec (default 15 min), re-fire the fire-and-forget
+    // settlers over the retained cloud tokens. Both settlers dedup by
+    // signature hash, so re-firing is idempotent; failed settlements retry
+    // on the next tick. Only runs when the pending count is nonzero and a
+    // signing wallet exists.
+    var settleIntervalSec = Q.Config.get(
+        ['Safecloud', 'jet', 'settleIntervalSec'], 900);
+    if (settleIntervalSec > 0) {
+        setInterval(function () {
+            try {
+                var envs = Object.keys(_cloudTokens).map(function (k) {
+                    return _cloudTokens[k];
+                });
+                if (!envs.length || !_getJetWallet()) { return; }
+                _settlePolicyTokens(envs);
+                // Legacy dual-token author shares ride the same retention
+                var withIncome = envs.filter(function (e) {
+                    return e && e.revenue && e.revenue.incomeContract;
+                });
+                if (withIncome.length) {
+                    _relayAuthorTokens(withIncome, withIncome[0].revenue);
+                }
+            } catch (e) {
+                Q.log('Q.Safecloud.Jets: auto-settle tick failed: ' + e.message,
+                    'Safecloud');
+            }
+        }, settleIntervalSec * 1000).unref();
+    }
+
+    // ── 0c. Testnet faucet (config-gated, OFF by default) ────────────────────
+    // POST /Safecloud/faucet { address } → transfers faucetWei of Safebux
+    // from the Jet wallet. Enable only on testnet:
+    //   Safecloud.faucet = { enabled: true, wei: "1000000", perIpPerDay: 3 }
+    var _faucetHits = {}; // ip → [timestamps]
+    server.attached.express.post('/Safecloud/faucet', function (req, res) {
+        if (!Q.Config.get(['Safecloud', 'faucet', 'enabled'], false)) {
+            return res.status(404).json({ error: 'faucet disabled' });
+        }
+        var addr = req.body && req.body.address;
+        if (!addr || !/^0x[0-9a-fA-F]{40}$/.test(addr)) {
+            return res.status(400).json({ error: 'address required' });
+        }
+        var ip  = req.ip || 'unknown';
+        var now = Date.now();
+        var cap = Q.Config.get(['Safecloud', 'faucet', 'perIpPerDay'], 3);
+        _faucetHits[ip] = (_faucetHits[ip] || []).filter(function (t) {
+            return now - t < 86400000;
+        });
+        if (_faucetHits[ip].length >= cap) {
+            return res.status(429).json({ error: 'rate limited' });
+        }
+        var wallet = _getJetWallet();
+        var sbux   = Q.Config.get(['Safecloud', 'safebux', 'address'], null);
+        if (!wallet || !sbux) {
+            return res.status(503).json({ error: 'faucet not configured' });
+        }
+        _faucetHits[ip].push(now);
+        var wei = Q.Config.get(['Safecloud', 'faucet', 'wei'], '1000000');
+        try {
+            var provider = Safecloud_Jets._evmProvider(SAFEBUX_CHAIN);
+            var erc20 = new ethers.Contract(sbux,
+                ['function transfer(address,uint256) returns (bool)'],
+                wallet.connect(provider));
+            erc20.transfer(addr, BigInt(wei)).then(function (tx) {
+                res.json({ ok: true, tx: tx.hash, wei: wei });
+            }).catch(function (err) {
+                res.status(500).json({ error: String(err && err.message) });
+            });
+        } catch (e) {
+            res.status(500).json({ error: e.message });
+        }
+    });
+
+    // ── 0c2. Sponsorship — POST /Safecloud/sponsor/token ─────────────────────
+    // The web2 bridge: this server signs a payment token AS PAYER for one of
+    // its viewers. The viewer never appears on-chain — their channel is
+    // line = keccak(viewerId), an opaque number only this sponsor can
+    // decode. Config:
+    //   Safecloud.sponsor = { enabled: true, maxWeiPerViewer: "100000",
+    //                         privateKey: null }   // null → Jet wallet signs
+    // Body: { viewerId, token?, recipientsHash?, policy?, maxWei? }
+    // Returns a signed envelope the player attaches as its payment.
+    var _sponsorWatermarks = {}; // viewerId → cumulative max granted
+    server.attached.express.post('/Safecloud/sponsor/token', function (req, res) {
+        if (!Q.Config.get(['Safecloud', 'sponsor', 'enabled'], false)) {
+            return res.status(404).json({ error: 'sponsorship disabled' });
+        }
+        var b = req.body || {};
+        if (!b.viewerId) {
+            return res.status(400).json({ error: 'viewerId required' });
+        }
+        var spKey  = Q.Config.get(['Safecloud', 'sponsor', 'privateKey'], null);
+        var wallet = spKey ? new ethers.Wallet(spKey) : _getJetWallet();
+        if (!wallet) {
+            return res.status(503).json({ error: 'no sponsor wallet' });
+        }
+        var cap = BigInt(Q.Config.get(
+            ['Safecloud', 'sponsor', 'maxWeiPerViewer'], '100000'));
+        var prev = BigInt(_sponsorWatermarks[b.viewerId] || '0');
+        var want = b.maxWei ? BigInt(b.maxWei) : (prev + 1000n);
+        if (want > cap) {
+            return res.status(402).json({
+                error: 'sponsorship cap reached',
+                cap: cap.toString(),
+                granted: prev.toString()
+            });
+        }
+        if (want <= prev) { want = prev; } // watermarks are monotonic
+        _sponsorWatermarks[b.viewerId] = want.toString();
+
+        var chainHex = _chainIdToHex(SAFEBUX_CHAIN);
+        var ocAddr = Q.Config.get(['Users', 'web3', 'contracts',
+            'Safecloud/openclaiming', chainHex], OC_ADDRESS);
+        var sbux = b.token ||
+            Q.Config.get(['Safecloud', 'safebux', 'address'], null) ||
+            '0x' + '00'.repeat(20);
+        // Per-viewer channel: opaque line number
+        var line = BigInt(ethers.keccak256(
+            ethers.toUtf8Bytes('safecloud.sponsor.' + b.viewerId)));
+        var now = Math.floor(Date.now() / 1000);
+        var stm = {
+            payer:          wallet.address,
+            token:          sbux,
+            recipientsHash: b.recipientsHash || ethers.ZeroHash,
+            max:            want.toString(),
+            line:           line.toString(),
+            nbf:            0,
+            exp:            now + 7 * 86400,
+            chainId:        Number(SAFEBUX_CHAIN.split(':')[1] || 56),
+            contract:       ocAddr
+        };
+        if (b.policy) { stm.policy = b.policy; }
+        wallet.signTypedData(
+            { name: 'OpenClaiming', version: '1',
+              chainId: stm.chainId, verifyingContract: ocAddr },
+            { Payment: [
+                { name: 'payer',          type: 'address' },
+                { name: 'token',          type: 'address' },
+                { name: 'recipientsHash', type: 'bytes32' },
+                { name: 'max',            type: 'uint256' },
+                { name: 'line',           type: 'uint256' },
+                { name: 'nbf',            type: 'uint256' },
+                { name: 'exp',            type: 'uint256' },
+                { name: 'contract',       type: 'address' }
+            ] },
+            { payer: stm.payer, token: stm.token,
+              recipientsHash: stm.recipientsHash,
+              max: BigInt(stm.max), line: BigInt(stm.line),
+              nbf: 0n, exp: BigInt(stm.exp), contract: ocAddr }
+        ).then(function (sig) {
+            res.json({ stm: stm, sig: [{ signature: sig }],
+                       granted: want.toString(), cap: cap.toString() });
+        }).catch(function (err) {
+            res.status(500).json({ error: String(err && err.message) });
+        });
+    });
+
+    // ── 0d. Jet dashboard — GET /Safecloud/dashboard ─────────────────────────
+    server.attached.express.get('/Safecloud/dashboard', function (req, res) {
+        var wallet = _getJetWallet();
+        var dropRows = Object.keys(Safecloud_Jets.drops).map(function (id) {
+            var d = Safecloud_Jets.drops[id] || {};
+            return '<tr><td>' + id.slice(0, 12) + '…</td><td>'
+                + (d.evmAddress ? d.evmAddress.slice(0, 10) + '…' : '—')
+                + '</td><td>' + ((d.storage && d.storage.GB) || 0) + ' GB</td><td>'
+                + (d.reliability != null ? (d.reliability * 100).toFixed(0) + '%' : '—')
+                + '</td><td>' + (d.connected !== false ? '🟢' : '⚫') + '</td></tr>';
+        }).join('');
+        var pending = Object.keys(_cloudTokens).length;
+        res.set('Content-Type', 'text/html').send('<!doctype html><html><head>'
+            + '<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+            + '<title>Jet Dashboard</title><style>'
+            + 'body{font-family:system-ui;background:#0d1117;color:#e6edf3;margin:0;padding:24px}'
+            + 'h1{font-size:1.3rem}.card{background:#161b22;border:1px solid #30363d;'
+            + 'border-radius:10px;padding:16px;margin:12px 0}'
+            + '.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}'
+            + '.big{font-size:1.6rem;font-weight:600}.dim{color:#8b949e;font-size:.85rem}'
+            + 'table{width:100%;border-collapse:collapse;font-size:.9rem}'
+            + 'td,th{padding:6px 8px;border-bottom:1px solid #21262d;text-align:left}'
+            + 'code{background:#21262d;padding:2px 6px;border-radius:4px}'
+            + '</style></head><body><h1>⬡ Safecloud Jet</h1>'
+            + '<div class="grid">'
+            + '<div class="card"><div class="dim">Jet address</div><div><code id="addr">'
+            + (wallet ? wallet.address : 'no wallet') + '</code></div></div>'
+            + '<div class="card"><div class="dim">Connected Drops</div><div class="big">'
+            + Object.keys(Safecloud_Jets.drops).length + '</div></div>'
+            + '<div class="card"><div class="dim">Pending settlements</div><div class="big">'
+            + pending + '</div></div>'
+            + '<div class="card"><div class="dim">Gas / Earnings</div>'
+            + '<div class="big" id="gas">…</div><div class="dim" id="earned"></div></div>'
+            + '</div>'
+            + '<div class="card"><div class="dim" style="margin-bottom:8px">Drops</div>'
+            + '<table><tr><th>ID</th><th>EVM</th><th>Storage</th><th>Reliability</th><th></th></tr>'
+            + (dropRows || '<tr><td colspan="5" class="dim">none connected</td></tr>')
+            + '</table></div>'
+            + '<script>fetch("/Safecloud/health").then(function(r){return r.json()})'
+            + '.then(function(h){'
+            + 'document.getElementById("gas").textContent=h.gasWei?'
+            + '(Number(h.gasWei)/1e18).toFixed(4)+" BNB":"—";'
+            + 'if(h.gasLow){document.getElementById("gas").style.color="#f85149"}'
+            + '});</script></body></html>');
+    });
+
+    // ── 1b. /health — operator monitoring endpoint ────────────────────────────
+    server.attached.express.get('/Safecloud/health', function (req, res) {
+        var wallet = _getJetWallet();
+        var health = {
+            ok:          true,
+            jetAddress:  wallet ? wallet.address : null,
+            signing:     !!wallet,
+            drops:       Object.keys(Safecloud_Jets.drops || {}).length,
+            uptime:      process.uptime(),
+            openclaiming: Q.Config.get(['Safecloud', 'openclaiming', 'address'], null),
+            safebux:     Q.Config.get(['Safecloud', 'safebux', 'address'], null),
+            requirePayment: Q.Config.get(['Safecloud', 'requirePayment'], false)
+        };
+        // Gas balance check (async, best-effort — reply carries a promise flag)
+        if (wallet) {
+            try {
+                var provider = Safecloud_Jets._evmProvider(SAFEBUX_CHAIN);
+                provider.getBalance(wallet.address).then(function (bal) {
+                    health.gasWei = bal.toString();
+                    health.gasLow = bal < 2000000000000000n; // < 0.002 BNB
+                    res.json(health);
+                }).catch(function () { health.gasWei = null; res.json(health); });
+                return;
+            } catch (eBal) { /* fall through */ }
+        }
+        res.json(health);
+    });
 
     // ── 2. socket.io via Users.Socket.listen ─────────────────────────────────
     var Users;
@@ -781,6 +1272,18 @@ Safecloud_Jets.listen = function (options) {
             _handleDropClaimPayments(client, payload, ack);
         });
 
+        // ── Server fragment registration (split-entropy bootstrap) ──────────
+        // Author registers a random entropy fragment alongside createShareLink.
+        // The Jet holds it and releases via HTTP /safecloud/fragment endpoint.
+        client.on('Safecloud/content/registerFragment', function (payload, ack) {
+            if (!payload || !payload.rootCid || !payload.fragment) {
+                return ack && ack({ error: { code: 'BadRequest',
+                    message: 'rootCid and fragment required' } });
+            }
+            _serverFragments[payload.rootCid] = payload.fragment;
+            ack && ack(null, { registered: true });
+        });
+
         // ── Cloud: subtree upload ─────────────────────────────────────────────
         client.on('Safecloud/subtree/put', function (payload, ack) {
             _handleSubtreePut(client, userId, payload, ack);
@@ -789,6 +1292,35 @@ Safecloud_Jets.listen = function (options) {
         // ── Cloud: subtree download ───────────────────────────────────────────
         client.on('Safecloud/subtree/get', function (payload, ack) {
             _handleSubtreeGet(client, userId, payload, ack);
+        });
+
+        // ── Jet info — payment + network configuration for browser clients ────
+        // Lets Clouds and Drops learn addresses/prices straight from the Jet,
+        // with no dependency on PHP exposing plugin config to the page.
+        client.on('Safecloud/jet/info', function (payload, ack) {
+            if (!ack) { return; }
+            var chainId = SAFEBUX_CHAIN;
+            var hexId   = _chainIdToHex(chainId);
+            ack(null, {
+                evmAddress:     Q.Config.get(['Safecloud', 'jet', 'address'], null),
+                requirePayment: Q.Config.get(['Safecloud', 'requirePayment'], false),
+                safebux: {
+                    address:     Q.Config.get(['Safecloud', 'safebux', 'address'], null),
+                    chainId:     chainId,
+                    perChunkWei: Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], '0')
+                },
+                openclaiming: {
+                    address: Q.Config.get(['Users', 'web3', 'contracts',
+                        'Safecloud/openclaiming', hexId], OC_ADDRESS)
+                },
+                drop: {
+                    sbuxPerMB: Q.Config.get(['Safecloud', 'drop', 'sbuxPerMB'], 0.02),
+                    claimThresholdSafebux:
+                        Q.Config.get(['Safecloud', 'drop', 'claimThresholdSafebux'], '100000'),
+                    minStakeSafebux:
+                        Q.Config.get(['Safecloud', 'drop', 'minStakeSafebux'], '0')
+                }
+            });
         });
 
         // ── Explicit proof-of-storage challenge ───────────────────────────────
@@ -843,12 +1375,8 @@ Safecloud_Jets.listen = function (options) {
         });
     }, graceMs);
 
-    // ── 6. Router ─────────────────────────────────────────────────────────────
-    if (Q.Safecloud.Router && typeof Q.Safecloud.Router.init === 'function') {
-        Q.Safecloud.Router.init(options).catch(function (err) {
-            Q.log('Q.Safecloud.Router.init error: ' + err, 'Safecloud');
-        });
-    }
+    // ── 6. Router + JetSwarm ─────────────────────────────────────────────────
+    _initSwarm(options);
 
     _listenResult = { internal: server, socket: socket };
     return _listenResult;
@@ -877,6 +1405,11 @@ function _handleDropRegister(client, userId, payload, ack) {
     // Delegation is a self-issued OCP claim: iss=EVM addr, key=[ES256 SPKI URI], sig=[P-256].
     // Q.Crypto.OpenClaim.verify handles key URI resolution, canonicalization, and ES256 check.
     var _afterDelegationCheck = function () {
+        // Open this drop's payment line up front (fire-and-forget) so its
+        // watermark claims are settleable the moment it earns anything.
+        if (evmAddress) {
+            try { _openDropLine(evmAddress); } catch (e) { /* non-fatal */ }
+        }
         _registerDrop(client, userId, payload, ack,
             dropId, evmAddress, delegation, publicKey, storage, prollyRoot, bloomFilter);
     };
@@ -933,7 +1466,12 @@ function _registerDrop(client, userId, payload, ack,
         offlineSince:     null,
         registeredAt:     drop.registeredAt || Date.now(),
         reconnectedAt:    Date.now(),
-        reliabilityScore: existing ? Math.max(0, existing.reliabilityScore - 0.25) : 0.5
+        reliabilityScore: existing ? Math.max(0, existing.reliabilityScore - 0.25) : 0.5,
+        // Drop's minimum acceptable price per chunk in Safebux wei.
+        // Set by Drop at registration. Jet skips if offerPrice < minPerChunkWei.
+        minPerChunkWei:   payload.minPerChunkWei
+                          || (existing && existing.minPerChunkWei)
+                          || Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], PER_CHUNK_WEI_DEFAULT)
     });
 
     _socketToDropId[client.id] = dropId;
@@ -981,16 +1519,32 @@ function _handleDropAnnounce(client, payload, ack) {
         return ack && ack({ error: { code: 'Unauthorized', message: 'Socket does not own this dropId' } });
     }
 
-    // TODO Phase 3: verify payload.signature (P-256 over canonical JSON of announce)
-    // Use Safecloud_Drops.verifyAnnounce when drop.publicKey is available:
+    // Verify announce signature — P-256 over canonical JSON of announce payload.
+    // Reject if signature is present but invalid (prevents spoofed Prolly roots).
+    // If no signature and no public key, accept with reduced trust (open mode).
     if (payload.signature && drop.publicKey) {
         var pubKeyBytes = Buffer.from(drop.publicKey, 'base64');
-        var announceOk  = Safecloud_Drops.verifyAnnounce(payload, pubKeyBytes);
-        if (!announceOk) {
-            Q.log('Q.Safecloud.Jets: announce signature invalid from ' + dropId, 'Safecloud');
-            // Log but do not reject — signature verification is advisory in v1
-            // (Full enforcement in v2 once all Drops are on attested builds)
+        var announceOk;
+        try {
+            announceOk = Safecloud_Drops.verifyAnnounce(payload, pubKeyBytes);
+        } catch (e) {
+            announceOk = false;
         }
+        if (!announceOk) {
+            Q.log('Q.Safecloud.Jets: announce signature INVALID from ' + dropId
+                + ' — rejecting announce', 'Safecloud');
+            return ack && ack({
+                error: { code: 'Unauthorized', message: 'Invalid announce signature' }
+            });
+        }
+    } else if (!payload.signature && drop.publicKey) {
+        // Drop has a registered public key but sent no signature — reject.
+        // This prevents a compromised/replayed session from spoofing announces.
+        Q.log('Q.Safecloud.Jets: announce missing signature from registered Drop '
+            + dropId + ' — rejecting', 'Safecloud');
+        return ack && ack({
+            error: { code: 'Unauthorized', message: 'Announce signature required for registered Drops' }
+        });
     }
 
     drop.storage  = payload.storage  || drop.storage;
@@ -1043,13 +1597,181 @@ function _handleDropDisconnect(client, payload, ack) {
 function _handleDropClaimPayments(client, payload, ack) {
     var dropId = payload && payload.dropId;
     var drop   = dropId && Safecloud_Jets.drops[dropId];
-    // Verify socket owns the dropId before relaying payment claims
+
+    // Verify socket owns the dropId
     if (drop && drop.socketId && drop.socketId !== client.id) {
         return ack && ack({ error: { code: 'Unauthorized', message: 'Socket does not own this dropId' } });
     }
-    Q.log('Q.Safecloud.Jets: dropClaimPayments from ' + dropId, 'Safecloud');
-    // TODO Phase 4: relay to PHP Assets plugin for on-chain execution
-    ack && ack(null, { txHash: null });
+    if (!drop) {
+        return ack && ack({ error: { code: 'NotFound', message: 'Drop not registered' } });
+    }
+
+    var tokens    = payload.paymentTokens || [];
+    var signature = payload.signature     || null;
+    var dropEVM   = drop.evmAddress       || (payload.dropEVM);
+    var nonce     = payload.nonce         || 0;
+
+    if (!tokens.length) {
+        return ack && ack(null, { txHash: null, reason: 'no tokens' });
+    }
+
+    // ── Verify Drop's relay request signature ─────────────────────────────────
+    // Drop signed: { dropId, dropEVM, nonce, tokenCount } with its EVM private key.
+    // Jet verifies the signer matches drop.evmAddress before relaying.
+    var sigVerifyPromise = (signature && dropEVM && typeof ethers !== 'undefined')
+        ? _verifyRelaySignature(payload, dropEVM, signature)
+        : Promise.resolve(!Q.Config.get(['Safecloud', 'requirePayment'], false));
+
+    sigVerifyPromise.then(function (sigOk) {
+        if (!sigOk) {
+            return ack && ack({ error: { code: 'Unauthorized', message: 'Invalid relay request signature' } });
+        }
+
+        Q.log('Q.Safecloud.Jets: relaying ' + tokens.length + ' payment tokens for Drop ' + dropId, 'Safecloud');
+
+        // ── Submit on-chain via Jet wallet ────────────────────────────────────
+        var wallet = _getJetWallet();
+        if (!wallet || typeof ethers === 'undefined') {
+            Q.log('Q.Safecloud.Jets: no Jet wallet configured — cannot relay', 'Safecloud');
+            return ack && ack(null, { txHash: null, reason: 'no_jet_wallet' });
+        }
+
+        var chainId  = Q.Config.get(['Safecloud', 'safebux', 'chainId'], SAFEBUX_CHAIN);
+        var hexId    = chainId.indexOf('eip155:') === 0
+            ? '0x' + parseInt(chainId.slice(7), 10).toString(16) : chainId;
+        var chainConf = Q.Config.get(['Users', 'web3', 'chains', hexId], null);
+        var rpcUrl   = (chainConf && (chainConf.rpcUrl || chainConf.publicRPC))
+            || Q.Config.get(['Safecloud', 'evm', 'provider', hexId],
+                   'https://bsc-dataseed.binance.org/');
+
+        var provider = new ethers.JsonRpcProvider(rpcUrl);
+        var signer   = wallet.connect(provider);
+        var OC_ABI   = [
+            'function paymentsExecute(' +
+            '(address payer,address token,bytes32 recipientsHash,uint256 max,' +
+            'uint256 line,uint256 nbf,uint256 exp,address contractAddr) payment,' +
+            'address[] recipients, bytes signature, address recipient,' +
+            'uint256 amount, address hook) external'
+        ];
+        var contract  = new ethers.Contract(OC_ADDRESS, OC_ABI, signer);
+        var txHashes  = [];
+        var batchSize = Q.Config.get(['Safecloud', 'drop', 'claimBatchSize'], 10);
+        var perChunk  = Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], PER_CHUNK_WEI_DEFAULT);
+
+        // Process tokens sequentially in batches
+        var validTokens = tokens.filter(function (t) {
+            return t && t.stm && t.sig && t.sig[0];
+        });
+
+        if (!validTokens.length) {
+            return ack && ack(null, { txHash: null, reason: 'no_signed_tokens' });
+        }
+
+        var batches = [];
+        for (var bi = 0; bi < validTokens.length; bi += batchSize) {
+            batches.push(validTokens.slice(bi, bi + batchSize));
+        }
+
+        batches.reduce(function (prev, batch) {
+            return prev.then(function () {
+                return batch.reduce(function (p2, token) {
+                    return p2.then(function () {
+                        var stm      = token.stm;
+                        var sigHex   = token.sig[0].signature || token.sig[0];
+                        var sigBytes;
+                        try {
+                            sigBytes = ethers.getBytes(
+                                sigHex.startsWith('0x') ? sigHex : '0x' + sigHex
+                            );
+                        } catch (e) { return; }
+
+                        var amount = BigInt(stm.max || perChunk);
+                        var incomeAddr = token.incomeContract || ethers.ZeroAddress;
+
+                        return contract.paymentsExecute(
+                            {
+                                payer:          stm.payer,
+                                token:          stm.token,
+                                recipientsHash: stm.recipientsHash || ethers.ZeroHash,
+                                max:            BigInt(stm.max     || '0'),
+                                line:           BigInt(stm.line    || '0'),
+                                nbf:            BigInt(stm.nbf     || '0'),
+                                exp:            BigInt(stm.exp     || '0'),
+                                contractAddr:   stm.contract || OC_ADDRESS
+                            },
+                            [dropEVM],
+                            sigBytes,
+                            dropEVM,
+                            amount,
+                            incomeAddr
+                        ).then(function (tx) {
+                            txHashes.push(tx.hash);
+                            return tx.wait();
+                        }).catch(function (err) {
+                            Q.log('Q.Safecloud.Jets: paymentsExecute error for token: ' + err.message, 'Safecloud');
+                        });
+                    });
+                }, Promise.resolve());
+            });
+        }, Promise.resolve()).then(function () {
+            Q.log('Q.Safecloud.Jets: relay complete, ' + txHashes.length + ' txs for ' + dropId, 'Safecloud');
+            ack && ack(null, {
+                txHash:   txHashes[0]  || null,
+                txHashes: txHashes,
+                claimed:  txHashes.length
+            });
+        }).catch(function (err) {
+            Q.log('Q.Safecloud.Jets: relay failed for ' + dropId + ': ' + err, 'Safecloud');
+            ack && ack({ error: { code: 'InternalError', message: String(err) } });
+        });
+
+    }).catch(function (err) {
+        ack && ack({ error: { code: 'InternalError', message: String(err) } });
+    });
+}
+
+/**
+ * Verify a Drop's relay request EIP-712 signature.
+ * Recovers the signer and checks it matches drop.evmAddress.
+ * @param {Object} payload    relay request payload
+ * @param {String} dropEVM    expected Drop EVM address
+ * @param {String} signature  hex signature from Drop
+ * @return {Promise<Boolean>}
+ * @private
+ */
+function _verifyRelaySignature(payload, dropEVM, signature) {
+    try {
+        var chainId  = Q.Config.get(['Safecloud', 'safebux', 'chainId'], SAFEBUX_CHAIN);
+        var chainNum = chainId.indexOf('eip155:') === 0
+            ? parseInt(chainId.slice(7), 10) : parseInt(chainId, 10);
+        var ocAddr   = Q.Config.get(['Safecloud', 'openclaiming', 'address'], OC_ADDRESS);
+
+        var domain = {
+            name:              'Safecloud.dropRelay',   // off-chain only —
+            version:           '1',                     // never verified on-chain
+            chainId:           chainNum,
+            verifyingContract: ocAddr
+        };
+        var types = {
+            RelayRequest: [
+                { name: 'dropId',     type: 'string'  },
+                { name: 'dropEVM',    type: 'address' },
+                { name: 'nonce',      type: 'uint256' },
+                { name: 'tokenCount', type: 'uint256' }
+            ]
+        };
+        var value = {
+            dropId:     payload.dropId     || '',
+            dropEVM:    dropEVM,
+            nonce:      BigInt(payload.nonce      || 0),
+            tokenCount: BigInt((payload.paymentTokens || []).length)
+        };
+
+        var recovered = ethers.verifyTypedData(domain, types, value, signature);
+        return Promise.resolve(recovered.toLowerCase() === dropEVM.toLowerCase());
+    } catch (e) {
+        return Promise.resolve(false);
+    }
 }
 
 function _handleSubtreePut(client, userId, payload, ack) {
@@ -1108,6 +1830,19 @@ function _handleSubtreePut(client, userId, payload, ack) {
                         // Store treeN if provided so GET can resolve leaf link ranges
                         if (payload.treeN)     { _cidIndex[rootCid]['_treeN']     = payload.treeN; }
                         if (payload.treeDepth) { _cidIndex[rootCid]['_treeDepth'] = payload.treeDepth; }
+
+                        // Cache metadata for price enforcement.
+                        // When track/meta is uploaded, store the metaCid and any
+                        // price hint from chunk tags.
+                        if (link.join('/') === 'track/meta' && chunks[0]) {
+                            _cidIndex[rootCid]['_metaCid'] = chunks[0].cid;
+                            var metaTags2 = chunks[0].tags || [];
+                            metaTags2.forEach(function (tag) {
+                                if (typeof tag === 'string' && tag.startsWith('safecloud.price:')) {
+                                    _cidIndex[rootCid]['_perChunkWei'] = tag.slice(16);
+                                }
+                            });
+                        }
                     }
                 }
 
@@ -1229,35 +1964,77 @@ function _handleSubtreeGet(client, userId, payload, ack) {
                     return ack && ack({ error: { code: 'PaymentRequired', message: 'Insufficient balance' } });
                 }
 
+                    // Retain the latest watermark token per payer — this is what
+                // the Jet will settle on-chain (only the newest claim per
+                // line matters under OpenClaiming's cumulative accounting).
+                try {
+                    (payments || []).forEach(function (pe) {
+                        _retainCloudToken(pe);
+                    });
+                } catch (e) { /* stats only */ }
+
+                // Viewer-signed author-share tokens: relay on-chain
+                // (fire-and-forget; never gates the request). Supersedes the
+                // Jet-balance royalty transfer when present.
+                if (payload && payload.revenue) {
+                    try { _relayAuthorTokens(payments, payload.revenue); }
+                    catch (e) { /* never block serving */ }
+                }
+                // Single-policy tokens: settle via paymentsExecutePolicy —
+                // the rail pays author + this Jet atomically. Self-filters.
+                try { _settlePolicyTokens(payments); }
+                catch (e) { /* never block serving */ }
+
+                // 3b. Per-chunk price enforcement from manifest metadata.
+                // Publisher set perChunkWei in track/meta chunk at upload time.
+                // Jet cached it in _cidIndex during subtree/put of track/meta.
+                // If Cloud's payment token max < perChunkWei × chunkCount → 402.
+                var perChunkWei = _getManifestPrice(rootCid);
+                var requiredWei = BigInt(perChunkWei) * BigInt(chunkCount);
+                if (payments.length && requiredWei > BigInt(0)) {
+                    var payerMax = payments.reduce(function (sum, p) {
+                        if (!p || !p.stm) { return sum; }
+                        return sum + BigInt(p.stm.max || '0');
+                    }, BigInt(0));
+                    if (payerMax < requiredWei) {
+                        return ack && ack({
+                            error: {
+                                code:    'PaymentRequired',
+                                message: 'Payment below publisher price',
+                                details: {
+                                    required:    String(requiredWei),
+                                    provided:    String(payerMax),
+                                    perChunkWei: perChunkWei,
+                                    chunkCount:  chunkCount
+                                }
+                            }
+                        });
+                    }
+                }
+
+                // Pass publisherPrice into _fetchFromDrops for Drop routing + offer price
+                payload._publisherPrice = perChunkWei;
+
                 // 4. Fetch from Drops — look up CIDs by rootCid + link path
                 var cids = linkCids;
 
-                Safecloud_Jets.selectDrops(cids, { forGet: true }).then(function (drops) {
-                    if (!drops.length) {
-                        return ack && ack({ error: { code: 'ServiceUnavailable',
-                            message: 'No Drops available to serve this content' } });
+                // 4+5. Fetch from local Drops, fall back to JetSwarm on miss,
+                //       then attach Merkle proofs and ack.
+                // Attach revenue metadata for creator royalty routing
+                var _revenue = payload.revenue || null;
+                if (_revenue) { payload._revenue = _revenue; }
+                _handleSubtreeGet_step4(cids, payload, grants[0] || null, ack,
+                    function _attachProofsAndAck(chunks) {
+                        return Safecloud_Jets.buildMerkleProofs(rootCid, cids, link)
+                            .then(function (proofs) {
+                                var result = chunks.map(function (chunk, i) {
+                                    if (!chunk) { return null; }
+                                    return Q.extend({}, chunk, { proof: proofs[i] || null });
+                                });
+                                ack && ack(null, { chunks: result });
+                            });
                     }
-                    // Try drops in order with fallback
-                    return _fetchFromDrops(drops, cids, payload);
-                }).then(function (chunks) {
-                    if (!chunks) { return; } // ack already called above
-                    // If every chunk is null, all Drops failed
-                    if (chunks.every(function (ch) { return !ch; })) {
-                        return ack && ack({ error: { code: 'ServiceUnavailable',
-                            message: 'No Drops returned the requested chunks' } });
-                    }
-                    // 5. Attach Merkle proofs
-                    return Safecloud_Jets.buildMerkleProofs(rootCid, cids, link).then(function (proofs) {
-                        var result = chunks.map(function (chunk, i) {
-                            if (!chunk) { return null; }
-                            return Q.extend({}, chunk, { proof: proofs[i] || null });
-                        });
-                        ack && ack(null, { chunks: result });
-                    });
-                }).catch(function (err) {
-                    Q.log('Q.Safecloud.Jets._handleSubtreeGet fetch error: ' + err, 'Safecloud');
-                    ack && ack({ error: { code: 'InternalError', message: String(err) } });
-                });
+                );
 
             }).catch(function (err) {
                 ack && ack({ error: { code: 'PaymentRequired', message: String(err) } });
@@ -1266,6 +2043,144 @@ function _handleSubtreeGet(client, userId, payload, ack) {
 
     }).catch(function (err) {
         Q.log('Q.Safecloud.Jets._handleSubtreeGet: ' + err, 'Safecloud');
+        ack && ack({ error: { code: 'InternalError', message: String(err) } });
+    });
+}
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// JetSwarm integration helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+function _initSwarm(options) {
+    // ── 6a. Existing Router ───────────────────────────────────────────────────
+    if (Q.Safecloud.Router && typeof Q.Safecloud.Router.init === 'function') {
+        Q.Safecloud.Router.init(options).catch(function (err) {
+            Q.log('Q.Safecloud.Router.init error: ' + err, 'Safecloud');
+        });
+    }
+
+    // ── 6b. JetSwarm ─────────────────────────────────────────────────────────
+    // Default false: the inter-Jet mesh (JetSwarm + Router hyperswarm) is
+    // experimental in 1.0.0-beta.1 — enable via Safecloud.swarm.enabled and
+    // set Safecloud.wallet.privateKey for authenticated Router hellos.
+    var swarmEnabled = Q.Config.get(['Safecloud', 'swarm', 'enabled'], false);
+    if (!swarmEnabled) { return; }
+
+    var seedHex   = Q.Config.get(['Safecloud', 'swarm', 'seed'], null);
+    var seed      = seedHex ? Buffer.from(seedHex, 'hex') : null;
+    if (!seed) {
+        Q.log('Q.Safecloud.Jets: WARNING — no Safecloud.swarm.seed configured. '
+            + 'Jet DHT identity will change on restart. Set Safecloud.swarm.seed '
+            + 'to a persistent 32-byte hex string in local/app.json.', 'Safecloud');
+    }
+
+    var bootstrap = Q.Config.get(['Safecloud', 'swarm', 'bootstrap'], null);
+    var networkId = Q.Config.get(['Safecloud', 'swarm', 'networkId'], 'safecloud:jet:v1');
+    var secureIds = Q.Config.get(['Safecloud', 'swarm', 'secureIds'], false);
+
+    JetSwarm.init({
+        seed:        seed,
+        networkId:   networkId,
+        secureIds:   secureIds,
+        bootstrap:   bootstrap || undefined,
+        onChunkRequest: function (cids, grant) {
+            return Safecloud_Jets.selectDrops(cids, { forGet: true }).then(function (drops) {
+                if (!drops.length) { return cids.map(function () { return null; }); }
+                return Promise.all(cids.map(function (cid) {
+                    var drop = drops[0];
+                    return Safecloud_Jets.callDrop(drop, 'Safecloud/drop/get', { cids: [cid] })
+                        .then(function (res) {
+                            return (res && res.chunks && res.chunks[0]) || null;
+                        })
+                        .catch(function () { return null; });
+                }));
+            });
+        }
+    }).then(function () {
+        _refreshSwarmRanges();
+        Q.log('Q.Safecloud.Jets: JetSwarm ready — ' + JSON.stringify(JetSwarm.stats()), 'Safecloud');
+    }).catch(function (err) {
+        Q.log('Q.Safecloud.Jets: JetSwarm init error: ' + err, 'Safecloud');
+    });
+
+    Safecloud_Jets.on('dropBloom',      function () { _refreshSwarmRanges(); });
+    Safecloud_Jets.on('dropColdSync',   function () { _refreshSwarmRanges(); });
+    Safecloud_Jets.on('dropDisconnect', function () { _refreshSwarmRanges(); });
+}
+
+function _refreshSwarmRanges() {
+    var totalChunks = 0;
+    Object.values(Safecloud_Jets.drops || {}).forEach(function (drop) {
+        if (drop.used) { totalChunks += Math.ceil(drop.used / (256 * 1024)); }
+    });
+    JetSwarm.announceRanges(
+        totalChunks > 0 ? [{ start: null, end: null, count: totalChunks }] : []
+    );
+}
+
+function _handleSubtreeGet_step4(cids, payload, grant, ack, _attachProofsAndAck) {
+    var swarmEnabled = Q.Config.get(['Safecloud', 'swarm', 'enabled'], true);
+
+    Safecloud_Jets.selectDrops(cids, { forGet: true }).then(function (drops) {
+        if (drops.length) {
+            // Pass revenue through payload for royalty routing
+            if (payload && payload._revenue) { payload.revenue = payload._revenue; }
+            return _fetchFromDrops(drops, cids, payload).then(function (chunks) {
+                if (!chunks) { return; }
+                if (!chunks.every(function (ch) { return !ch; })) {
+                    return _attachProofsAndAck(chunks);
+                }
+                if (!swarmEnabled) {
+                    return ack && ack({ error: { code: 'ServiceUnavailable',
+                        message: 'No Drops returned the requested chunks' } });
+                }
+                return _swarmFallback(cids, grant, ack, _attachProofsAndAck);
+            });
+        }
+
+        if (!swarmEnabled) {
+            return ack && ack({ error: { code: 'ServiceUnavailable',
+                message: 'No Drops available to serve this content' } });
+        }
+        var stats = JetSwarm.stats();
+        if (!stats.peerCount) {
+            return ack && ack({ error: { code: 'ServiceUnavailable',
+                message: 'No Drops available and no peer Jets connected' } });
+        }
+        return _swarmFallback(cids, grant, ack, _attachProofsAndAck);
+
+    }).catch(function (err) {
+        Q.log('Q.Safecloud.Jets._handleSubtreeGet fetch error: ' + err, 'Safecloud');
+        ack && ack({ error: { code: 'InternalError', message: String(err) } });
+    });
+}
+
+/**
+ * Return the publisher-set perChunkWei for a rootCid.
+ * @param {String} rootCid
+ * @return {String}
+ * @private
+ */
+function _getManifestPrice(rootCid) {
+    if (!rootCid || !_cidIndex[rootCid]) {
+        return Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], PER_CHUNK_WEI_DEFAULT);
+    }
+    return _cidIndex[rootCid]['_perChunkWei']
+        || Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], PER_CHUNK_WEI_DEFAULT);
+}
+
+function _swarmFallback(cids, grant, ack, _attachProofsAndAck) {
+    Q.log('Q.Safecloud.Jets: local miss on ' + cids.length + ' CIDs — trying JetSwarm', 'Safecloud');
+    JetSwarm.fetchChunks(cids, grant).then(function (result) {
+        var chunks = result.chunks;
+        if (!chunks || chunks.every(function (ch) { return !ch; })) {
+            return ack && ack({ error: { code: 'ServiceUnavailable',
+                message: 'No local Drops or peer Jets could serve the requested chunks' } });
+        }
+        return _attachProofsAndAck(chunks);
+    }).catch(function (err) {
+        Q.log('Q.Safecloud.Jets: JetSwarm fallback error: ' + err, 'Safecloud');
         ack && ack({ error: { code: 'InternalError', message: String(err) } });
     });
 }
@@ -1300,6 +2215,27 @@ function _registerHttpRoutes(app) {
     // Batch subtree upload
     app.put('/Safecloud/cloud/subtree', function (req, res) {
         _handleHttpSubtreePut(req, res);
+    });
+
+    // ── Split-entropy fragment endpoint (trusted server T) ─────────────────
+    // Returns the server-held entropy fragment for a rootCid.
+    // The fragment alone decrypts nothing — it is one HKDF input; the other
+    // travels in the URL. CORS enabled for iframe embeds on any origin.
+    // TODO: add rate limiting (3 attempts per IP per rootCid), optional
+    // payment-gating (require a valid OCP payment token), and device
+    // attestation before releasing.
+    app.get('/safecloud/fragment', function (req, res) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET');
+        var rootCid = req.query.rootCid;
+        if (!rootCid) {
+            return res.status(400).json({ error: 'rootCid required' });
+        }
+        var frag = _serverFragments[rootCid];
+        if (!frag) {
+            return res.status(404).json({ error: 'No fragment registered' });
+        }
+        res.json({ fragment: frag });
     });
 
     // Jet-to-Jet relay
@@ -1359,7 +2295,42 @@ function _handleHttpChunkGet(req, res) {
             ocpEnvelope.sig[0],
             payment.payer
           ).catch(function () { return false; })
-        : Promise.resolve(true); // Phase 3 fallback
+        : (ocpEnvelope.sig && ocpEnvelope.sig.length && typeof ethers !== 'undefined'
+            ? (function () {
+                // ethers-based EIP-712 fallback verification
+                try {
+                    var stm4     = ocpEnvelope.stm || {};
+                    var chainN4  = typeof stm4.chainId === 'number'
+                        ? stm4.chainId
+                        : parseInt((stm4.chainId || SAFEBUX_CHAIN).replace('eip155:',''), 10);
+                    var ocAddr4  = stm4.contract || OC_ADDRESS;
+                    var domain4  = { name:'OpenClaiming', version:'1',
+                                     chainId: chainN4, verifyingContract: ocAddr4 };
+                    var types4   = { Payment: [
+                        { name:'payer', type:'address' }, { name:'token', type:'address' },
+                        { name:'recipientsHash', type:'bytes32' },
+                        { name:'max',   type:'uint256' }, { name:'line',  type:'uint256' },
+                        { name:'nbf',   type:'uint256' }, { name:'exp',   type:'uint256' },
+                        { name:'contract', type:'address' }
+                    ]};
+                    var value4   = {
+                        payer:          stm4.payer,
+                        token:          stm4.token          || ethers.ZeroAddress,
+                        recipientsHash: stm4.recipientsHash || ethers.ZeroHash,
+                        max:            BigInt(stm4.max     || '0'),
+                        line:           BigInt(stm4.line    || '0'),
+                        nbf:            BigInt(stm4.nbf     || '0'),
+                        exp:            BigInt(stm4.exp     || '0'),
+                        contract:       ocAddr4
+                    };
+                    var sig4hex = ocpEnvelope.sig[0].signature || ocpEnvelope.sig[0];
+                    var recovered4 = ethers.verifyTypedData(domain4, types4, value4, sig4hex);
+                    return Promise.resolve(
+                        recovered4.toLowerCase() === (stm4.payer || '').toLowerCase()
+                    );
+                } catch (e) { return Promise.resolve(false); }
+              })()
+            : Promise.resolve(!Q.Config.get(['Safecloud', 'requirePayment'], false)));
 
     sigPromise.then(function (sigOk) {
         if (!sigOk) {
@@ -1513,6 +2484,46 @@ function _handleHttpRelayGet(req, res) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Pre-screen all payment tokens in a request.  Returns true if all pass. */
+/**
+ * Verify a Payment envelope's EIP-712 signature with ethers, byte-exact
+ * against the OpenClaiming contract (domain "OpenClaiming", 8-field struct
+ * ending with the signed contract address). Returns boolean. @private
+ */
+function _ethersVerifyPaymentSig(stm, sig0) {
+    if (!sig0 || !sig0.signature || typeof ethers === 'undefined') { return false; }
+    var ocAddress2 = stm.contract ||
+        Q.Config.get(['Users', 'web3', 'contracts', 'Safecloud/openclaiming',
+            _chainIdToHex(stm.chainId || SAFEBUX_CHAIN)], OC_ADDRESS);
+    var chainIdNum2 = typeof stm.chainId === 'number'
+        ? stm.chainId
+        : parseInt(String(stm.chainId || SAFEBUX_CHAIN).replace('eip155:', ''), 10);
+    try {
+        var recovered = ethers.verifyTypedData(
+            { name: 'OpenClaiming', version: '1',
+              chainId: chainIdNum2, verifyingContract: ocAddress2 },
+            { Payment: [
+                { name: 'payer',          type: 'address' },
+                { name: 'token',          type: 'address' },
+                { name: 'recipientsHash', type: 'bytes32' },
+                { name: 'max',            type: 'uint256' },
+                { name: 'line',           type: 'uint256' },
+                { name: 'nbf',            type: 'uint256' },
+                { name: 'exp',            type: 'uint256' },
+                { name: 'contract',       type: 'address' }
+            ] },
+            { payer:          stm.payer,
+              token:          stm.token          || ethers.ZeroAddress,
+              recipientsHash: stm.recipientsHash || ethers.ZeroHash,
+              max:            BigInt(stm.max     || '0'),
+              line:           BigInt(stm.line    || '0'),
+              nbf:            BigInt(stm.nbf     || '0'),
+              exp:            BigInt(stm.exp     || '0'),
+              contract:       ocAddress2 },
+            sig0.signature);
+        return recovered.toLowerCase() === String(stm.payer || '').toLowerCase();
+    } catch (e) { return false; }
+}
+
 function _checkPayments(payments, chunkCount) {
     if (!payments || !payments.length) {
         var requirePayment = Q.Config.get(['Safecloud', 'requirePayment'], false);
@@ -1528,16 +2539,31 @@ function _checkPayments(payments, chunkCount) {
         var stm = p.stm || p;
         var payer   = stm.payer;
         var token   = stm.token;
-        var chainId = stm.chainId || SAFEBUX_CHAIN;
+        // Browser-signed tokens carry a numeric chainId (EIP-712 domain);
+        // normalize to CAIP-2 for the allow-list comparison below.
+        var chainId = (typeof stm.chainId === 'number')
+            ? 'eip155:' + stm.chainId
+            : (stm.chainId || SAFEBUX_CHAIN);
         if (!payer || !token) { return Promise.resolve(false); }
 
-        // v1.0: only accept Safebux on the configured chain — reject all other tokens
-        var acceptedChain = Q.Config.get(['Safecloud', 'safebux', 'chainId'], SAFEBUX_CHAIN);
+        // Safebux is the ONLY accepted payment token — reject all others.
+        // Token address must be configured. If not yet deployed, reject all.
         var acceptedToken = Q.Config.get(['Safecloud', 'safebux', 'address'], null);
-        if (acceptedToken && token.toLowerCase() !== acceptedToken.toLowerCase()) {
-            return Promise.resolve(false); // wrong token
+        if (!acceptedToken) {
+            // Safebux not yet deployed — accept all if requirePayment:false
+            var req = Q.Config.get(['Safecloud', 'requirePayment'], false);
+            return Promise.resolve(!req);
         }
-        if (chainId !== acceptedChain) {
+        if (token.toLowerCase() !== acceptedToken.toLowerCase()) {
+            return Promise.resolve(false); // wrong token — only Safebux accepted
+        }
+        // Accept BSC + any chain where OpenClaiming is deployed
+        var acceptedChains = Q.Config.get(['Safecloud', 'safebux', 'chains'],
+            [SAFEBUX_CHAIN, 'eip155:1']); // BSC + Ethereum
+        var chainMatch = Array.isArray(acceptedChains)
+            ? acceptedChains.indexOf(chainId) >= 0
+            : (chainId === acceptedChains);
+        if (!chainMatch) {
             return Promise.resolve(false); // wrong chain
         }
 
@@ -1550,6 +2576,99 @@ function _checkPayments(payments, chunkCount) {
         // keccak256(abi.encode([jetAddress])) must match stm.recipientsHash
         // If recipientsHash is all-zeros it means "open" — accepted for Phase 3
         var jetAddr = jetWallet ? jetWallet.toLowerCase().replace(/^0x/i,'') : null;
+
+        // ── Accepted tokens ({App}bux) ───────────────────────────────────────
+        // The Jet accepts Safebux by default plus anything listed in
+        // Safecloud.jet.acceptedTokens. A token outside the set is rejected
+        // here; the socket layer surfaces PaymentRequired with the accepted
+        // set so the player can re-sign in an acceptable denomination.
+        if (stm.token) {
+            var acceptedT = Q.Config.get(['Safecloud', 'jet', 'acceptedTokens'], []);
+            var defaultT  = Q.Config.get(['Safecloud', 'safebux', 'address'], null);
+            var okSet = {};
+            if (defaultT) { okSet[String(defaultT).toLowerCase()] = true; }
+            (acceptedT || []).forEach(function (t) {
+                okSet[String(t).toLowerCase()] = true;
+            });
+            if (Object.keys(okSet).length &&
+                    !okSet[String(stm.token).toLowerCase()]) {
+                return Promise.resolve(false);
+            }
+        }
+
+        // ── Policy tokens (single-token enforced split) ──────────────────────
+        // stm.policy plaintext must hash to the signed recipientsHash, and the
+        // policy must actually pay THIS Jet: either the dynamic slot admits us
+        // with >= minInfraBp, or we are a static payee. A policy that fails
+        // these checks is rejected; the socket layer replies with
+        // code 'PaymentRequired' + the requirements we accept (x402 pattern —
+        // same negotiation the HTTP /Safecloud/cloud/chunk endpoint speaks).
+        if (stm.policy) {
+            try {
+                var pol = stm.policy;
+                var polHash = ethers.keccak256(
+                    ethers.AbiCoder.defaultAbiCoder().encode(
+                        ['address[]','uint256[]','uint256','bytes32','address[]'],
+                        [pol.payees,
+                         (pol.fractions || []).map(function (f) { return BigInt(f); }),
+                         BigInt(pol.dynamicBps || 0),
+                         pol.dynamicConstraint || ('0x' + '00'.repeat(32)),
+                         pol.targets || []]));
+                if (polHash.toLowerCase() !==
+                        String(stm.recipientsHash).toLowerCase()) {
+                    return Promise.resolve(false); // tampered policy
+                }
+                // Sanity: fractions sum to 10000 exactly
+                var sumBp = BigInt(pol.dynamicBps || 0);
+                for (var fi = 0; fi < (pol.fractions || []).length; fi++) {
+                    sumBp += BigInt(pol.fractions[fi]);
+                }
+                if (sumBp !== 10000n) { return Promise.resolve(false); }
+                // Economic admission for this Jet
+                var minInfraBp = BigInt(Q.Config.get(
+                    ['Safecloud', 'jet', 'minInfraBp'], 500)); // default 5%
+                var jetCk = '0x' + jetAddr;
+                var admitted = false;
+                var ZERO32 = '0x' + '00'.repeat(32);
+                var IN_RECIPIENTS = '0x' + '00'.repeat(31) + '01';
+                var dc = (pol.dynamicConstraint || ZERO32).toLowerCase();
+                if (BigInt(pol.dynamicBps || 0) >= minInfraBp) {
+                    if (dc === ZERO32) {
+                        admitted = true;                 // any server may fill slot
+                    } else if (dc === IN_RECIPIENTS) {
+                        admitted = (pol.payees || []).some(function (a) {
+                            return String(a).toLowerCase() === jetCk;
+                        });
+                    }
+                    // else: Merkle root — Jet would need a proof from the
+                    // manifest (revenue.policyProofs[jetAddr]); not admitted
+                    // without one.
+                    if (!admitted && dc !== ZERO32 && dc !== IN_RECIPIENTS) {
+                        var proofs = stm.policyProofs || {};
+                        admitted = !!proofs[jetCk];
+                    }
+                }
+                if (!admitted) {
+                    // Maybe we're a static payee with an acceptable cut
+                    for (var pi = 0; pi < (pol.payees || []).length; pi++) {
+                        if (String(pol.payees[pi]).toLowerCase() === jetCk &&
+                                BigInt(pol.fractions[pi]) >= minInfraBp) {
+                            admitted = true; break;
+                        }
+                    }
+                }
+                if (!admitted) { return Promise.resolve(false); }
+                // Policy accepted — skip the single-recipient hash gate below
+                jetAddr = null;
+            } catch (ePol) {
+                return Promise.resolve(false);
+            }
+        }
+
+        // Author-share tokens commit recipientsHash = keccak([incomeContract]);
+        // they are pass-through (relayed on-chain, see _relayAuthorTokens) and
+        // must not gate THIS request — mark them false here so only the
+        // infra token authorises routing. Promise.all(...).some() below.
         if (jetAddr && stm.recipientsHash &&
             stm.recipientsHash !== '0x' + '00'.repeat(32)) {
             // Compute keccak256(abi.encode([jetAddress])) matching Solidity paymentsHashRecipients()
@@ -1584,10 +2703,24 @@ function _checkPayments(payments, chunkCount) {
                 }),
                 sig,
                 payer
-            ).catch(function () { return false; });
+            ).catch(function () { return false; })
+            // The platform OCP module may predate the on-chain format
+            // (8-field struct ending with the signed contract address). If it
+            // says no, retry with the byte-exact ethers verifier.
+            .then(function (ok) {
+                return ok ? true : _ethersVerifyPaymentSig(stm, p.sig[0]);
+            });
+        } else if (p.sig && p.sig.length && ethers && p.sig[0] && p.sig[0].signature) {
+            // OCP module not loaded but ethers is available — verify EIP-712 sig directly
+            // using ethers.verifyTypedData (equivalent to on-chain ecrecover)
+            var sig0     = p.sig[0];
+            sigVerifyPromise = Promise.resolve(
+                _ethersVerifyPaymentSig(stm, p.sig[0])
+            );
         } else {
-            // Signature module not loaded or no sig — skip sig check (Phase 3)
-            sigVerifyPromise = Promise.resolve(true);
+            // No sig at all — accept if requirePayment is false (open content)
+            var requirePayment2 = Q.Config.get(['Safecloud', 'requirePayment'], false);
+            sigVerifyPromise = Promise.resolve(!requirePayment2);
         }
 
         return sigVerifyPromise.then(function (sigOk) {
@@ -1608,6 +2741,286 @@ function _checkPayments(payments, chunkCount) {
     });
 }
 
+/**
+ * keccak256(abi.encode([addr])) — matches Solidity paymentsHashRecipients()
+ * for a single-recipient array. Same layout the browser signer uses.
+ * @private
+ */
+function _recipientsHashOf(addr) {
+    var a = String(addr).toLowerCase().replace(/^0x/i, '').padStart(40, '0');
+    var abiEncoded = Buffer.concat([
+        Buffer.from('0000000000000000000000000000000000000000000000000000000000000020', 'hex'),
+        Buffer.from('0000000000000000000000000000000000000000000000000000000000000001', 'hex'),
+        Buffer.concat([Buffer.alloc(12, 0), Buffer.from(a, 'hex')])
+    ]);
+    return ethers.keccak256(abiEncoded).toLowerCase();
+}
+
+/** @private sigHash → true, so each author token relays on-chain only once */
+var _relayedAuthorTokens = {};
+
+/** @private dropEVM → cumulative wei watermark on that drop's line */
+var _dropWatermarks = {};
+
+/** @private dropEVM → true once lineOpen has been sent for it */
+var _openedDropLines = {};
+
+/**
+ * Open this Jet's payment line for a Drop: lines[jet][uint160(dropEVM)].
+ * The line lives on the PAYER, so transient Drops (fresh browser addresses)
+ * never send a registration transaction — the Jet, which has gas and a
+ * persistent identity, opens one cheap line per new drop address and the
+ * Drop can then settle its watermark claims permissionlessly, whenever.
+ * Fire-and-forget; requires jet wallet + Safebux configured.
+ * @private
+ */
+function _openDropLine(dropEVM) {
+    if (!dropEVM || _openedDropLines[dropEVM]) { return; }
+    var wallet      = _getJetWallet();
+    var safebuxAddr = Q.Config.get(['Safecloud', 'safebux', 'address'], null);
+    if (!wallet || !safebuxAddr || typeof ethers === 'undefined') { return; }
+    _openedDropLines[dropEVM] = true;
+
+    var chainId  = SAFEBUX_CHAIN;
+    var provider = Safecloud_Jets._evmProvider(chainId);
+    var signer   = wallet.connect(provider);
+    var OC_ADDR  = Q.Config.get(['Users', 'web3', 'contracts',
+        'Safecloud/openclaiming', _chainIdToHex(chainId)], OC_ADDRESS);
+    var oc = new ethers.Contract(OC_ADDR, [
+        'function lineOpen(address account, uint256 line, uint256 max) external',
+        'function lineIsOpen(address account, uint256 line) view returns (bool)'
+    ], signer);
+    var lineId = BigInt(dropEVM);
+
+    oc.lineIsOpen(wallet.address, lineId).then(function (open) {
+        if (open) { return null; }
+        return oc.lineOpen(wallet.address, lineId, 0); // 0 = unlimited line max
+    }).then(function (tx) {
+        if (tx) {
+            Q.log('Q.Safecloud.Jets: opened payment line for drop ' + dropEVM
+                + ' tx ' + tx.hash, 'Safecloud');
+        }
+    }).catch(function (err) {
+        delete _openedDropLines[dropEVM]; // retry on next registration
+        Q.log('Q.Safecloud.Jets: lineOpen for drop failed: '
+            + (err && err.message), 'Safecloud');
+    });
+}
+
+/**
+ * Latest verified infra token per payer (highest watermark wins).
+ * Under OpenClaiming's cumulative line accounting, only the most recent
+ * claim per (payer, line) matters for settlement — keep exactly that.
+ * _cloudTokens[payerLower] = envelope. In-memory for now; the Jet settles
+ * against it when Safebux + OC are configured. @private
+ */
+var _cloudTokens = {};
+
+/** @private Record a verified viewer token if it advances the watermark. */
+function _retainCloudToken(envelope) {
+    var stm = envelope && envelope.stm;
+    if (!stm || !stm.payer || !envelope.sig || !envelope.sig[0]) { return; }
+    var key  = String(stm.payer).toLowerCase();
+    var prev = _cloudTokens[key];
+    try {
+        if (!prev || BigInt(stm.max || '0') > BigInt(prev.stm.max || '0')) {
+            _cloudTokens[key] = envelope;
+        }
+    } catch (e) { /* keep previous on parse issues */ }
+}
+
+/**
+ * Relay viewer-signed author-share tokens on-chain.
+ *
+ * These tokens commit recipientsHash = keccak([revenue.incomeContract]), so
+ * NOBODY else can claim them — the Jet here is only the gas payer. A
+ * dishonest Jet can withhold this call (author unpaid for that request) but
+ * can never redirect the funds; the honest-path player also retains the
+ * token in IndexedDB. See README "Incentives".
+ *
+ * Fire-and-forget; requires the Jet wallet for gas.
+ * @private
+ */
+function _relayAuthorTokens(payments, revenue) {
+    var income = revenue && revenue.incomeContract;
+    var wallet = _getJetWallet();
+    if (!income || !wallet || !payments || !payments.length) { return; }
+
+    var wantHash;
+    try { wantHash = _recipientsHashOf(income); } catch (e) { return; }
+
+    var authorTokens = payments.filter(function (p) {
+        var stm = p && p.stm;
+        return stm && stm.recipientsHash &&
+            String(stm.recipientsHash).toLowerCase() === wantHash &&
+            p.sig && p.sig[0] && p.sig[0].signature;
+    });
+    if (!authorTokens.length) { return; }
+
+    var chainId  = SAFEBUX_CHAIN;
+    var hexId    = _chainIdToHex(chainId);
+    var provider = Safecloud_Jets._evmProvider(chainId);
+    var signer   = wallet.connect(provider);
+    var OC_ADDR  = Q.Config.get(['Users', 'web3', 'contracts',
+        'Safecloud/openclaiming', hexId], OC_ADDRESS);
+    var OC_ABI   = [
+        'function paymentsExecute(' +
+        '(address payer,address token,bytes32 recipientsHash,uint256 max,' +
+        'uint256 line,uint256 nbf,uint256 exp,address contractAddr) payment,' +
+        'address[] recipients, bytes signature, address recipient,' +
+        'uint256 amount, address hook) external'
+    ];
+    var contract = new ethers.Contract(OC_ADDR, OC_ABI, signer);
+
+    authorTokens.reduce(function (prev, tokenEnv) {
+        return prev.then(function () {
+            var stm    = tokenEnv.stm;
+            var sigHex = tokenEnv.sig[0].signature;
+            var key;
+            try { key = ethers.keccak256(ethers.toUtf8Bytes(sigHex)); }
+            catch (e) { return; }
+            if (_relayedAuthorTokens[key]) { return; }
+            _relayedAuthorTokens[key] = true;
+
+            // Verify the viewer's signature before spending gas
+            var chainIdNum = (typeof stm.chainId === 'number')
+                ? stm.chainId
+                : parseInt(String(stm.chainId || SAFEBUX_CHAIN)
+                    .replace('eip155:', ''), 10);
+            try {
+                var stmForVerify = Object.assign({}, stm, { contract: OC_ADDR });
+                if (!_ethersVerifyPaymentSig(stmForVerify,
+                        { signature: sigHex })) {
+                    return;
+                }
+            } catch (e) { return; }
+
+            return contract.paymentsExecute(
+                { payer: stm.payer, token: stm.token,
+                  recipientsHash: stm.recipientsHash,
+                  max: BigInt(stm.max || '0'),
+                  line: BigInt(stm.line || '0'),
+                  nbf: BigInt(stm.nbf || '0'),
+                  exp: BigInt(stm.exp || '0'),
+                  contractAddr: OC_ADDR },
+                [income],
+                ethers.getBytes(sigHex),
+                income,
+                // Watermark semantics: stm.max is the payer's cumulative
+                // line-0 ceiling; the author's share for THIS request rides
+                // on the envelope. Settle only the delta.
+                BigInt(tokenEnv.amount || stm.max || '0'),
+                ethers.ZeroAddress
+            ).then(function (tx) {
+                Q.log('Q.Safecloud.Jets: relayed author token → ' + income
+                    + ' tx ' + tx.hash, 'Safecloud');
+            }).catch(function (err) {
+                delete _relayedAuthorTokens[key]; // allow retry on next serve
+                Q.log('Q.Safecloud.Jets: author token relay failed: '
+                    + (err && err.message), 'Safecloud');
+            });
+        });
+    }, Promise.resolve()).catch(function () {});
+}
+
+/** Dedup registry for settled policy tokens (per process). @private */
+var _settledPolicyTokens = {};
+
+/**
+ * Settle single-policy viewer tokens on-chain via paymentsExecutePolicy.
+ * The rail splits atomically per the signed policy; this Jet fills the
+ * dynamic-payee slot (it served, so it collects the dynamic share) and the
+ * author's fraction is paid in the SAME transaction — enforced, not
+ * cooperative. Fire-and-forget; never gates a request. Self-filters:
+ * only envelopes carrying stm.policy are touched.
+ * @private
+ */
+function _settlePolicyTokens(payments) {
+    var wallet = _getJetWallet();
+    if (!wallet || !payments || !payments.length) { return; }
+
+    var policyTokens = payments.filter(function (p) {
+        return p && p.stm && p.stm.policy &&
+            p.sig && p.sig[0] && p.sig[0].signature;
+    });
+    if (!policyTokens.length) { return; }
+
+    var chainId  = SAFEBUX_CHAIN;
+    var hexId    = _chainIdToHex(chainId);
+    var provider = Safecloud_Jets._evmProvider(chainId);
+    var signer   = wallet.connect(provider);
+    var OC_ADDR  = Q.Config.get(['Users', 'web3', 'contracts',
+        'Safecloud/openclaiming', hexId], OC_ADDRESS);
+    var OC_ABI   = [
+        'function paymentsExecutePolicy(' +
+        '(address payer,address token,bytes32 recipientsHash,uint256 max,' +
+        'uint256 line,uint256 nbf,uint256 exp,address contractAddr) payment,' +
+        'bytes sig,uint256 amount,' +
+        '(address[] payees,uint256[] fractions,uint256 dynamicBps,' +
+        'bytes32 dynamicConstraint,address[] targets) policy,' +
+        'address dynamicPayee,bytes32[] dynamicProof) external'
+    ];
+    var contract = new ethers.Contract(OC_ADDR, OC_ABI, signer);
+    var jetAddress = wallet.address;
+
+    policyTokens.reduce(function (prev, tokenEnv) {
+        return prev.then(function () {
+            var stm    = tokenEnv.stm;
+            var pol    = stm.policy;
+            var sigHex = tokenEnv.sig[0].signature;
+            var key;
+            try { key = ethers.keccak256(ethers.toUtf8Bytes(sigHex)); }
+            catch (e) { return; }
+            if (_settledPolicyTokens[key]) { return; }
+            _settledPolicyTokens[key] = true;
+
+            // Verify the viewer's signature before spending gas
+            try {
+                var stmForVerify = Object.assign({}, stm, { contract: OC_ADDR });
+                if (!_ethersVerifyPaymentSig(stmForVerify,
+                        { signature: sigHex })) {
+                    return;
+                }
+            } catch (e) { return; }
+
+            // Merkle-constrained policies need this Jet's proof from the
+            // envelope; DYNAMIC_ANY / IN_RECIPIENTS need none.
+            var proofs = (stm.policyProofs || {})[jetAddress.toLowerCase()]
+                      || (stm.policyProofs || {})[jetAddress] || [];
+
+            return contract.paymentsExecutePolicy(
+                { payer: stm.payer, token: stm.token,
+                  recipientsHash: stm.recipientsHash,
+                  max: BigInt(stm.max || '0'),
+                  line: BigInt(stm.line || '0'),
+                  nbf: BigInt(stm.nbf || '0'),
+                  exp: BigInt(stm.exp || '0'),
+                  contractAddr: OC_ADDR },
+                ethers.getBytes(sigHex),
+                // Watermark semantics: settle the per-request delta riding on
+                // the envelope; the rail splits it by the signed fractions.
+                BigInt(tokenEnv.amount || stm.max || '0'),
+                { payees:            pol.payees || [],
+                  fractions:         (pol.fractions || []).map(function (f) {
+                                         return BigInt(f); }),
+                  dynamicBps:        BigInt(pol.dynamicBps || 0),
+                  dynamicConstraint: pol.dynamicConstraint
+                                         || ethers.ZeroHash,
+                  targets:           pol.targets || [] },
+                jetAddress,   // dynamic payee — this Jet served
+                proofs
+            ).then(function (tx) {
+                Q.log('Q.Safecloud.Jets: settled policy token, dynamic → '
+                    + jetAddress + ' tx ' + tx.hash, 'Safecloud');
+            }).catch(function (err) {
+                delete _settledPolicyTokens[key]; // allow retry on next serve
+                Q.log('Q.Safecloud.Jets: policy settle failed: '
+                    + (err && err.message), 'Safecloud');
+            });
+        });
+    }, Promise.resolve()).catch(function () {});
+}
+
 /** Fetch chunks from an ordered list of drops, with fallback. */
 function _fetchFromDrops(drops, cids, payload) {
     if (!cids.length) { return Promise.resolve([]); }
@@ -1616,36 +3029,80 @@ function _fetchFromDrops(drops, cids, payload) {
         var safebuxAddr = Q.Config.get(['Safecloud', 'safebux', 'address'], null);
     var perChunk    = Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], PER_CHUNK_WEI_DEFAULT);
 
-    // Build a simple payment token stub for the Drop
-    // (in production this is signed with the Jet's EIP-712 session key)
-    var paymentToken = (jetEVM && safebuxAddr) ? {
-        stm: {
-            payer:          jetEVM,
-            token:          safebuxAddr,
-            recipientsHash: '0x0000000000000000000000000000000000000000000000000000000000000000',
-            max:            String(BigInt(perChunk) * BigInt(cids.length)),
-            line:           0,
-            nbf:            0,
-            exp:            0,
-            chainId:        SAFEBUX_CHAIN.indexOf('eip155:') === 0
-                                ? parseInt(SAFEBUX_CHAIN.slice(7), 10)
-                                : SAFEBUX_CHAIN,
-            contract:       Q.Config.get(['Users', 'web3', 'contracts', 'Safecloud/openclaiming', _chainIdToHex(SAFEBUX_CHAIN)], OC_ADDRESS)
-        },
-        sig: [] // TODO Phase 3: sign with Jet EIP-712 session key
-    } : null;
+    // Build and sign a payment token for the Drop.
+    // The Jet is the payer — it authorises payment from its Safebux balance.
+    // The Drop is the payee — its EVM address goes into recipientsHash.
+    // We sign per-Drop so each token's recipientsHash names exactly one recipient.
+    // If no Jet wallet is configured, tokens are unsigned (Drop accepts if requirePayment:false).
 
     function tryDrop(index) {
         if (index >= drops.length) {
             return Promise.resolve(new Array(cids.length).fill(null));
         }
-        var drop = drops[index];
-        return Safecloud_Jets.callDrop(drop, 'Safecloud/drop/get', {
-            cids:         cids,
-            options:      {},
-            paymentToken: paymentToken
+        var drop     = drops[index];
+        var dropEVM  = drop.evmAddress || ethers.ZeroAddress;
+
+        // Build unsigned stm first, then sign with Jet wallet (per-Drop recipientsHash)
+        // Reliability-adjusted offer price for this Drop
+        var offerPrice = _dropOfferPrice(drop, (payload && payload._publisherPrice) || perChunk);
+
+        // NAMED LINE PER DROP — line id = uint160(dropEVM). Lines live on the
+        // PAYER (this Jet): the Jet opened it at drop registration
+        // (_openDropLine), so the Drop never registers anything on-chain —
+        // fresh transient browser addresses just receive claims and settle
+        // whenever they like. max is a cumulative watermark per drop line
+        // (OpenClaiming's spent counter is cumulative); only the latest
+        // token per drop matters. Envelope `amount` carries this batch's due.
+        var batchWei = offerPrice * BigInt(cids.length);
+        var stm = null;
+        if (jetEVM && safebuxAddr && dropEVM !== ethers.ZeroAddress) {
+            var lineId = BigInt(dropEVM).toString();
+            _dropWatermarks[dropEVM] =
+                String(BigInt(_dropWatermarks[dropEVM] || '0') + batchWei);
+            stm = {
+                payer:    jetEVM,
+                token:    safebuxAddr,
+                max:      _dropWatermarks[dropEVM],
+                line:     lineId,
+                nbf:      0,
+                exp:      Math.floor(Date.now() / 1000) + 30 * 86400,
+                chainId:  SAFEBUX_CHAIN.indexOf('eip155:') === 0
+                              ? parseInt(SAFEBUX_CHAIN.slice(7), 10)
+                              : SAFEBUX_CHAIN,
+                contract: Q.Config.get(['Users', 'web3', 'contracts',
+                              'Safecloud/openclaiming', _chainIdToHex(SAFEBUX_CHAIN)], OC_ADDRESS)
+            };
+        }
+
+        var tokenPromise = stm
+            ? _signPaymentToken(stm, dropEVM).then(function (env) {
+                if (env) { env.amount = String(batchWei); }
+                return env;
+              })
+            : Promise.resolve(null);
+
+        return tokenPromise.then(function (paymentToken) {
+            return Safecloud_Jets.callDrop(drop, 'Safecloud/drop/get', {
+                cids:         cids,
+                options:      {},
+                paymentToken: paymentToken
+            });
         }).then(function (result) {
-            if (result && result.chunks) { return result.chunks; }
+            if (result && result.chunks) {
+                // ── Creator royalty ───────────────────────────────────────────
+                // On successful serve, route creator + protocol shares to
+                // IncomeContract (fire-and-forget, non-blocking).
+                var revenue = payload && payload.revenue;
+                if (revenue && revenue.incomeContract && jetEVM && safebuxAddr) {
+                    _payCreatorRoyalty(
+                        revenue, cids.length, perChunk,
+                        jetEVM, safebuxAddr
+                    ).catch(function (err) {
+                        Q.log('Q.Safecloud.Jets: royalty payment error: ' + err, 'Safecloud');
+                    });
+                }
+                return result.chunks;
+            }
             return tryDrop(index + 1);
         }).catch(function () {
             return tryDrop(index + 1);
@@ -1653,6 +3110,105 @@ function _fetchFromDrops(drops, cids, payload) {
     }
 
     return tryDrop(0);
+}
+
+/**
+ * Pay creator royalty and protocol treasury share.
+ *
+ * Called fire-and-forget after a successful Drop serve.
+ *
+ * Default split (consumption model — viewer pays for content):
+ *   SPLIT_CREATOR_BP  (90%) → manifest.revenue.incomeContract (creator)
+ *   SPLIT_PROTOCOL_BP  (2%) → PROTOCOL_TREASURY
+ *   Remainder           (8%) → infra (Jet retains, minus what it paid its Drop)
+ *
+ * Storage model (owner pays for their own data): no creator royalty — this
+ * function is not called when manifest lacks revenue metadata.
+ *
+ * manifest.revenue.split overrides per-channel:
+ *   { creator: 9000, protocol: 200 } (basis points out of 10000)
+ *
+ * @param {Object} revenue        manifest.revenue { creatorAddress, incomeContract, split }
+ * @param {Number} chunkCount     number of chunks served
+ * @param {String} perChunkWei    Safebux wei per chunk (total, pre-split)
+ * @param {String} jetEVM         Jet's EVM address (signer)
+ * @param {String} safebuxAddr    Safebux ERC-20 contract address
+ * @return {Promise<void>}
+ * @private
+ */
+function _payCreatorRoyalty(revenue, chunkCount, perChunkWei, jetEVM, safebuxAddr) {
+    var wallet = _getJetWallet();
+    if (!wallet || typeof ethers === 'undefined') { return Promise.resolve(); }
+    if (!revenue || !revenue.incomeContract) { return Promise.resolve(); }
+
+    // Resolve split — manifest overrides defaults
+    var split     = revenue.split || {};
+    var creatorBP = typeof split.creator  === 'number' ? split.creator  : SPLIT_CREATOR_BP;
+    var protoBP   = typeof split.protocol === 'number' ? split.protocol : SPLIT_PROTOCOL_BP;
+
+    var totalWei    = BigInt(perChunkWei) * BigInt(chunkCount);
+    var creatorWei  = totalWei * BigInt(creatorBP)  / BigInt(SPLIT_TOTAL_BP);
+    var protocolWei = totalWei * BigInt(protoBP)    / BigInt(SPLIT_TOTAL_BP);
+
+    if (creatorWei <= BigInt(0) && protocolWei <= BigInt(0)) { return Promise.resolve(); }
+
+    // Determine chain + provider
+    var chainId = Q.Config.get(['Safecloud', 'safebux', 'chainId'], SAFEBUX_CHAIN);
+    var provider = Safecloud_Jets._evmProvider(chainId);
+    if (!provider) { return Promise.resolve(); }
+
+    var signer = wallet.connect(provider);
+
+    // IncomeContract: distribute(address token, address[] recipients, uint256[] amounts)
+    // or fallback to direct ERC-20 transfer if no incomeContract ABI
+    var INCOME_ABI = [
+        'function distribute(address token, address[] calldata recipients, uint256[] calldata amounts)'
+    ];
+    var ERC20_TRANSFER_ABI = [
+        'function transfer(address to, uint256 amount) returns (bool)'
+    ];
+
+    var incomeAddr = revenue.incomeContract;
+    var treasury   = PROTOCOL_TREASURY;
+
+    // Build recipients list — skip zero addresses and zero amounts
+    var recipients = [], amounts = [];
+    if (creatorWei > BigInt(0) && revenue.creatorAddress
+            && revenue.creatorAddress !== ethers.ZeroAddress) {
+        recipients.push(incomeAddr); // route via IncomeContract for batching
+        amounts.push(creatorWei);
+    }
+    if (protocolWei > BigInt(0) && treasury !== ethers.ZeroAddress) {
+        recipients.push(treasury);
+        amounts.push(protocolWei);
+    }
+    if (!recipients.length) { return Promise.resolve(); }
+
+    // Try IncomeContract.distribute first (batches internally for creator)
+    // Fall back to direct ERC-20 transfer per recipient
+    var incomeContract = new ethers.Contract(incomeAddr, INCOME_ABI, signer);
+    var sbux = new ethers.Contract(safebuxAddr, ERC20_TRANSFER_ABI, signer);
+
+    return incomeContract.distribute(
+        safebuxAddr,
+        [revenue.creatorAddress],
+        [creatorWei]
+    ).then(function () {
+        // Protocol treasury gets direct transfer
+        if (protocolWei > BigInt(0) && treasury !== ethers.ZeroAddress) {
+            return sbux.transfer(treasury, protocolWei);
+        }
+    }).catch(function () {
+        // IncomeContract not available or reverted — fall back to direct transfers
+        var transfers = [];
+        if (creatorWei > BigInt(0) && revenue.creatorAddress) {
+            transfers.push(sbux.transfer(revenue.creatorAddress, creatorWei));
+        }
+        if (protocolWei > BigInt(0) && treasury !== ethers.ZeroAddress) {
+            transfers.push(sbux.transfer(treasury, protocolWei));
+        }
+        return Promise.all(transfers);
+    });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

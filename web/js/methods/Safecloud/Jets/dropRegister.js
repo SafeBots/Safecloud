@@ -17,14 +17,21 @@ Q.exports(function (Q, _) {
 
             return bloomPromise.then(function (bloomFilter) {
                 var payload = {
-                    dropId:      info.dropId      || ('drop-' + Q.clientId()),
-                    clientId:    Q.clientId(),
-                    evmAddress:  info.evmAddress  || null,
-                    delegation:  info.delegation  || null,
-                    publicKey:   info.publicKey   || null,
-                    storage:     info.storage     || { GB: Q.Config.get(['Safecloud', 'drop', 'storageGB'], 10) },
-                    prollyRoot:  prollyRoot,
-                    bloomFilter: bloomFilter
+                    dropId:           info.dropId      || ('drop-' + Q.clientId()),
+                    clientId:         Q.clientId(),
+                    evmAddress:       info.evmAddress  || null,
+                    delegation:       info.delegation  || null,
+                    publicKey:        info.publicKey   || null,
+                    storage:          info.storage     || { GB: Q.Config.get(['Safecloud', 'drop', 'storageGB'], 10) },
+                    prollyRoot:       prollyRoot,
+                    bloomFilter:      bloomFilter,
+                    // Drop announces minimum Safebux wei per chunk it will accept.
+                    // Jet skips this Drop if offerPrice < minPerChunkWei.
+                    // Drops with higher uptime/reliability set higher reservations.
+                    // Default: same as protocol floor (Safecloud.safebux.perChunkWei).
+                    minPerChunkWei:   info.minPerChunkWei
+                                      || Q.Config.get(['Safecloud', 'drop', 'minPerChunkWei'],
+                                             Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], '1000'))
                 };
 
                 // Store for reconnect

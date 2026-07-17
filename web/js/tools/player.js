@@ -59,7 +59,7 @@ Q.Tool.define('Safecloud/player', function (options) {
         var state = tool.state;
         var $te   = $(tool.element);
 
-        Q.Template.render('Safecloud/player', {
+        Q.Template.render('Safecloud/player/main', {
             showUpload: state.showUpload,
             hasContent: !!(state.manifest && state.rootKey)
         }, function (err, html) {

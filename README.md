@@ -6,6 +6,69 @@ This document is an overview of the internals of the Safecloud ecosystem. It can
 
 ---
 
+## Installation & Quick Start
+
+Safecloud is a **Qbix plugin**. It requires the `Users` and `Streams` plugins.
+
+**1. Install the plugin** into your app's `plugins/` directory (symlink or
+copy this folder as `plugins/Safecloud`), then register it in your app's
+`config/app.json` plugins list.
+
+**2. Add routes** — per Qbix convention, plugins do not ship routes. In your
+app's `APP_DIR/config/app.json`:
+
+```json
+{ "Q": { "routes": {
+    "safecloud/demo": { "module": "Safecloud", "action": "demo" },
+    "safecloud/drop": { "module": "Safecloud", "action": "drop" }
+}}}
+```
+
+**3. Serve the service worker with the right header.** Encrypted streaming
+registers `web/js/Safecloud/sw.js` at scope `/`, which browsers only allow
+when the file is served with `Service-Worker-Allowed: /`.
+
+- Apache: the shipped `web/js/Safecloud/.htaccess` sets it (ensure
+  `mod_headers` is enabled and `AllowOverride` permits it).
+- nginx:
+
+```nginx
+location ~ /Safecloud/js/Safecloud/sw\.js$ {
+    add_header Service-Worker-Allowed "/";
+}
+```
+
+**4. Configure** in `APP_DIR/local/app.json` (deployment overrides —
+defaults live in this plugin's `config/plugin.json`):
+
+```json
+{ "Safecloud": {
+    "requirePayment": false,
+    "jetUrl": "https://your-jet.example.com",
+    "jet":          { "address": null, "privateKey": null },
+    "safebux":      { "address": null, "chainId": "eip155:56", "perChunkWei": "0" },
+    "openclaiming": { "address": null },
+    "wallet":       { "privateKey": null },
+    "swarm":        { "enabled": false }
+}}
+```
+
+`jet.privateKey` enables Jet→Drop payment-token signing. `wallet.privateKey`
+enables the hyperswarm Jet mesh (experimental — leave unset for single-Jet
+deployments). With everything null and `requirePayment:false`, the network
+runs in free mode.
+
+**5. Start the Jet** from inside the app:
+
+```
+node plugins/Safecloud/demo/jet.js
+```
+
+**6. Open** `/safecloud/demo` to upload/stream and `/safecloud/drop` to run
+a storage node.
+
+---
+
 ## 1. What Safecloud Is
 
 Safecloud is a **decentralised, encrypted, self-pricing storage network** built on top of the Q/Intercoin platform. Files are split into encrypted chunks and
@@ -18,7 +81,7 @@ The three network roles are:
 | Role | Code | Where it runs |
 |------|------|--------------|
 | **Cloud** | `Q.Safecloud.Client` | Browser — file owner/consumer SDK |
-| **Jets** | `Q.Safecloud.Jets` (client) + `node/Safecloud/.js` (server) | Browser (socket client) + Node.js (routing server) |
+| **Jets** | `Q.Safecloud.Jets` (client) + `classes/Safecloud/Jets.js` (server) | Browser (socket client) + Node.js (routing server) |
 | **Drops** | `Q.Safecloud.Drops` | Browser tabs volunteering IndexedDB storage |
 
 Jets never see plaintext. Drops never see plaintext. Only the Cloud (owner or
@@ -443,10 +506,11 @@ optional callback as the last argument and also return a `Q.Promise`.
 ### `Q.Safecloud.Client.manifestVersion`
 `Number` — current manifest version (1).
 
-### `Q.Safecloud.Client.levelFromLabel(type, word)`
-`function(type: String, word: String) → Number` — maps a Streams-compatible
-level word (e.g. `'content'`) to its numeric level for a given type
-(`'read'`, `'write'`, `'admin'`).
+### Level labels
+Mapping Streams-compatible level words (e.g. `'content'`) to numeric levels
+is handled internally (`methods/Safecloud/Client/_internal.js:levelFromLabel`).
+Pass level *words or numbers* in `grant()` options; there is no public
+`levelFromLabel` export.
 
 ---
 
@@ -610,15 +674,21 @@ base 500ms, max 30s) on disconnect.
 callback(err, Q.Socket)
 ```
 
-### Drop lifecycle (called by `Q.Safecloud.Drops.activate()`)
+### Drop lifecycle (called by `Q.Safecloud.Drops.init()`)
 
 #### `Q.Safecloud.Jets.dropRegister(info, callback)` → Promise
-Registers this browser tab as a Drop. Sends the stable `dropId` (derived from
-`Q.clientId()` + `sessionStorage`) so the Jet can recognise a reconnecting tab.
+Registers this browser tab as a Drop.
 
 ```js
-info: { storage: { GB: Number } }
-callback(err, { dropId: String })
+info: {
+  evmAddress:  String,     // Drop's EVM address (WebAuthn-PRF derived)
+  delegation:  Object,     // safecloud:session-delegation OCP claim
+  publicKey:   String,     // base64 P-256 session public key
+  storage:     { GB: Number },
+  prollyRoot:  String|null,
+  bloomFilter: String|null
+}
+callback(err, { dropId: String, cold: Boolean, minStake: String })
 ```
 
 #### `Q.Safecloud.Jets.dropAnnounce(info, callback)` → Promise
@@ -626,6 +696,7 @@ Announces updated storage stats and optionally a new Prolly root or Bloom filter
 
 ```js
 info: {
+  dropId:      String,
   storage:     { GB: Number },
   used:        Number,           // bytes currently used
   prollyRoot:  String,           // hex Prolly root (optional)
@@ -641,39 +712,47 @@ Signals intentional offline. Clears the stable `dropId` from `sessionStorage`.
 callback(err)
 ```
 
-### Chunk routing (called by `Q.Safecloud.Client`)
+### Subtree routing (called by `Q.Safecloud.Client`)
 
-#### `Q.Safecloud.Jets.chunkPut(chunks, options, callback)` → Promise
-Sends encrypted chunks to the Jet for distribution to Drops.
+#### `Q.Safecloud.Jets.put(subtree, options, callback)` → Promise
+Emits `Safecloud/subtree/put`. Uploads encrypted chunks for a link path;
+grant secrets are stripped before anything leaves the browser.
 
 ```js
-chunks: Array<{
-  cid:        String,     // CIDv1
-  iv:         String,     // base64
-  ciphertext: String,     // base64
-  tag:        String,     // base64
-  size:       Number,
-  tags:       Array
-}>
-options: {
-  authorizations: Array,  // OCP authorization claims
-  payments:       Array   // OCP payment claims
+subtree: {
+  chunks: Array<{
+    cid:        String,     // CIDv1
+    iv:         String,     // base64
+    ciphertext: String,     // base64
+    tag:        String,     // base64
+    size:       Number,
+    tags:       Array
+  }>,
+  link:      Array,         // e.g. ["track","data"] or ["track","index"]
+  grants:    Array,         // OCP Role A grants ({link,statement,proof,start,end})
+  treeN:     Number,        // optional tree metadata
+  treeDepth: Number,
+  rootCid:   String
 }
-callback(err, { results: Array<Object|false> })
+options: { payments: Array, publisherId: String, streamName: String,
+           onProgress: fn(stored, total) }
+callback(err, { results: Array<{cid, stored}|false> })
 ```
 
-#### `Q.Safecloud.Jets.chunkGet(payload, options, callback)` → Promise
-Requests encrypted chunks from the Jet. Supports range requests.
+Rejects if no Drop stored any chunk, so callers can surface upload failure.
+
+#### `Q.Safecloud.Jets.get(subtree, options, callback)` → Promise
+Emits `Safecloud/subtree/get`. Fetches a chunk range by link path; the server
+returns chunks with Merkle proofs attached. If
+`Q.Safecloud.Jets.cloudEvmPrivateKey` is set, an EIP-712 Cloud→Jet payment
+token is auto-signed and attached (see §14).
 
 ```js
-// Range form (preferred):
-payload: { rootCid: String, start: Number, end: Number }
-
-// Legacy CID list form:
-payload: { cids: Array<String> }
-
-options: { authorizations: Array, payments: Array }
-
+subtree: { rootCid: String, link: Array, grants: Array, manifest: Object }
+options: { payments: Array,          // pre-built tokens (override auto-sign)
+           skipPayment: Boolean,     // free/public content
+           publisherId: String, streamName: String,
+           onProgress: fn(received, total) }
 callback(err, {
   chunks: Array<{
     cid:        String,
@@ -685,14 +764,15 @@ callback(err, {
 })
 ```
 
-### Peer routing
+#### `Q.Safecloud.Jets.dropClaimPayments(payload, callback)` → Promise
+Relays accumulated payment tokens to the Jet for on-chain claiming
+(Jet covers gas). The payload carries a Drop-side EVM signature over
+`{dropId, dropEVM, nonce, tokenCount}` which the Jet verifies before relaying.
 
-#### `Q.Safecloud.Jets.peerConnect(info, callback)` → Promise
-v1 stub. Sends a Jet-to-Jet peering request.
-```js
-info: { url: String }
-callback(err)
-```
+### Peer routing
+Jet-to-Jet peering is server-side: hyperswarm discovery + authenticated
+`safecloud.jet.hello` in `classes/Safecloud/Router.js`. There is no browser
+`peerConnect` method.
 
 ### Events (Q.Event instances)
 
@@ -715,26 +795,26 @@ and `Q.Safecloud.Drops.get()` so Drops don't need to listen to these events manu
 **Browser only.** Stores and serves encrypted chunks using IndexedDB. All
 methods follow `Q.promisify` convention.
 
-### Configuration
+### Lifecycle
 
-#### `Q.Safecloud.Drops.setStorageMax(sizeGB, callback)` → Promise
-Sets the maximum storage this Drop is willing to offer. May trigger a browser
-storage-persistence permission request.
+#### `Q.Safecloud.Drops.init(options, callback)` → Promise
+Opens IndexedDB, replays the diff log, runs the WebAuthn-PRF delegation
+ceremony when needed, and registers with the Jet. Storage cap is an option
+here (there is no separate `setStorageMax`).
 
 ```js
-sizeGB:  Number
-callback(err, Boolean)   // true if persist granted
+options: { wallet: Object, storageGB: Number, jetUrl: String }
+callback(err)
 ```
+
+#### `Q.Safecloud.Drops.reset(callback)` → Promise
+Clears all IndexedDB stores and announces a reset to the Jet. Keeps the
+delegation claim and session keypairs.
 
 ### CID
-
-#### `Q.Safecloud.Drops.cidFromData(arrayBuffer, callback)` → Promise<String>
-Computes CIDv1 from the raw encrypted chunk data. Must match `Cloud._internal.chunkCid()`.
-
-```js
-arrayBuffer: ArrayBuffer   // the encrypted chunk (ciphertext || tag concatenated)
-callback(err, cidString)
-```
+CID computation is internal (`methods/Safecloud/Drops/_internal.js:cidFromData`,
+SHA-256 over `ciphertext‖tag`); `put()` recomputes it and rejects chunks whose
+supplied `cid` does not match.
 
 ### Storage
 
@@ -744,42 +824,52 @@ limit would be exceeded.
 
 ```js
 chunks: Array<{
-  iv:   String,          // base64 IV
-  data: ArrayBuffer,     // raw encrypted bytes
-  tags: Array            // optional content tags
+  cid:        String,     // optional — verified against recomputed CID
+  iv:         String,     // base64
+  ciphertext: String,     // base64
+  tag:        String,     // base64
+  tags:       Array       // optional content tags
 }>
 options: {
-  authorizations: Array,  // OCP claims (v1: stubbed)
-  payments:       Array   // OCP claims (v1: stubbed)
+  authorizations: Array,  // OCP claims
+  payments:       Array   // OCP claims
 }
 callback(err, {
-  results: Array<{ cid: String, iv: String, size: Number }|false>
+  results: Array<{ cid: String, stored: Boolean, iv: String, size: Number }>
 })
 ```
 
 #### `Q.Safecloud.Drops.get(cids, options, callback)` → Promise
 Retrieves encrypted chunks by CID. Missing chunks are `null` (order preserved).
-Updates `accessed` timestamp for LRU purposes.
+Updates the LRU `lastAccessed` timestamp.
 
 ```js
 cids:    Array<String>
-options: { authorizations: Array, payments: Array }
+options: { paymentToken: Object }   // OCP Payment envelope from the Jet
 callback(err, {
-  chunks: Array<{ iv: String, data: ArrayBuffer }|null>
+  chunks: Array<{ cid, iv: String, ciphertext: String, tag: String }|null>
 })
 ```
 
-### Trust / Payment hooks (stubs in v1)
+When a `paymentToken` is present, the Drop pre-screens the Jet's Safebux
+funds on-chain (`availableToday` with `balanceOf` fallback, cached per
+`Safecloud.drop.balanceCacheTtlMs`; RPC errors fail open) and returns
+all-`null` when insufficient. Tokens are stored for later claiming.
 
-#### `Q.Safecloud.Drops.checkAuthorization(authorizations, method, payload, options)` → Boolean
-v1: always returns `true`. Will be wired to `Q.Crypto.OpenClaim.verify()` in v0.5.
+#### `Q.Safecloud.Drops.claimPayments(options, callback)` → Promise
+Claims accumulated tokens once total value passes
+`Safecloud.drop.claimThresholdSafebux` (or `options.force`). Two paths:
+`options.direct:true` submits `paymentsExecute` from the Drop's own wallet;
+otherwise the tokens relay through the Jet (`dropClaimPayments`), which pays
+gas. Unsigned tokens (`sig: []`) are skipped at claim time.
 
-#### `Q.Safecloud.Drops.checkPayment(payments, options)` → Boolean
-v1: always returns `true`. Will check monotonic `(payer, line)` payment amounts in v0.5.
+#### Other methods
+`getProllyRoot()`, `getBloomFilter()`, `announce(reason)`, `getStats()` —
+see the JSDoc in `web/js/Safecloud.js` for signatures.
 
 ---
 
-## 13. Node.js Jet Server (`node/Safecloud/.js`)
+## 13. Node.js Jet Server (`classes/Safecloud/Jets.js`)
 
 The Jet server routes chunks between Cloud clients and Drop storage providers.
 It never decrypts anything.
@@ -787,20 +877,21 @@ It never decrypts anything.
 ### Starting the server
 
 ```js
-var Safe = require('./Safecloud/');
-Safe.listen(options);
+Q.require('Safecloud');
+Q.Safecloud.listen(options);
 // Returns: { internal: httpServer, socket: socketServer }
 ```
 
-Reads config from:
-- `Q.Config.get(['Safe', 'node', 'host'])`
-- `Q.Config.get(['Safe', 'node', 'port'])`
-- `Q.Config.get(['Safe', 'drop', 'offlineGraceMs'])` (default 60000)
+Host/port come from the standard `Q.listen()` / `Users.Socket.listen()`
+config (`Q/nodeInternal`). Safecloud-specific config:
+- `Q.Config.get(['Safecloud', 'drop', 'offlineGraceMs'])` (default 60000)
+- `Q.Config.get(['Safecloud', 'jet', 'privateKey'])` — payment-token signing
+- `Q.Config.get(['Safecloud', 'wallet', 'privateKey'])` — enables the swarm
 
 ### Drop registry
 
 ```js
-Safe.drops                  // { dropId → dropRecord }
+Q.Safecloud.Jets.drops      // { dropId → dropRecord }
 // dropRecord: {
 //   dropId, socketId, socket, clientId, userId,
 //   storage: { GB }, used,
@@ -812,14 +903,15 @@ Safe.drops                  // { dropId → dropRecord }
 
 ### Server methods
 
-#### `Safe.selectDrops(cids, options)` → Array<dropRecord>
-Selects Drops to store or serve a set of CIDs. v1: round-robin, up to
-`options.replication` (default 2) Drops.
+#### `Q.Safecloud.Jets.selectDrops(cids, options)` → Promise<Array<dropRecord>>
+Selects Drops to store or serve a set of CIDs — delegates to
+`Q.Safecloud.Router` (weighted: stake × reliability × available storage),
+up to `options.replication` (default 2) Drops.
 
-#### `Safe.callDrop(drop, method, payload, timeoutMs)` → Promise
+#### `Q.Safecloud.Jets.callDrop(drop, method, payload, timeoutMs)` → Promise
 Emits an event to a Drop socket and waits for the ack. Rejects on timeout (default 10s).
 
-#### `Safe._reconcileDropInventory(drop, dropReportedRoot)`
+#### `Q.Safecloud.Jets._reconcileDropInventory(drop, dropReportedRoot)`
 After reconnect, diffs the Jet's stored Prolly root against the Drop's reported
 root. If equal: no-op. If different: calls `Q.Data.Prolly.diff()` to find the
 delta and emits `'dropSync'`. On first contact (no jet-side root): emits
@@ -841,17 +933,17 @@ delta and emits `'dropSync'`. On first contact (no jet-side root): emits
 
 ### Socket events handled
 
-All socket events under the `/Safecloud/` namespace:
+All socket events under the `/Safecloud/cloud` namespace:
 
 | Event (client → server) | Handler |
 |--------------------------|---------|
 | `Safecloud/drop/register` | Register or reconnect Drop |
 | `Safecloud/drop/announce` | Update stats, Prolly root, Bloom filter |
 | `Safecloud/drop/disconnect` | Remove Drop from registry |
-| `Safecloud/chunk/put` | Route encrypted chunks to Drops |
-| `Safecloud/chunk/get` | Fetch chunks from Drops (CID list or range) |
+| `Safecloud/drop/claimPayments` | Relay Drop payment tokens on-chain (Jet pays gas) |
+| `Safecloud/subtree/put` | Route encrypted chunks to Drops by link path |
+| `Safecloud/subtree/get` | Fetch chunks from Drops, attach Merkle proofs |
 | `Safecloud/chunk/challenge` | Forward proof-of-storage challenge to a Drop |
-| `Safecloud/peer/connect` | v1 stub — Jet-to-Jet peering |
 
 | Event (PHP → server, internal) | Handler |
 |--------------------------------|---------|
@@ -1710,29 +1802,22 @@ function verifyAuthorization(capability, requestedChunks) {
 }
 ```
 
-### Drop-side: checkAuthorization and checkPayment (v0.5 wiring)
+### Where payment verification actually runs (1.0.0-beta.1)
 
-Currently both are stubs returning `true`. In v0.5 they will call:
-
-```js
-Q.Safecloud.Drops.checkAuthorization = function (authorizations, method, payload, options) {
-    if (!authorizations || !authorizations.length) return false;
-    return Q.Crypto.OpenClaim.verify(authorizations[0], { minValid: 1 });
-};
-
-Q.Safecloud.Drops.checkPayment = function (payments, options) {
-    if (!payments || !payments.length) return false;
-    var claim = payments[0];
-    return Q.Crypto.OpenClaim.EVM.verify(claim, claim.sig[0], claim.payer)
-    .then(function (valid) {
-        if (!valid) return false;
-        var lineKey = claim.payer + ':' + claim.line;
-        var prev    = Q.Safecloud.Drops._lineCache[lineKey] || 0;
-        if (Number(claim.max) <= prev) return false;
-        Q.Safecloud.Drops._lineCache[lineKey] = Number(claim.max);
-        return true;
-    });
-};
+- **Jet (server), Cloud→Jet tokens** — `_checkPayments` in
+  `classes/Safecloud/Jets.js`: Safebux-only token/chain allow-list, `nbf/exp`
+  window, `recipientsHash` must include this Jet, EIP-712 signature recovery
+  (`Q.Crypto.OpenClaim.EVM.verify` when available, else
+  `ethers.verifyTypedData`), then `lineAvailable` on OpenClaiming as the
+  definitive pre-flight. Unsigned tokens pass only when
+  `Safecloud.requirePayment` is `false`.
+- **Drop (browser), Jet→Drop tokens** — `Drops.get()` pre-screens the Jet's
+  funds on-chain before serving; `Drops.claimPayments()` skips unsigned
+  tokens at claim time. Monotonic per-`(payer,line)` accounting is enforced
+  on-chain by OpenClaiming itself at `paymentsExecute`.
+- **Jet mesh** — `safecloud.jet.hello` delegations are EIP-712-verified and
+  bound to the sender's Noise static key (`classes/Safecloud/Router.js`);
+  unverified CoC gossip is recorded but never changes routing state.
 ```
 
 ### Caching strategy
@@ -1757,3 +1842,214 @@ function verifyWithCache(claim) {
     });
 }
 ```
+
+## 20. Embedding the player (`embed.html`)
+
+`web/embed.html` is an iframe-embeddable player page. It contains the
+`Safecloud/video` tool (the Q/video drop-in with the `safecloud` adapter —
+`web/js/Q/video.js`) and uses Safecloud end to end: capability from
+IndexedDB → `Client.stream()` → service-worker HLS → chunk requests follow
+play/pause/seek/buffer → each request auto-signs micropayment tokens.
+
+### End-to-end flow
+
+1. **Publisher stores content** on the demo page (or via `Client.store()`).
+   The demo shows two things: a share link and an embed snippet.
+2. **Embed snippet** is an `<iframe>` pointing at
+   `{{baseUrl}}/Q/plugins/Safecloud/embed.html?rootCid=…` with the key
+   material in the **URL fragment**: `#rootKey=…&m=<base64url manifest>`.
+   Fragments are never sent to any server.
+3. **First load inside the iframe**: embed.html parses the fragment,
+   saves `{manifest, capability}` into the iframe origin's IndexedDB
+   (`Client.saveCapability`), and strips the fragment via
+   `history.replaceState`. From this moment the keys exist **only in
+   IndexedDB of that origin** — the local pristine environment.
+4. **Every later load** (and every service-worker restart — the SW
+   lazy-restores sessions from the same IndexedDB) streams with nothing
+   but `?rootCid=…` in the URL. Keys never re-enter URLs, postMessage,
+   or network requests.
+5. **Playback**: the video tool activates videojs with no source, calls
+   `Client.stream(…, { setSrc: false, path: 'sw' })`, and hands the
+   synthetic `https://safecloud-hls.local/...` URL to videojs VHS as
+   `application/x-mpegURL`. The service worker intercepts VHS's requests,
+   decrypts per-segment, and serves Range responses. The prefetch loop
+   follows the playhead; `onPlay`/`onPause`/`onSeek` drive
+   `handle.resume()/pause()/seek()` so chunks are fetched exactly as the
+   player plays, pauses, seeks and buffers.
+6. **Micropayments**: `Client.init({interactive:false})` silently
+   re-derives the payer key if a WebAuthn credential exists; otherwise
+   requests go unsigned (accepted only when `requirePayment:false`).
+   Parents can trigger the interactive ceremony with the
+   `safecloud.enablePayments` message (requires the
+   `publickey-credentials-get` iframe permission below).
+
+### Iframe snippet
+
+```html
+<iframe src="https://app.example.com/Q/plugins/Safecloud/embed.html?rootCid=CID#rootKey=KEY&m=MANIFEST_B64URL"
+        allow="autoplay; encrypted-media; publickey-credentials-get *"
+        width="640" height="360" frameborder="0"></iframe>
+```
+
+Requirements on the serving app: the Safecloud plugin installed, and
+`web/js/Safecloud/.htaccess` (or nginx equivalent) sending
+`Service-Worker-Allowed: /` so the streaming SW can register at scope `/`.
+`embed.html` loads `../Q/js/Q.js`, `../Users/js/Users.js`,
+`../Streams/js/Streams.js` and `js/Safecloud.js` relative to the plugin
+web directory, and calls `Q.init({})` when server-injected config is
+absent — verify this static-boot path against your app build.
+
+### postMessage API
+
+| direction | message | notes |
+|---|---|---|
+| → iframe | `{type:'safecloud.play'}` | |
+| → iframe | `{type:'safecloud.pause'}` | |
+| → iframe | `{type:'safecloud.seek', seconds}` | |
+| → iframe | `{type:'safecloud.enablePayments'}` | interactive WebAuthn |
+| ← iframe | `{type:'safecloud.event', event:'ready'\|'play'\|'pause'\|'timeupdate'\|'ended'\|'error'\|'payments', …}` | includes `rootCid`; `seconds` where relevant |
+
+Pass `?parentOrigin=https://parent.example` to restrict the bridge.
+
+### Why an iframe
+
+The iframe origin is the trust boundary: it holds the keys (IndexedDB is
+origin-isolated), runs the honest player code, and signs the payment
+tokens. Served from a SafeBox-attested origin, "the player runs honest
+code" becomes verifiable rather than assumed — which is exactly the
+property the incentive design below leans on.
+
+## 21. Micropayments end to end, and the incentive design
+
+### Configuration
+
+Server (`local/app.json` or plugin config): `Safecloud.jet.privateKey`
+(claim/relay gas), `Safecloud.jet.address`, `Safecloud.safebux.address`,
+`Safecloud.safebux.perChunkWei`, `Safecloud.requirePayment`. The Jet
+publishes all browser-relevant values over the `Safecloud/jet/info`
+socket event, fetched automatically on connect — the browser needs no
+PHP-exposed config.
+
+Browser: `Q.Safecloud.Client.init()` establishes the payer identity —
+WebAuthn PRF label `safecloud.cloud.session` → `internalKeypair(…,
+'EIP712')` → `Q.Safecloud.Jets.cloudEvmPrivateKey`. Distinct from the
+Drop's label, so one browser has separate payer and earner identities.
+After init, every `Jets.get()` auto-signs EIP-712 Payment tokens; ethers
+(v6, vendored at `web/js/ethers/`, 516 KB) lazy-loads only when signing
+or on-chain reads are actually configured.
+
+### The token is the enforcement primitive
+
+`paymentsExecute` on OpenClaiming takes the signed payment struct plus a
+call-time `recipients` array that must hash to the **signed**
+`recipientsHash`, and pays `recipient ∈ recipients`. Whoever signs the
+token therefore decides, irrevocably, who can ever be paid from it.
+
+**Verified against OpenClaiming.sol** (the canonical rail): EIP-712 domain
+name is `OpenClaiming`, version `1`; the signed struct is exactly
+`Payment(payer, token, recipientsHash, max, line, nbf, exp, contract)` —
+the signed `contract` field is validated `== address(this)` by the rail
+(a wallet-visible deployment binding on top of `verifyingContract`).
+`recipientsHash` carries either `keccak256(abi.encode(address[]))` (plain
+payments) or `keccak256(abi.encode(Policy))` (enforced splits with
+fractions, dynamic payee, and custody hooks) — same signed field, two
+non-colliding encodings. Funding is `transferFrom(payer → recipient)`, so
+payers must approve the rail once (deploy Safebux with EIP-2612 permit to
+keep fresh WebAuthn payers gasless). Execution is permissionless;
+contracts are valid recipients; `PaymentsExecuted` indexes the recipient,
+giving authors a free on-chain discovery feed. `lines[payer][line].spent`
+is CUMULATIVE and every claim's `max` is checked against it — claims are
+**watermark channel vouchers**, not independent budgets: only the latest
+(highest-max) claim per (payer, line) matters. Line 0 is always open
+(gasless payers live there); lines ≥ 1 require the payer to call
+`lineOpen()` once.
+
+**Dual-token watermark design (v1).** When a manifest carries
+`revenue.incomeContract`, each request advances the viewer's line-0
+watermark by the request price and signs two claims at the SAME new
+ceiling:
+
+- **Infra token** — `recipientsHash = keccak(abi.encode([jetEVM]))`,
+  settleable only by this Jet; the envelope's `amount` carries the
+  request's infra share.
+- **Author token** — `recipientsHash =
+  keccak(abi.encode([incomeContract]))`, same watermark; envelope
+  `amount` = the creator share (default 9000 bp / 90%, overridable by
+  `revenue.split.creator`). Settled after the infra share, it covers
+  exactly the remainder up to the watermark.
+
+**Ground truth & analysis.** The deployed rail's verbatim source lives at
+`references/OpenClaiming.sol`; every signing/verifying site in this plugin is
+byte-compatible with it (proven by `test/recipientsHash.test.js`).
+`references/OCP_soundness.md` games out why v1 payments is sound (a payment
+authorized to the wrong party only harms the authorizer — OCP has no borrowable
+authority of its own, so it cannot be a confused deputy) and where a
+third-party-enforcement protocol like Safecloud needed more than a bare
+recipient set (composition — fractions, co-payees, atomic multi-party
+settlement). The canonical rail solves this by overloading `recipientsHash`:
+the same signed field carries `keccak256(abi.encode(Policy))` for enforced
+splits with fractions, a constrained dynamic payee, and per-payee custody
+hooks — retiring the caller-side splitter. (`references/OCP_v2_design.md`
+records the earlier "policyHash field" design this superseded.)
+
+**Economic model.** Two modes, same infrastructure:
+
+- **Consumption** (video streaming, paid content): viewer pays. Creator keeps
+  **90%** of the per-chunk price (`SPLIT_CREATOR_BP = 9000`). Infrastructure
+  earns **10%**: ~3% Jet (routing, payment verification), ~5% Drop (storage,
+  bandwidth), ~2% protocol treasury. Active when manifest carries
+  `revenue.incomeContract` or `revenue.creatorAddress`.
+- **Storage** (Safebox backup, encrypted archives): the owner IS the customer
+  and pays infra to hold their data. No creator royalty — 100% to infra.
+  Active when manifest lacks revenue metadata.
+
+Drops and Jets earn from both revenue streams on the same hardware. Content
+delivery is the upside; storage is the base load. Jets cannot cherry-pick
+lucrative content because chunks are encrypted and content-indistinguishable —
+the only decision is "does this payment cover my cost?" Manifest
+`revenue.split` overrides per-channel (authors/publishers can adjust).
+
+**Jet→Drop channels.** Lines live on the *payer*: the Jet calls
+`lineOpen(jet, uint160(dropEVM), 0)` once at drop registration
+(`_openDropLine`, fire-and-forget), then signs per-drop cumulative
+watermark tokens on that line. Transient Drops with fresh browser
+addresses register **nothing** on-chain — they hold claims and settle
+permissionlessly whenever they choose (`claimPayments` groups by
+channel, keeps the newest claim, and settles `lineAvailable`).
+
+The Jet relays author tokens on-chain fire-and-forget
+(`_relayAuthorTokens`: verify signature → `paymentsExecute` with
+`recipient = incomeContract`), and honest players additionally retain
+each author token in IndexedDB (`Safecloud.Client/authorTokens`) so
+author-side tooling can collect out-of-band.
+
+**What this buys:** infrastructure that colludes can **withhold** the
+author's share (drop the token, never relay), but can never **redirect**
+it — the recipient set is inside the viewer's signature, and
+`test/recipientsHash.test.js` proves tampering breaks recovery. What it
+cannot buy: viewers who already hold decryption capability can always
+collude with infrastructure to watch without signing anything. That is
+the analog hole; the countermeasure is not cryptography but making the
+honest path the default artifact (embed.html, attested origins) and
+grants that are per-grantee and expiring.
+
+### IncomeContract's role
+
+The author generates a **fresh address** (anonymous going backward),
+deploys/owns an IncomeContract instance with `token = Safebux`, and
+publishes its address in the manifest's revenue metadata (integrity-bound
+via the meta fork to the rootCid). `paymentsExecute` pays straight into
+the contract's balance; lockups/gradual release are the author's choice.
+One instance per author is fine; per-content instances work too.
+Integration note to verify against the deployed contract: `claim()` for a
+self-managed recipient pays out the `locked` amount — confirm that
+semantic matches the intended "claim what the schedule has released".
+
+The Jet-balance royalty transfer (`_payCreatorRoyalty`) remains as a
+fallback for requests that arrive without author tokens (e.g. free mode).
+
+**Deferred (deliberately):** a well-known-URL registry where viewers or
+jets post author tokens. It is detection, not prevention — the
+recipientsHash already prevents redirection, and withholding is
+measurable on-chain (authors see which payer lines produce income). If it
+returns, it returns as a reputation feed, not an enforcement layer.

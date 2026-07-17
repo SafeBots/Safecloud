@@ -334,8 +334,8 @@
           <h3>OpenClaiming contract</h3>
           <p>The settlement layer. Deployed at the same vanity address on every supported chain. Immutable — no proxy, no upgrade path. Accepts EIP-712 signed Payment structs, verifies the signature, enforces spending lines, and transfers Safebux tokens. Anyone can inspect the source on any chain's block explorer.</p>
           <p style="font-family:var(--mono);font-size:.9rem;margin:12px 0">
-            <a href="https://bscscan.com/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--purple);text-decoration:none">0x99999febd42cad798fe10ab0b1c563002fc99999</a>
-            — verified on <a href="https://bscscan.com/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--blue)">BSC</a> and <a href="https://etherscan.io/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--blue)">Ethereum</a>
+            <span style="color:var(--purple)">address published at deployment</span>
+            — source verified on each chain's block explorer
           </p>
         </div>
       </div>
@@ -733,8 +733,8 @@
     </div>
 
     <p style="font-family:var(--mono);font-size:.9rem;margin:20px 0">
-      <a href="https://bscscan.com/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--purple);text-decoration:none">0x99999febd42cad798fe10ab0b1c563002fc99999</a>
-      — immutable, no proxy, verified on <a href="https://bscscan.com/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--blue)">BSC mainnet</a> and <a href="https://etherscan.io/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--blue)">Ethereum mainnet</a>
+      <span style="color:var(--purple)">immutable, no proxy</span>
+      — address published and source verified on BSC at deployment
     </p>
   </div>
 </section>
@@ -880,11 +880,16 @@ sudo nano /etc/hosts
       <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">N-ary Merkle tree chunking</div><div class="status-desc">Prolly tree, Bloom filters, diff announces</div></div>
       <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">WebAuthn PRF key derivation</div><div class="status-desc">Drop identity from Secure Enclave, no seed phrases</div></div>
       <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">Proof-of-storage challenges</div><div class="status-desc">Jets issue challenges, Drops respond with chunks, CID verified</div></div>
-      <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">OpenClaiming contract</div><div class="status-desc">Live on <a href="https://bscscan.com/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--blue)">BSC mainnet</a> and <a href="https://etherscan.io/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code" target="_blank" style="color:var(--blue)">Ethereum mainnet</a>, verified source</div></div>
+      <div class="status-row"><div class="status-dot dot-amber"></div><div class="status-name">OpenClaiming contract</div><div class="status-desc">Compiled and audited — BSC deployment next; address published and source verified at launch</div></div>
       <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">Direct on-chain claiming (Drop)</div><div class="status-desc">Drop submits its own payment tokens and covers gas</div></div>
       <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">HLS streaming via Service Worker</div><div class="status-desc">Encrypted video streams with prefetch loop</div></div>
-      <div class="status-row"><div class="status-dot dot-amber"></div><div class="status-name">Jet payment token signing</div><div class="status-desc">Jet sends unsigned stub tokens to Drops — EIP-712 signing in progress</div></div>
-      <div class="status-row"><div class="status-dot dot-amber"></div><div class="status-name">Relay claiming (Jet covers gas)</div><div class="status-desc">Relay path wired but not yet executing on-chain transactions</div></div>
+      <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">Jet payment token signing</div><div class="status-desc">Jet signs EIP-712 Payment tokens to Drops when <code>jet.privateKey</code> is configured; unsigned fallback otherwise</div></div>
+      <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">Relay claiming (Jet covers gas)</div><div class="status-desc">Drop-signed relay requests verified; Jet submits the claim on-chain from its own wallet</div></div>
+      <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">Jet-to-Jet hello authentication</div><div class="status-desc">EIP-712 session delegations, bound to the peer's Noise key — replay across connections rejected</div></div>
+      <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">Cloud→Jet payment signing</div><div class="status-desc"><code>Client.init()</code> derives the payer key via WebAuthn PRF (<code>safecloud.cloud.session</code>); <code>Jets.get()</code> auto-signs dual EIP-712 tokens (infra + author share) — ethers v6 vendored, lazy-loaded</div></div>
+      <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">Q/video drop-in + embed.html</div><div class="status-desc"><code>js/Q/video.js</code> adds the <code>safecloud</code> adapter (SW HLS via videojs VHS, blob fallback); <code>embed.html</code> plays in an iframe with keys from IndexedDB and a postMessage bridge</div></div>
+      <div class="status-row"><div class="status-dot dot-green"></div><div class="status-name">In-tab dashboards</div><div class="status-desc">Drop tool: stored/served, requests, claimable tokens, live activity feed, served-rate sparkline; demo page: payer strip (fetched MB, tokens signed, SBUX authorised)</div></div>
+      <div class="status-row"><div class="status-dot dot-amber"></div><div class="status-name">Author-royalty token relay</div><div class="status-desc">Dual-token design implemented end to end; on-chain settlement pends Safebux + OpenClaiming deployment addresses in config</div></div>
       <div class="status-row"><div class="status-dot dot-amber"></div><div class="status-name">Safebux <a href="https://en.wikipedia.org/wiki/ERC-20" target="_blank" style="color:var(--blue);text-decoration:none">ERC-20</a> token</div><div class="status-desc">Contract designed, deployment imminent</div></div>
     </div>
   </div>
@@ -893,7 +898,7 @@ sudo nano /etc/hosts
 <footer>
   <p>
     Safecloud is built by <a href="https://intercoin.org">Intercoin Inc.</a> &nbsp;·&nbsp;
-    OpenClaiming contract: <a href="https://bscscan.com/address/0x99999febd42cad798fe10ab0b1c563002fc99999#code">0x99999febd...99999</a> &nbsp;·&nbsp;
+    OpenClaiming contract: address published at deployment &nbsp;·&nbsp;
     Intercloud whitepaper: <a href="https://arxiv.org/abs/2605.22830">arXiv:2605.22830</a> &nbsp;·&nbsp;
     <a href="https://github.com/Safecloud">GitHub</a>
   </p>

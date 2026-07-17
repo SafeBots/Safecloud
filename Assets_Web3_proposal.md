@@ -1,11 +1,15 @@
 # Assets/Web3 — Micropayment Verification Layer
 
+> **Internal design note** — a refactoring proposal, not user documentation.
+> Status as of 1.0.0-beta.1: Jets.js `_checkPayments` now verifies the EIP-712
+> payment signature (OpenClaim.EVM or direct `ethers.verifyTypedData`) before
+> the `lineAvailable` balance pre-flight. What remains is the *extraction*:
+> moving this logic into a reusable Assets/Web3 module.
+
 ## The Problem
 
-Currently Jets.js does payment verification inline:
-- `_checkPayments` reads `p.stm.payer`, calls `_checkPayerBalance`
-- No EIP-712 signature verification (until this fix)
-- Balance-only check can be replayed across requests
+Payment verification lives inline in Jets.js:
+- `_checkPayments` verifies the EIP-712 signature, then calls `_checkPayerBalance`
 - Every plugin that wants x402 micropayments duplicates this logic
 
 The Calendars pattern (using `Assets_Credits::getPaymentsInfo`) is the right model:

@@ -36,6 +36,18 @@ Q.exports(function (Q, _) {
         if (options.streamName)  { payload.streamName  = options.streamName; }
 
         var _promise = _.emit('Safecloud/subtree/put', payload).then(function (result) {
+            if (result && result.results) {
+                result.results.forEach(function (r, i) {
+                    if (!r || !r.stored) { return; }
+                    _.cloudStats.chunksUploaded++;
+                    var src = payload.chunks[i];
+                    if (src && src.size) { _.cloudStats.bytesUploaded += src.size; }
+                    else if (src && src.ciphertext) {
+                        _.cloudStats.bytesUploaded +=
+                            Math.floor(src.ciphertext.length * 3 / 4);
+                    }
+                });
+            }
             if (options.onProgress && result && result.results) {
                 var stored = result.results.filter(function (r) { return r && r.stored; }).length;
                 options.onProgress(stored, result.results.length);
