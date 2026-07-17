@@ -1172,8 +1172,9 @@ Safecloud_Jets.listen = function (options) {
             return '<tr><td>' + id.slice(0, 12) + '…</td><td>'
                 + (d.evmAddress ? d.evmAddress.slice(0, 10) + '…' : '—')
                 + '</td><td>' + ((d.storage && d.storage.GB) || 0) + ' GB</td><td>'
-                + (d.reliability != null ? (d.reliability * 100).toFixed(0) + '%' : '—')
-                + '</td><td>' + (d.connected !== false ? '🟢' : '⚫') + '</td></tr>';
+                + (d.reliabilityScore != null
+                    ? (d.reliabilityScore * 100).toFixed(0) + '%' : '—')
+                + '</td><td>' + (!d.offlineSince ? '🟢' : '⚫') + '</td></tr>';
         }).join('');
         var pending = Object.keys(_cloudTokens).length;
         res.set('Content-Type', 'text/html').send('<!doctype html><html><head>'
@@ -1653,7 +1654,9 @@ function _handleDropClaimPayments(client, payload, ack) {
             'address[] recipients, bytes signature, address recipient,' +
             'uint256 amount, address hook) external'
         ];
-        var contract  = new ethers.Contract(OC_ADDRESS, OC_ABI, signer);
+        var OC_ADDR_R = Q.Config.get(['Users', 'web3', 'contracts',
+            'Safecloud/openclaiming', hexId], OC_ADDRESS);
+        var contract  = new ethers.Contract(OC_ADDR_R, OC_ABI, signer);
         var txHashes  = [];
         var batchSize = Q.Config.get(['Safecloud', 'drop', 'claimBatchSize'], 10);
         var perChunk  = Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], PER_CHUNK_WEI_DEFAULT);
@@ -1697,7 +1700,7 @@ function _handleDropClaimPayments(client, payload, ack) {
                                 line:           BigInt(stm.line    || '0'),
                                 nbf:            BigInt(stm.nbf     || '0'),
                                 exp:            BigInt(stm.exp     || '0'),
-                                contractAddr:   stm.contract || OC_ADDRESS
+                                contractAddr:   stm.contract || OC_ADDR_R
                             },
                             [dropEVM],
                             sigBytes,
@@ -2546,17 +2549,13 @@ function _checkPayments(payments, chunkCount) {
             : (stm.chainId || SAFEBUX_CHAIN);
         if (!payer || !token) { return Promise.resolve(false); }
 
-        // Safebux is the ONLY accepted payment token — reject all others.
-        // Token address must be configured. If not yet deployed, reject all.
-        var acceptedToken = Q.Config.get(['Safecloud', 'safebux', 'address'], null);
-        if (!acceptedToken) {
-            // Safebux not yet deployed — accept all if requirePayment:false
-            var req = Q.Config.get(['Safecloud', 'requirePayment'], false);
-            return Promise.resolve(!req);
-        }
-        if (token.toLowerCase() !== acceptedToken.toLowerCase()) {
-            return Promise.resolve(false); // wrong token — only Safebux accepted
-        }
+        // Token acceptance is handled by the okSet gate below (Safebux +
+        // Safecloud.jet.acceptedTokens). When NO token is configured at all
+        // (contracts not yet deployed — demo mode), fall through to
+        // SIGNATURE-ONLY verification: the EIP-712 check still gates
+        // requests; only the on-chain balance pre-screen is skipped.
+        var _chainConfigured =
+            !!Q.Config.get(['Safecloud', 'safebux', 'address'], null);
         // Accept BSC + any chain where OpenClaiming is deployed
         var acceptedChains = Q.Config.get(['Safecloud', 'safebux', 'chains'],
             [SAFEBUX_CHAIN, 'eip155:1']); // BSC + Ethereum
@@ -2725,14 +2724,23 @@ function _checkPayments(payments, chunkCount) {
 
         return sigVerifyPromise.then(function (sigOk) {
             if (!sigOk) { return false; }
-            // 2. Check lineAvailable >= totalWei on the OpenClaiming contract.
-            // lineAvailable(payer, line, claimMax) reflects line.max - line.spent,
-            // which is the definitive pre-flight check — not balanceOf.
+            // 2. On-chain pre-flight (lineAvailable = line.max − spent).
+            // Skipped in signature-only mode (no token/contract deployed):
+            // a valid signature over a sufficient watermark is the gate.
+            if (!_chainConfigured) {
+                try {
+                    return BigInt(stm.max || '0') >= totalWei;
+                } catch (e) { return false; }
+            }
             return Safecloud_Jets._checkPayerBalance(
                 payer, token, String(totalWei), chainId,
-                stm.line || 0,      // OpenClaiming line id
-                String(stm.max || 0) // payment token's max field
-            );
+                stm.line || 0,
+                String(stm.max || 0)
+            ).catch(function () {
+                // RPC unreachable — degrade to watermark-sufficiency check
+                try { return BigInt(stm.max || '0') >= totalWei; }
+                catch (e) { return false; }
+            });
         });
     });
 
