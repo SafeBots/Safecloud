@@ -17,3 +17,5 @@
   "scripts": {
     "test": "NODE_PATH=test/shims node test/validateManifest.test.js && NODE_PATH=test/shims node test/delegation.test.js && NODE_PATH=test/shims node test/recipientsHash.test.js",
     "jet": "node demo/jet.js"
+  }
+}

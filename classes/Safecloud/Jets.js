@@ -1964,7 +1964,7 @@ function _handleSubtreeGet(client, userId, payload, ack) {
                     return ack && ack({ error: { code: 'PaymentRequired', message: 'Insufficient balance' } });
                 }
 
-                // Retain the latest watermark token per payer — this is what
+                    // Retain the latest watermark token per payer — this is what
                 // the Jet will settle on-chain (only the newest claim per
                 // line matters under OpenClaiming's cumulative accounting).
                 try {
@@ -1984,7 +1984,6 @@ function _handleSubtreeGet(client, userId, payload, ack) {
                 // the rail pays author + this Jet atomically. Self-filters.
                 try { _settlePolicyTokens(payments); }
                 catch (e) { /* never block serving */ }
-
 
                 // 3b. Per-chunk price enforcement from manifest metadata.
                 // Publisher set perChunkWei in track/meta chunk at upload time.

@@ -372,7 +372,7 @@ Q.exports(function (Q, _) {
 
         try {
             var wallet = new ethers.Wallet(privKey);
-			
+
             function _signOne(s, amountHint) {
                 s.payer = wallet.address;
                 var value = {
