@@ -123,7 +123,7 @@ Q.exports(function (Q, _) {
         // config Safecloud.sponsorUrl), request a token signed by the SITE
         // as payer. The viewer signs nothing and appears nowhere on-chain.
         var sponsorUrl = (options && options.sponsorUrl) ||
-            Q.Config.get(['Safecloud', 'sponsorUrl'], null);
+            _.paymentSetting(['sponsorUrl'], ['Safecloud', 'sponsorUrl'], null);
         if (sponsorUrl) {
             var viewerId = (options && options.viewerId) ||
                 Q.Users.loggedInUserId() || Q.sessionId() || 'anon';

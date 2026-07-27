@@ -535,8 +535,30 @@ Safecloud_Jets.callDrop = function (drop, method, payload, timeoutMs) {
  * @return {BigInt}
  * @private
  */
+/**
+ * Parse an untrusted decimal string into BigInt, falling back to a default.
+ * Client-supplied numbers (Drop registration prices, payment fields) must
+ * never be handed to BigInt() directly: a non-numeric value throws, and an
+ * exception inside a routing filter takes down every request on the Jet.
+ * @private
+ */
+function _safeBigInt(v, def) {
+    try {
+        if (v === null || v === undefined || v === '') { return BigInt(def); }
+        if (typeof v === 'number') {
+            if (!Number.isFinite(v) || v < 0) { return BigInt(def); }
+            return BigInt(Math.floor(v));
+        }
+        if (typeof v !== 'string' && typeof v !== 'bigint') { return BigInt(def); }
+        if (typeof v === 'string' && !/^[0-9]+$/.test(v.trim())) { return BigInt(def); }
+        return BigInt(typeof v === 'string' ? v.trim() : v);
+    } catch (e) {
+        try { return BigInt(def); } catch (e2) { return 0n; }
+    }
+}
+
 function _dropOfferPrice(drop, publisherPrice) {
-    var pubWei = BigInt(publisherPrice || PER_CHUNK_WEI_DEFAULT);
+    var pubWei = _safeBigInt(publisherPrice, PER_CHUNK_WEI_DEFAULT);
     var score  = typeof drop.reliabilityScore === 'number'
         ? Math.min(1, Math.max(0, drop.reliabilityScore)) : 0.5;
     var factor = 0.5 + 0.5 * score;
@@ -566,7 +588,7 @@ Safecloud_Jets.selectDrops = function (cids, options) {
         if (exclude.indexOf(id) >= 0) { return false; }
         // Price filter: only route to Drops whose minPerChunkWei <= offerPrice
         var offer    = _dropOfferPrice(d, publisherPrice);
-        var minPrice = BigInt(d.minPerChunkWei || PER_CHUNK_WEI_DEFAULT);
+        var minPrice = _safeBigInt(d.minPerChunkWei, PER_CHUNK_WEI_DEFAULT);
         return offer >= minPrice;
     });
     // Shuffle for load distribution, then take up to rf unique drops
@@ -602,11 +624,16 @@ Safecloud_Jets.selectDrops = function (cids, options) {
  * @return {Promise<{ok: Boolean, unauthorized: Array, reason: String}>}
  */
 Safecloud_Jets.verifySubtreeGrant = function (grants, rootCid, requestedLink, manifest) {
-    if (!grants || !grants.length) {
-        // No grants — allow if content is configured as public (requirePayment:false)
-        // Otherwise reject. Grants are required for access-controlled content.
-        var _requirePayment = Q.Config.get(['Safecloud', 'requirePayment'], false);
-        if (!_requirePayment) {
+    if (!Array.isArray(grants) || !grants.length) {
+        // Non-array input (a string has .length but no .filter) is treated as
+        // "no grants" rather than being allowed to throw — an uncaught throw
+        // inside a socket handler would take down the entire Jet process.
+        // No grants — access control is separate from payment. Grants gate
+        // WHO MAY SEE private content; payment gates WHO PAID. Public content
+        // (the common case, and every demo) needs no grants even when
+        // requirePayment is true. Only requireGrants forces them.
+        var _requireGrants = Q.Config.get(['Safecloud', 'requireGrants'], false);
+        if (!_requireGrants) {
             return Promise.resolve({ ok: true });
         }
         return Promise.resolve({
@@ -697,13 +724,18 @@ function _leafRangeStart(linkPath, manifest) {
     var treeN     = (manifest && manifest.treeN)     || 2;
     var treeDepth = (manifest && manifest.treeDepth) || 1;
     var total     = Math.pow(treeN, treeDepth);
-    var nodeSegs  = linkPath.slice(2);
+    var nodeSegs  = (linkPath || []).slice(2);
     var start     = 0, width = total;
     for (var i = 0; i < nodeSegs.length; i++) {
         width = width / treeN;
-        start = start + parseInt(nodeSegs[i], 10) * width;
+        // Untrusted segment — clamp rather than propagate NaN (see
+        // _chunkRangeForLink for why).
+        var seg = parseInt(nodeSegs[i], 10);
+        if (!Number.isFinite(seg) || seg < 0) { seg = 0; }
+        else if (seg > treeN - 1)             { seg = treeN - 1; }
+        start = start + seg * width;
     }
-    return Math.floor(start);
+    return Number.isFinite(start) ? Math.floor(start) : 0;
 }
 
 
@@ -721,11 +753,20 @@ Safecloud_Jets._chunkRangeForLink = function (link, manifest) {
     var start = 0, width = total;
     for (var i = 0; i < nodeSegs.length; i++) {
         width = width / treeN;
-        start += parseInt(nodeSegs[i], 10) * width;
+        // Link paths arrive from clients. A non-numeric or out-of-range
+        // segment must not poison the arithmetic with NaN — downstream this
+        // becomes Array.slice(NaN) and silently returns the wrong chunks.
+        // Clamp to a valid branch index instead.
+        var seg = parseInt(nodeSegs[i], 10);
+        if (!Number.isFinite(seg) || seg < 0)      { seg = 0; }
+        else if (seg > treeN - 1)                  { seg = treeN - 1; }
+        start += seg * width;
     }
     var end = Math.min(Math.floor(start + width),
         (manifest && manifest.chunkCount) || total);
-    return { start: Math.floor(start), end: end };
+    if (!Number.isFinite(start)) { start = 0; }
+    if (!Number.isFinite(end))   { end = 0; }
+    return { start: Math.floor(start), end: Math.max(Math.floor(start), end) };
 };
 
 /**
@@ -1004,6 +1045,10 @@ Safecloud_Jets.listen = function (options) {
 
     // ── 1. Internal HTTP server ───────────────────────────────────────────────
     var server = Q.listen();
+    // Ensure JSON bodies are parsed for our POST endpoints (sponsor, faucet).
+    // Harmless if a parser is already installed upstream.
+    try { server.attached.express.use(express.json({ limit: '256kb' })); }
+    catch (eJson) { /* parser may already be present */ }
     server.attached.express.post('/Q/node', Safecloud_Jets_request_handler);
 
     // ── 0b. Auto-settlement cron ─────────────────────────────────────────────
@@ -1020,7 +1065,7 @@ Safecloud_Jets.listen = function (options) {
                 var envs = Object.keys(_cloudTokens).map(function (k) {
                     return _cloudTokens[k];
                 });
-                if (!envs.length || !_getJetWallet()) { return; }
+                if (!envs.length || !_settlementReady()) { return; }
                 _settlePolicyTokens(envs);
                 // Legacy dual-token author shares ride the same retention
                 var withIncome = envs.filter(function (e) {
@@ -1058,25 +1103,27 @@ Safecloud_Jets.listen = function (options) {
         if (_faucetHits[ip].length >= cap) {
             return res.status(429).json({ error: 'rate limited' });
         }
-        var wallet = _getJetWallet();
-        var sbux   = Q.Config.get(['Safecloud', 'safebux', 'address'], null);
-        if (!wallet || !sbux) {
+        if (!_settlementReady()) {
             return res.status(503).json({ error: 'faucet not configured' });
         }
+        var wallet = _getJetWallet();
+        var sbux   = Q.Config.get(['Safecloud', 'safebux', 'address'], null);
         _faucetHits[ip].push(now);
-        var wei = Q.Config.get(['Safecloud', 'faucet', 'wei'], '1000000');
+        var wei = _safeBigInt(
+            Q.Config.get(['Safecloud', 'faucet', 'wei'], '1000000'), '1000000');
         try {
             var provider = Safecloud_Jets._evmProvider(SAFEBUX_CHAIN);
             var erc20 = new ethers.Contract(sbux,
                 ['function transfer(address,uint256) returns (bool)'],
                 wallet.connect(provider));
-            erc20.transfer(addr, BigInt(wei)).then(function (tx) {
-                res.json({ ok: true, tx: tx.hash, wei: wei });
-            }).catch(function (err) {
-                res.status(500).json({ error: String(err && err.message) });
+            erc20.transfer(addr, wei).then(function (tx) {
+                res.json({ ok: true, tx: tx.hash, wei: wei.toString() });
+            }).catch(function () {
+                res.status(500).json({ error: 'transfer failed' });
             });
         } catch (e) {
-            res.status(500).json({ error: e.message });
+            Q.log('Q.Safecloud.Jets: faucet error: ' + e.message, 'Safecloud');
+            res.status(500).json({ error: 'faucet error' });
         }
     });
 
@@ -1091,12 +1138,23 @@ Safecloud_Jets.listen = function (options) {
     // Returns a signed envelope the player attaches as its payment.
     var _sponsorWatermarks = {}; // viewerId → cumulative max granted
     server.attached.express.post('/Safecloud/sponsor/token', function (req, res) {
+      try {
         if (!Q.Config.get(['Safecloud', 'sponsor', 'enabled'], false)) {
             return res.status(404).json({ error: 'sponsorship disabled' });
         }
         var b = req.body || {};
-        if (!b.viewerId) {
+        // viewerId is used as a map key and hashed into the line number —
+        // require a sane, bounded string.
+        if (!b.viewerId || typeof b.viewerId !== 'string'
+                || b.viewerId.length > 256) {
             return res.status(400).json({ error: 'viewerId required' });
+        }
+        // maxWei is untrusted client input: a non-numeric value handed to
+        // BigInt() throws inside the handler, which leaks a stack trace and
+        // returns 500 instead of a clean error.
+        if (b.maxWei !== undefined && b.maxWei !== null
+                && !/^[0-9]+$/.test(String(b.maxWei).trim())) {
+            return res.status(400).json({ error: 'maxWei must be a decimal string' });
         }
         var spKey  = Q.Config.get(['Safecloud', 'sponsor', 'privateKey'], null);
         var wallet = spKey ? new ethers.Wallet(spKey) : _getJetWallet();
@@ -1159,9 +1217,14 @@ Safecloud_Jets.listen = function (options) {
         ).then(function (sig) {
             res.json({ stm: stm, sig: [{ signature: sig }],
                        granted: want.toString(), cap: cap.toString() });
-        }).catch(function (err) {
-            res.status(500).json({ error: String(err && err.message) });
+        }).catch(function () {
+            res.status(500).json({ error: 'signing failed' });
         });
+      } catch (eSp) {
+        // Never leak internals (stack traces, file paths) to a caller.
+        Q.log('Q.Safecloud.Jets: sponsor endpoint error: ' + eSp.message, 'Safecloud');
+        res.status(400).json({ error: 'bad request' });
+      }
     });
 
     // ── 0d. Jet dashboard — GET /Safecloud/dashboard ─────────────────────────
@@ -1172,8 +1235,9 @@ Safecloud_Jets.listen = function (options) {
             return '<tr><td>' + id.slice(0, 12) + '…</td><td>'
                 + (d.evmAddress ? d.evmAddress.slice(0, 10) + '…' : '—')
                 + '</td><td>' + ((d.storage && d.storage.GB) || 0) + ' GB</td><td>'
-                + (d.reliabilityScore != null
-                    ? (d.reliabilityScore * 100).toFixed(0) + '%' : '—')
+                + (d.reliabilityScore == null ? '—'
+                    : (d.reliabilityScore === 0.5 ? 'new'
+                       : (d.reliabilityScore * 100).toFixed(0) + '%'))
                 + '</td><td>' + (!d.offlineSince ? '🟢' : '⚫') + '</td></tr>';
         }).join('');
         var pending = Object.keys(_cloudTokens).length;
@@ -1253,30 +1317,57 @@ Safecloud_Jets.listen = function (options) {
 
         Q.log('Safecloud client connected: ' + client.id + (userId ? ' user:' + userId : ' (anon)'), 'Safecloud');
 
+        /**
+         * Register a socket handler with a crash guard.
+         *
+         * socket.io invokes handlers synchronously; an exception thrown
+         * inside one is an UNCAUGHT exception that terminates the Node
+         * process — i.e. a single malformed message from any anonymous
+         * client would take down the Jet, every connected Drop, and every
+         * viewer. Individual handlers validate their input, but this guard
+         * makes that class of bug non-fatal by construction: the caller
+         * gets an InternalError ack and the Jet keeps serving.
+         * @private
+         */
+        function on(event, handler) {
+            client.on(event, function (payload, ack) {
+                try {
+                    handler(payload, ack);
+                } catch (e) {
+                    Q.log('Q.Safecloud.Jets: handler ' + event + ' threw: '
+                        + (e && e.message), 'Safecloud');
+                    if (typeof ack === 'function') {
+                        ack({ error: { code: 'InternalError',
+                                       message: 'request could not be processed' } });
+                    }
+                }
+            });
+        }
+
         // ── Drop registration ─────────────────────────────────────────────────
-        client.on('Safecloud/drop/register', function (payload, ack) {
+        on('Safecloud/drop/register', function (payload, ack) {
             _handleDropRegister(client, userId, payload, ack);
         });
 
         // ── Drop inventory announce ───────────────────────────────────────────
-        client.on('Safecloud/drop/announce', function (payload, ack) {
+        on('Safecloud/drop/announce', function (payload, ack) {
             _handleDropAnnounce(client, payload, ack);
         });
 
         // ── Drop intentional disconnect ───────────────────────────────────────
-        client.on('Safecloud/drop/disconnect', function (payload, ack) {
+        on('Safecloud/drop/disconnect', function (payload, ack) {
             _handleDropDisconnect(client, payload, ack);
         });
 
         // ── Drop payment claim relay ──────────────────────────────────────────
-        client.on('Safecloud/drop/claimPayments', function (payload, ack) {
+        on('Safecloud/drop/claimPayments', function (payload, ack) {
             _handleDropClaimPayments(client, payload, ack);
         });
 
         // ── Server fragment registration (split-entropy bootstrap) ──────────
         // Author registers a random entropy fragment alongside createShareLink.
         // The Jet holds it and releases via HTTP /safecloud/fragment endpoint.
-        client.on('Safecloud/content/registerFragment', function (payload, ack) {
+        on('Safecloud/content/registerFragment', function (payload, ack) {
             if (!payload || !payload.rootCid || !payload.fragment) {
                 return ack && ack({ error: { code: 'BadRequest',
                     message: 'rootCid and fragment required' } });
@@ -1286,25 +1377,27 @@ Safecloud_Jets.listen = function (options) {
         });
 
         // ── Cloud: subtree upload ─────────────────────────────────────────────
-        client.on('Safecloud/subtree/put', function (payload, ack) {
+        on('Safecloud/subtree/put', function (payload, ack) {
             _handleSubtreePut(client, userId, payload, ack);
         });
 
         // ── Cloud: subtree download ───────────────────────────────────────────
-        client.on('Safecloud/subtree/get', function (payload, ack) {
+        on('Safecloud/subtree/get', function (payload, ack) {
             _handleSubtreeGet(client, userId, payload, ack);
         });
 
         // ── Jet info — payment + network configuration for browser clients ────
         // Lets Clouds and Drops learn addresses/prices straight from the Jet,
         // with no dependency on PHP exposing plugin config to the page.
-        client.on('Safecloud/jet/info', function (payload, ack) {
+        on('Safecloud/jet/info', function (payload, ack) {
             if (!ack) { return; }
             var chainId = SAFEBUX_CHAIN;
             var hexId   = _chainIdToHex(chainId);
             ack(null, {
                 evmAddress:     Q.Config.get(['Safecloud', 'jet', 'address'], null),
                 requirePayment: Q.Config.get(['Safecloud', 'requirePayment'], false),
+                sponsorUrl:     Q.Config.get(['Safecloud', 'sponsor', 'enabled'], false)
+                                    ? '/Safecloud/sponsor/token' : null,
                 safebux: {
                     address:     Q.Config.get(['Safecloud', 'safebux', 'address'], null),
                     chainId:     chainId,
@@ -1325,7 +1418,7 @@ Safecloud_Jets.listen = function (options) {
         });
 
         // ── Explicit proof-of-storage challenge ───────────────────────────────
-        client.on('Safecloud/chunk/challenge', function (payload, ack) {
+        on('Safecloud/chunk/challenge', function (payload, ack) {
             var cid = payload && payload.cid;
             if (!cid) { return ack && ack({ error: { code: 'BadRequest', message: 'cid required' } }); }
 
@@ -1398,7 +1491,15 @@ function _handleDropRegister(client, userId, payload, ack) {
     var evmAddress  = payload.evmAddress || null;
     var delegation  = payload.delegation || null;
     var publicKey   = payload.publicKey || null;
-    var storage     = payload.storage || { GB: 0 };
+    // Untrusted: the Drop asserts its own storage. Coerce to a finite,
+    // bounded, non-negative number so neither NaN (silent exclusion from
+    // routing) nor an absurd claim (routing capture) can enter the registry.
+    var _maxGB      = Q.Config.get(['Safecloud', 'router', 'maxClaimedGB'], 65536);
+    var _rawGB      = payload.storage && payload.storage.GB;
+    var _gb         = (typeof _rawGB === 'number') ? _rawGB : parseFloat(_rawGB);
+    if (!Number.isFinite(_gb) || _gb < 0) { _gb = 0; }
+    if (_gb > _maxGB) { _gb = _maxGB; }
+    var storage     = { GB: _gb };
     var prollyRoot  = payload.prollyRoot || null;
     var bloomFilter = payload.bloomFilter || null;
 
@@ -1463,16 +1564,25 @@ function _registerDrop(client, userId, payload, ack,
         delegation:       delegation,
         publicKey:        publicKey,
         storage:          storage,
-        used:             payload.used || 0,
+        used:             (function (u) {
+                              var n = (typeof u === 'number') ? u : parseFloat(u);
+                              return (Number.isFinite(n) && n >= 0) ? n : 0;
+                          })(payload.used),
         offlineSince:     null,
         registeredAt:     drop.registeredAt || Date.now(),
         reconnectedAt:    Date.now(),
         reliabilityScore: existing ? Math.max(0, existing.reliabilityScore - 0.25) : 0.5,
         // Drop's minimum acceptable price per chunk in Safebux wei.
         // Set by Drop at registration. Jet skips if offerPrice < minPerChunkWei.
-        minPerChunkWei:   payload.minPerChunkWei
-                          || (existing && existing.minPerChunkWei)
-                          || Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], PER_CHUNK_WEI_DEFAULT)
+        // Sanitized at the boundary: payload.minPerChunkWei is untrusted
+        // client input. Store it as a canonical decimal string (or the
+        // default) so no downstream BigInt() can throw on it.
+        minPerChunkWei:   _safeBigInt(
+                              payload.minPerChunkWei
+                              || (existing && existing.minPerChunkWei),
+                              Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'],
+                                  PER_CHUNK_WEI_DEFAULT)
+                          ).toString()
     });
 
     _socketToDropId[client.id] = dropId;
@@ -1607,10 +1717,15 @@ function _handleDropClaimPayments(client, payload, ack) {
         return ack && ack({ error: { code: 'NotFound', message: 'Drop not registered' } });
     }
 
-    var tokens    = payload.paymentTokens || [];
-    var signature = payload.signature     || null;
-    var dropEVM   = drop.evmAddress       || (payload.dropEVM);
-    var nonce     = payload.nonce         || 0;
+    // paymentTokens is untrusted client input — coerce to a real array so a
+    // non-array value (a string has .length but no .filter/.map) can't reach
+    // the settlement loop and throw. Drop non-object entries too.
+    var tokens = Array.isArray(payload.paymentTokens)
+        ? payload.paymentTokens.filter(function (t) { return t && typeof t === 'object'; })
+        : [];
+    var signature = payload.signature || null;
+    var dropEVM   = drop.evmAddress   || (payload.dropEVM);
+    var nonce     = payload.nonce     || 0;
 
     if (!tokens.length) {
         return ack && ack(null, { txHash: null, reason: 'no tokens' });
@@ -1778,16 +1893,23 @@ function _verifyRelaySignature(payload, dropEVM, signature) {
 }
 
 function _handleSubtreePut(client, userId, payload, ack) {
-    var grants      = payload.grants      || [];
-    var payments    = payload.payments    || [];
-    var chunks      = payload.chunks      || [];
-    var link        = payload.link        || ['track', 'data'];
+    payload = payload || {};
+    // Untrusted client input: coerce array-typed fields to real arrays.
+    // A non-array value with a .length (a string) would otherwise reach
+    // .map()/.filter() and throw synchronously, killing the Jet process.
+    var grants      = Array.isArray(payload.grants)   ? payload.grants   : [];
+    var payments    = Array.isArray(payload.payments) ? payload.payments : [];
+    var chunks      = Array.isArray(payload.chunks)   ? payload.chunks   : [];
+    chunks          = chunks.filter(function (c) { return c && c.cid; });
+    var link        = Array.isArray(payload.link) && payload.link.length
+                          ? payload.link : ['track', 'data'];
     var publisherId = payload.publisherId || null;
     var streamName  = payload.streamName  || null;
 
     // 1. OCP Role A grant verification (link-path model)
-    // On upload, rootCid is not yet known — grants are optional for new uploads.
-    // If grants are provided (re-upload / authorized write), verify them.
+    // Uploads are authored writes, not paid consumption — never gated by
+    // requirePayment. If grants are supplied (authorized re-upload) verify
+    // them; otherwise allow unless requireGrants is set for write control.
     var uploadGrantPromise = grants.length
         ? Safecloud_Jets.verifySubtreeGrant(grants, null, link, null)
         : Promise.resolve({ ok: true });
@@ -1885,10 +2007,14 @@ function _handleSubtreePut(client, userId, payload, ack) {
 }
 
 function _handleSubtreeGet(client, userId, payload, ack) {
-    var grants      = payload.grants      || [];
-    var payments    = payload.payments    || [];
-    var rootCid     = payload.rootCid;
-    var link        = payload.link        || ['track', 'data'];
+    payload = payload || {};
+    // Untrusted client input — see _handleSubtreePut for why these must be
+    // coerced rather than trusted.
+    var grants      = Array.isArray(payload.grants)   ? payload.grants   : [];
+    var payments    = Array.isArray(payload.payments) ? payload.payments : [];
+    var rootCid     = (typeof payload.rootCid === 'string') ? payload.rootCid : null;
+    var link        = Array.isArray(payload.link) && payload.link.length
+                          ? payload.link : ['track', 'data'];
     var publisherId = payload.publisherId || null;
     var streamName  = payload.streamName  || null;
 
@@ -2372,11 +2498,18 @@ function _handleHttpChunkGet(req, res) {
                     cids: [cid], options: {}, paymentToken: ocpEnvelope
                 }).then(function (result) {
                     var chunk = result && result.chunks && result.chunks[0];
-                    if (!chunk) {
+                    if (!chunk || typeof chunk.ciphertext !== 'string') {
+                        // Missing or malformed payload from the Drop — treat
+                        // as unavailable rather than throwing on Buffer.from
+                        // (which would 500 and leak the error to the caller).
                         return res.status(404).json({ error: { code: 'NotFound', message: 'Chunk unavailable' } });
                     }
                     var ctBytes  = Buffer.from(chunk.ciphertext, 'base64');
-                    var tagBytes = Buffer.from(chunk.tag, 'base64');
+                    // `tag` is optional: some chunk formats append the AEAD
+                    // tag to the ciphertext and carry no separate field.
+                    var tagBytes = (typeof chunk.tag === 'string')
+                        ? Buffer.from(chunk.tag, 'base64')
+                        : Buffer.alloc(0);
                     var body     = Buffer.concat([ctBytes, tagBytes]);
 
                     // Range request support (for Safari <video> probe)
@@ -2384,9 +2517,18 @@ function _handleHttpChunkGet(req, res) {
                     if (rangeHeader) {
                         var match = rangeHeader.match(/bytes=(\d*)-(\d*)/);
                         if (match) {
-                            var rStart = match[1] !== '' ? parseInt(match[1]) : 0;
-                            var rEnd   = match[2] !== '' ? parseInt(match[2]) : body.length - 1;
+                            var rStart = match[1] !== '' ? parseInt(match[1], 10) : 0;
+                            var rEnd   = match[2] !== '' ? parseInt(match[2], 10) : body.length - 1;
+                            if (!Number.isFinite(rStart) || rStart < 0) { rStart = 0; }
+                            if (!Number.isFinite(rEnd))   { rEnd = body.length - 1; }
                             rEnd = Math.min(rEnd, body.length - 1);
+                            if (rStart > rEnd || rStart >= body.length) {
+                                // Unsatisfiable — RFC 7233 says 416, not an
+                                // empty 206 with a nonsense Content-Range.
+                                return res.status(416)
+                                    .set('Content-Range', 'bytes */' + body.length)
+                                    .json({ error: { code: 'RangeNotSatisfiable' } });
+                            }
                             res.status(206)
                                .set('Content-Range', 'bytes ' + rStart + '-' + rEnd + '/' + body.length)
                                .set('Content-Type', 'application/octet-stream')
@@ -2402,10 +2544,12 @@ function _handleHttpChunkGet(req, res) {
                 });
             });
         }).catch(function (err) {
-            res.status(500).json({ error: { code: 'InternalError', message: String(err) } });
+            Q.log('Q.Safecloud.Jets: chunk route error: ' + (err && err.message), 'Safecloud');
+            res.status(500).json({ error: { code: 'InternalError', message: 'internal error' } });
         });
     }).catch(function (err) { // sigPromise
-        res.status(500).json({ error: { code: 'InternalError', message: String(err) } });
+        Q.log('Q.Safecloud.Jets: chunk sig error: ' + (err && err.message), 'Safecloud');
+        res.status(500).json({ error: { code: 'InternalError', message: 'internal error' } });
     });
 }
 
@@ -2528,7 +2672,7 @@ function _ethersVerifyPaymentSig(stm, sig0) {
 }
 
 function _checkPayments(payments, chunkCount) {
-    if (!payments || !payments.length) {
+    if (!Array.isArray(payments) || !payments.length) {
         var requirePayment = Q.Config.get(['Safecloud', 'requirePayment'], false);
         return Promise.resolve(!requirePayment);
     }
@@ -2556,14 +2700,18 @@ function _checkPayments(payments, chunkCount) {
         // requests; only the on-chain balance pre-screen is skipped.
         var _chainConfigured =
             !!Q.Config.get(['Safecloud', 'safebux', 'address'], null);
-        // Accept BSC + any chain where OpenClaiming is deployed
-        var acceptedChains = Q.Config.get(['Safecloud', 'safebux', 'chains'],
-            [SAFEBUX_CHAIN, 'eip155:1']); // BSC + Ethereum
-        var chainMatch = Array.isArray(acceptedChains)
-            ? acceptedChains.indexOf(chainId) >= 0
-            : (chainId === acceptedChains);
-        if (!chainMatch) {
-            return Promise.resolve(false); // wrong chain
+        // Chain allow-list — enforced only when a chain is configured.
+        // In demo / signature-only mode (no Safebux address) the chain of a
+        // signed token is irrelevant: the EIP-712 signature is the gate.
+        if (_chainConfigured) {
+            var acceptedChains = Q.Config.get(['Safecloud', 'safebux', 'chains'],
+                [SAFEBUX_CHAIN, 'eip155:1']); // BSC + Ethereum
+            var chainMatch = Array.isArray(acceptedChains)
+                ? acceptedChains.indexOf(chainId) >= 0
+                : (chainId === acceptedChains);
+            if (!chainMatch) {
+                return Promise.resolve(false); // wrong chain
+            }
         }
 
         // Validate time bounds
@@ -2784,9 +2932,9 @@ var _openedDropLines = {};
  */
 function _openDropLine(dropEVM) {
     if (!dropEVM || _openedDropLines[dropEVM]) { return; }
+    if (!_settlementReady() || typeof ethers === 'undefined') { return; }
     var wallet      = _getJetWallet();
     var safebuxAddr = Q.Config.get(['Safecloud', 'safebux', 'address'], null);
-    if (!wallet || !safebuxAddr || typeof ethers === 'undefined') { return; }
     _openedDropLines[dropEVM] = true;
 
     var chainId  = SAFEBUX_CHAIN;
@@ -2851,8 +2999,8 @@ function _retainCloudToken(envelope) {
  */
 function _relayAuthorTokens(payments, revenue) {
     var income = revenue && revenue.incomeContract;
+    if (!income || !_settlementReady() || !payments || !payments.length) { return; }
     var wallet = _getJetWallet();
-    if (!income || !wallet || !payments || !payments.length) { return; }
 
     var wantHash;
     try { wantHash = _recipientsHashOf(income); } catch (e) { return; }
@@ -2931,6 +3079,19 @@ function _relayAuthorTokens(payments, revenue) {
     }, Promise.resolve()).catch(function () {});
 }
 
+/**
+ * True only when on-chain settlement is possible: a signing wallet AND a
+ * Safebux address AND a resolvable RPC provider. In demo / signature-only
+ * mode this is false, and all settle paths skip cleanly instead of throwing.
+ * @private
+ */
+function _settlementReady() {
+    if (!_getJetWallet()) { return false; }
+    if (!Q.Config.get(['Safecloud', 'safebux', 'address'], null)) { return false; }
+    try { Safecloud_Jets._evmProvider(SAFEBUX_CHAIN); return true; }
+    catch (e) { return false; }
+}
+
 /** Dedup registry for settled policy tokens (per process). @private */
 var _settledPolicyTokens = {};
 
@@ -2944,8 +3105,8 @@ var _settledPolicyTokens = {};
  * @private
  */
 function _settlePolicyTokens(payments) {
+    if (!_settlementReady() || !payments || !payments.length) { return; }
     var wallet = _getJetWallet();
-    if (!wallet || !payments || !payments.length) { return; }
 
     var policyTokens = payments.filter(function (p) {
         return p && p.stm && p.stm.policy &&

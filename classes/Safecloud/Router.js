@@ -144,7 +144,12 @@ var RELAY_TOKEN_WINDOW_SEC  = 300;  // 5-minute token validity window
 var MAX_COC_HOPS            = 7;
 var RELIABILITY_INITIAL     = 0.5;
 var RELIABILITY_SUCCESS_W   = 0.1;
-var RELIABILITY_FAIL_W      = 0.1;
+// Asymmetric on purpose: reputation is slow to earn and fast to lose.
+// With symmetric weights a Drop that lies about its capacity (claimed
+// storage is unverified) still captured ~68% of routing after 20 failed
+// serves. Punishing failures 3x harder collapses that window while a
+// genuinely reliable Drop is barely affected — it rarely fails.
+var RELIABILITY_FAIL_W      = 0.3;
 var RELIABILITY_RECONNECT   = 0.25;
 var WEIGHTED_SELECT_TOP_N   = 3;
 var REPLICATION_DEFAULT     = 2;
@@ -348,21 +353,49 @@ Safecloud_Router._buildJetDelegation = function (evmPrivateKey, noisePublicKeyHe
  * @param {Object} drop   Drop record from Q.Safecloud.Jets.drops
  * @return {Number}
  */
+/**
+ * Coerce an untrusted numeric field to a finite, bounded, non-negative
+ * number. Drop registration payloads are attacker-controlled: a non-numeric
+ * value yields NaN (and NaN > 0 is false, so the Drop would be silently
+ * excluded from routing forever), while an absurd value would let a Drop
+ * capture all routing. Both are handled here.
+ * @private
+ */
+function _sane(v, def, max) {
+    var n = (typeof v === 'number') ? v : parseFloat(v);
+    if (!Number.isFinite(n) || n < 0) { return def; }
+    return (max !== undefined && n > max) ? max : n;
+}
+
 Safecloud_Router._weightDrop = function (drop) {
+    if (!drop) { return 0; }
     var reliability = _reliabilityScore[drop.dropId] !== undefined
         ? _reliabilityScore[drop.dropId]
         : RELIABILITY_INITIAL;
+    reliability = _sane(reliability, RELIABILITY_INITIAL, 1);
 
     // Stake: read from balance cache if available, otherwise assume 1
-    var cached = _balanceCache[drop.evmAddress || ''];
-    var stake  = cached ? Number(cached.balance / BigInt('1000000000000000000')) : 1;
+    var stake = 1;
+    try {
+        var cached = _balanceCache[drop.evmAddress || ''];
+        if (cached && typeof cached.balance === 'bigint') {
+            stake = _sane(Number(cached.balance / BigInt('1000000000000000000')), 1);
+        }
+    } catch (e) { stake = 1; }
 
-    // Available storage
-    var storageGB  = (drop.storage && drop.storage.GB) || 0;
-    var usedGB     = (drop.used || 0) / (1024 * 1024 * 1024);
+    // Available storage. CLAIMED storage is unverified — a Drop asserts it in
+    // its registration message. Clamp to maxClaimedGB so no Drop can claim an
+    // absurd figure and monopolise routing, and take the square root so
+    // weight grows sub-linearly: bigger Drops are preferred, but a Drop
+    // claiming 10000x more storage gets 100x the weight, not 10000x.
+    var maxGB      = Q.Config.get(['Safecloud', 'router', 'maxClaimedGB'], 65536);
+    var storageGB  = _sane(drop.storage && drop.storage.GB, 0, maxGB);
+    var usedBytes  = _sane(drop.used, 0);
+    var usedGB     = usedBytes / (1024 * 1024 * 1024);
     var available  = Math.max(0, storageGB - usedGB);
 
-    return stake * reliability * available;
+    var w = stake * reliability * Math.sqrt(available);
+    return Number.isFinite(w) && w > 0 ? w : 0;
 };
 
 /**

@@ -1,5 +1,14 @@
 # Safecloud - decentralised, encrypted, self-pricing data storage and streaming network.
 
+## Get started
+
+Role-based guides in **`GetStarted/`**:
+
+- **[Jet](GetStarted/Jet.md)** — run the coordinator that routes and settles
+- **[Drop](GetStarted/Drop.md)** — store & serve encrypted chunks in a browser tab, earn Safebux
+- **[Author](GetStarted/Author.md)** — publish encrypted content and set your revenue split
+- **[Publisher](GetStarted/Publisher.md)** — a website sponsoring its visitors' viewing (web2 bridge)
+
 # Complete Architecture & API Reference
 
 This document is an overview of the internals of the Safecloud ecosystem. It can serve as the canonical context file for new LLM sessions working on the Safecloud project. It covers architecture, cryptographic design, all method signatures, and the role of OpenClaiming (OCP) in the system.
