@@ -69,9 +69,12 @@ runs in free mode.
 
 **5. Start the Jet** from inside the app:
 
+```bash
+npm run jet
 ```
-node plugins/Safecloud/demo/jet.js
-```
+
+On first start the Jet generates its own wallet, writes it to
+`local/app.json` (file mode 600), and prints the address.
 
 **6. Open** `/safecloud/demo` to upload/stream and `/safecloud/drop` to run
 a storage node.
@@ -2062,3 +2065,44 @@ jets post author tokens. It is detection, not prevention — the
 recipientsHash already prevents redirection, and withholding is
 measurable on-chain (authors see which payer lines produce income). If it
 returns, it returns as a reputation feed, not an enforcement layer.
+
+---
+
+## Testing
+
+```bash
+npm run test:everything
+```
+
+Runs all unit, integration, and on-chain tests (**425 assertions**, no
+browser needed):
+
+- Cryptographic key derivation, signing, and verification across Node,
+  browser-algorithm reproductions, and real Solidity contracts
+- The watermark payment model: partial micropayment accumulation, replay
+  prevention, expired/insufficient/tamper rejection, nonce-collision recovery
+- Bloom filter convergence, Prolly tree synchronization, EMA-based Drop
+  reliability demotion
+- Policy settlement (90/10 creator/infra split enforced on-chain in a single
+  transaction)
+- Bounded-map eviction and CID-index persistence across restarts
+
+A separate headless-browser E2E suite (`qbix-e2e-tests/`) runs against real
+Chromium via Playwright:
+
+```bash
+./run-all.sh    # in the E2E directory
+```
+
+- Real Qbix crypto modules executing in the browser, cross-verified against
+  Node
+- The real `sw.js` Service Worker decrypting encrypted segments
+- Encrypted multi-track video playback with live track switching through
+  MediaSource
+- Socket.io Jet↔Drop chunk transfer (the Jet only ever holds ciphertext)
+- WebRTC peer-to-peer streaming through the SW decrypt path into MSE
+  playback
+- IndexedDB schema validation (all 5 stores, indexes, token dedup, redeemed
+  lifecycle)
+
+Requires: Playwright with Chromium, ffmpeg, openssl.

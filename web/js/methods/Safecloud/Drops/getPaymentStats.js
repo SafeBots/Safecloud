@@ -23,7 +23,7 @@ Q.exports(function (Q, _) {
             return new Promise(function (resolve, reject) {
                 var tx    = db.transaction(_.STORES.tokens, 'readonly');
                 var index = tx.objectStore(_.STORES.tokens).index('redeemed');
-                var req   = index.getAll(IDBKeyRange.only(false));
+                var req   = index.getAll(IDBKeyRange.only(0)); // 0 = unredeemed
                 req.onsuccess = function (e) { resolve(e.target.result || []); };
                 req.onerror   = function (e) { reject(e.target.error); };
             });

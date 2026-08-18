@@ -174,7 +174,7 @@ Q.exports(function (Q, _) {
                     tokenHash:  tokenHash,
                     token:      token,
                     receivedAt: _.nowSec(),
-                    redeemed:   false
+                    redeemed:   0     // integer, not boolean — IDB keys can't be booleans
                 });
                 // Ignore ConstraintError — already stored is fine
                 req.onsuccess = function () { resolve(); };

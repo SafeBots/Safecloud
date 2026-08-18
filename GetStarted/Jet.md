@@ -32,7 +32,7 @@ The steps are identical; the difference is pure config.
 
 2. **Start:**
    ```bash
-   node server.js
+   npm run jet
    ```
    On first start the Jet **generates its own wallet**, writes it to
    `local/app.json` (file mode 600), and prints the address. **Back that file

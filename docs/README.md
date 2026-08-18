@@ -9,7 +9,7 @@ Four roles, each turnkey:
 |------|-------------|-------|
 | **Viewer** | Watches content | Click a link. Nothing to install. |
 | **Drop** | Stores & serves encrypted chunks, earns | Open a page, tap a passkey. |
-| **Jet** | Routes chunks, verifies & settles payments | `node server.js`, fund one address. |
+| **Jet** | Routes chunks, verifies & settles payments | `npm run jet`, fund one address. |
 | **Author** | Uploads content, sets revenue split | Upload, share the link. |
 
 Onboarding pages (open in a browser): `web/onboard-viewer.html`,
@@ -43,7 +43,7 @@ is on-chain cash-out (dashboards show "—" for the claimed figure).
 } }
 ```
 
-That's the whole config. `node server.js`, and everything works except
+That's the whole config. `npm run jet`, and everything works except
 cash-out. See `docs/demo.md` for the full runbook.
 
 ### On-chain mode (production)
@@ -110,16 +110,39 @@ price.
 ```bash
 npm run test:everything
 ```
-- 3 unit suites + 21 integration suites (**381 assertions**) — no chain, no browser
-- `npm run test:evm` — compiles the real `OpenClaiming.sol` and settles real
-  signed tokens on a local EVM (**23 assertions**), proving the plugin's
-  EIP-712 format is byte-identical to the deployed contract's
+- Unit + integration suites (**394 assertions**) — no chain, no browser needed
+- `npm run test:evm` — compiles `OpenClaiming.sol`, deploys to a local EVM,
+  and settles real signed tokens including partial micropayment accumulation,
+  expired/insufficient-balance rejection, and nonce-collision recovery
+  (**31 assertions**), proving the plugin's EIP-712 format is byte-identical
+  to the deployed contract's
 
-Deployment sequence with verification gates: see the operator runbook
-shipped alongside this plugin (`NEXT-STEPS.md`).
+A headless-browser E2E suite (`qbix-e2e-tests.zip`) runs separately against
+real Chromium with Playwright:
+
+- Real Qbix crypto modules (`internalKeypair`, `sign`, `verify`, `OpenClaim`)
+  executing in the browser, cross-verified against Node
+- The real `sw.js` Service Worker decrypting encrypted segments
+- Encrypted multi-track video playback with live track switching
+  (320×240 → 640×480) through MediaSource
+- Socket.io Jet↔Drop chunk transfer (Jet only ever holds ciphertext)
+- WebRTC peer-to-peer streaming through the SW decrypt path → MSE → real
+  playback
+- IndexedDB schema validation (all 5 stores, indexes, token dedup, redeemed
+  lifecycle)
+
+Run with `./run-all.sh` in the E2E directory (requires Playwright, ffmpeg,
+openssl).
 
 ## Status
 
 All roles turnkey. Signature-only mode runs today with zero blockchain.
 On-chain mode needs two contracts deployed (`contracts/OpenClaiming.sol`,
-`contracts/Safebux.sol`) and their addresses in config. See `docs/deploy.md`.
+`contracts/Safebux.sol`) and their addresses in config.
+
+The Jet is 100% Node.js — no PHP in the runtime path. The PHP crypto files
+(`EVM.php`, `EIP712.php`) exist for the broader Qbix platform's server-side
+verification; a Jet-only deployment doesn't need them.
+
+Deployment sequence with verification gates: `NEXT-STEPS.md`.
+Contract deploy details: `docs/deploy.md`.

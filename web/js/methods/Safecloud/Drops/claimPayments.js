@@ -25,7 +25,7 @@ Q.exports(function (Q, _) {
             return new Promise(function (resolve, reject) {
                 var tx    = db.transaction(_.STORES.tokens, 'readonly');
                 var index = tx.objectStore(_.STORES.tokens).index('redeemed');
-                var req   = index.getAll(IDBKeyRange.only(false)); // redeemed === false
+                var req   = index.getAll(IDBKeyRange.only(0)); // 0 = unredeemed
                 req.onsuccess = function (e) { resolve(e.target.result || []); };
                 req.onerror   = function (e) { reject(e.target.error); };
             }).then(function (tokenRecords) {
@@ -294,7 +294,7 @@ Q.exports(function (Q, _) {
             var tx    = db.transaction(_.STORES.tokens, 'readwrite');
             var store = tx.objectStore(_.STORES.tokens);
             records.forEach(function (r) {
-                store.put(Q.extend({}, r, { redeemed: true }));
+                store.put(Q.extend({}, r, { redeemed: 1 })); // 1 = redeemed
             });
             tx.oncomplete = function () { resolve(); };
             tx.onerror    = function (e) { reject(e.target.error); };

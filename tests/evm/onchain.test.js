@@ -33,7 +33,10 @@ const KEYS = {
   const server = ganache.server({
     logging: { quiet: true },
     chain:   { chainId: 56, networkId: 56 },   // pretend BSC
-    wallet:  { accounts: Object.values(KEYS).map(secretKey => ({ secretKey, balance: '0x56BC75E2D63100000' })) }
+    wallet:  { accounts: [
+      ...Object.values(KEYS).map(secretKey => ({ secretKey, balance: '0x56BC75E2D63100000' })),
+      { secretKey: '0x' + 'cc'.repeat(32), balance: '0x56BC75E2D63100000' }  // "poor" wallet (has ETH, no tokens)
+    ] }
   });
   await server.listen(0);
   const port = server.address().port;
@@ -280,7 +283,101 @@ const KEYS = {
       p3.stm.payer.toLowerCase()===sponsor.address.toLowerCase());
   }
 
-  section('Summary');
+// ═══════════════════════════════════════════════════════════════════════
+// EXTENDED micropayment scenarios — appended to the existing on-chain test.
+// Run the original first; these build on its deployed contracts + signers.
+// ═══════════════════════════════════════════════════════════════════════
+
+  // ══ Micropayment accumulation: multiple partial claims against one max ══
+  section('Micropayment accumulation (partial claims against one max)');
+  const maxMicro = ethers.parseEther('50');
+  const p4 = await signPayment(viewer, { recipientsHash: rhPlain([drop.address]), max: maxMicro.toString(), line: 100 });
+  const micro1 = ethers.parseEther('10');
+  const micro2 = ethers.parseEther('15');
+  const micro3 = ethers.parseEther('25');   // 10+15+25 = 50 = max
+  const micro4 = ethers.parseEther('1');    // over max — must fail
+
+  const db4 = await tok.balanceOf(drop.address);
+  // Claim 1: 10 of 50
+  let t4 = await oc.connect(jetTx).paymentsExecute(
+    { payer:p4.stm.payer, token:TOK, recipientsHash:p4.stm.recipientsHash,
+      max:BigInt(p4.stm.max), line:100n, nbf:0n, exp:BigInt(p4.stm.exp), contractAddr:OC_ADDR },
+    [drop.address], p4.sig, drop.address, micro1, ethers.ZeroAddress);
+  await t4.wait();
+  check('partial claim 1: 10 of 50 accepted', (await tok.balanceOf(drop.address))-db4 === micro1);
+
+  // Claim 2: 15 more (total spent = 25)
+  const db5 = await tok.balanceOf(drop.address);
+  t4 = await oc.connect(jetTx).paymentsExecute(
+    { payer:p4.stm.payer, token:TOK, recipientsHash:p4.stm.recipientsHash,
+      max:BigInt(p4.stm.max), line:100n, nbf:0n, exp:BigInt(p4.stm.exp), contractAddr:OC_ADDR },
+    [drop.address], p4.sig, drop.address, micro2, ethers.ZeroAddress);
+  await t4.wait();
+  check('partial claim 2: 15 more (total=25) accepted', (await tok.balanceOf(drop.address))-db5 === micro2);
+
+  // Claim 3: 25 more (total spent = 50 = max, exactly fills)
+  const db6 = await tok.balanceOf(drop.address);
+  t4 = await oc.connect(jetTx).paymentsExecute(
+    { payer:p4.stm.payer, token:TOK, recipientsHash:p4.stm.recipientsHash,
+      max:BigInt(p4.stm.max), line:100n, nbf:0n, exp:BigInt(p4.stm.exp), contractAddr:OC_ADDR },
+    [drop.address], p4.sig, drop.address, micro3, ethers.ZeroAddress);
+  await t4.wait();
+  check('partial claim 3: exactly fills max (total=50)', (await tok.balanceOf(drop.address))-db6 === micro3);
+
+  // Claim 4: 1 more — over max, must revert
+  let overMax=false;
+  try { t4 = await oc.connect(jetTx).paymentsExecute(
+    { payer:p4.stm.payer, token:TOK, recipientsHash:p4.stm.recipientsHash,
+      max:BigInt(p4.stm.max), line:100n, nbf:0n, exp:BigInt(p4.stm.exp), contractAddr:OC_ADDR },
+    [drop.address], p4.sig, drop.address, micro4, ethers.ZeroAddress);
+    await t4.wait(); overMax=true; } catch(e){ jetTx.reset(); }
+  check('claim over max is REJECTED on chain', !overMax);
+
+  // ══ Expired token rejection ══
+  section('Expired token rejection');
+  const pExp = await signPayment(viewer, { recipientsHash: rhPlain([drop.address]), max: '1000', line: 200, exp: now - 60 });
+  let expired=false;
+  try { const te = await oc.connect(jetTx).paymentsExecute(
+    { payer:pExp.stm.payer, token:TOK, recipientsHash:pExp.stm.recipientsHash,
+      max:BigInt(pExp.stm.max), line:200n, nbf:0n, exp:BigInt(pExp.stm.exp), contractAddr:OC_ADDR },
+    [drop.address], pExp.sig, drop.address, 500n, ethers.ZeroAddress);
+    await te.wait(); expired=true; } catch(e){ jetTx.reset(); }
+  check('expired token is rejected on chain', !expired);
+
+  // ══ Insufficient payer balance ══
+  section('Insufficient payer balance');
+  const poor = new ethers.Wallet('0x'+'cc'.repeat(32), provider);
+  const poorTx = new ethers.NonceManager(poor);
+  // poor has ETH (for gas) but zero TestToken
+  await (await tok.connect(jetTx).mint(poor.address, 0n)).wait();  // ensure 0 balance
+  await (await tok.connect(poorTx).approve(OC_ADDR, ethers.MaxUint256)).wait();
+  const pPoor = await signPayment(poor, { recipientsHash: rhPlain([drop.address]), max: '1000', line: 300 });
+  let poorFail=false;
+  try { const tp = await oc.connect(jetTx).paymentsExecute(
+    { payer:pPoor.stm.payer, token:TOK, recipientsHash:pPoor.stm.recipientsHash,
+      max:1000n, line:300n, nbf:0n, exp:BigInt(pPoor.stm.exp), contractAddr:OC_ADDR },
+    [drop.address], pPoor.sig, drop.address, 500n, ethers.ZeroAddress);
+    await tp.wait(); poorFail=true; } catch(e){ jetTx.reset(); }
+  check('insufficient payer balance reverts', !poorFail);
+
+  // ══ Retry after failure (nonce collision recovery) ══
+  section('Retry after failure (nonce recovery)');
+  // After the reverts above, the Jet's nonce manager was reset. A fresh valid
+  // settlement should succeed — this proves retry-after-failure works.
+  const retryAmt = ethers.parseEther('3');
+  const pRetry = await signPayment(viewer, { recipientsHash: rhPlain([drop.address]), max: retryAmt.toString(), line: 400 });
+  const db7 = await tok.balanceOf(drop.address);
+  let retryOk=false;
+  try { const tr = await oc.connect(jetTx).paymentsExecute(
+    { payer:pRetry.stm.payer, token:TOK, recipientsHash:pRetry.stm.recipientsHash,
+      max:BigInt(pRetry.stm.max), line:400n, nbf:0n, exp:BigInt(pRetry.stm.exp), contractAddr:OC_ADDR },
+    [drop.address], pRetry.sig, drop.address, retryAmt, ethers.ZeroAddress);
+    await tr.wait(); retryOk=true; } catch(e){ jetTx.reset(); }
+  check('retry after prior failures succeeds', retryOk);
+  if (retryOk) check('retry paid the correct amount', (await tok.balanceOf(drop.address))-db7 === retryAmt);
+
+
+    section('Summary');
   console.log('      OpenClaiming : ' + OC_ADDR);
   console.log('      chainId      : 56 (local)');
   console.log('      solc         : 0.8.36, optimizer+viaIR, 14172 bytes');

@@ -20,7 +20,7 @@ No contract addresses — that's what puts it in signature-only mode.
 ## 2. Start the Jet
 
 ```
-node server.js
+npm run jet
 ```
 On first start it generates and saves a wallet and prints the address.
 **You do not need to fund it** — nothing settles on-chain in this mode.

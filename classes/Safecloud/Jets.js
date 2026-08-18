@@ -29,6 +29,7 @@
 
 var Q         = require('Q');
 var ethers    = require('ethers');
+var _bounded  = require('./Jets/_bounded.js');
 var crypto    = require('crypto');
 var express   = require('express');
 
@@ -58,7 +59,9 @@ module.exports = Safecloud_Jets;
 // Neither alone decrypts anything. The Jet releases its fragment via HTTP,
 // optionally gated by rate limiting, payment proof, or device attestation.
 // In-memory for now; production: persist to DB with TTL.
-var _serverFragments = {};  // rootCid → hex string
+// rootCid → hex string. Bounded so a long-running Jet doesn't accumulate
+// fragments from every video ever uploaded.
+var _serverFragments = new _bounded.BoundedMap({ max: 100000, ttlMs: 604800000 }); // 7d TTL
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constructor / namespace object
@@ -229,7 +232,9 @@ function _signPaymentToken(stm, dropEVM) {
  * _balanceCache[chainId][payerAddress][tokenAddress] = { balance: BigInt, cachedAt: Number }
  * @private
  */
-var _balanceCache = {};
+// Flattened balance cache: "chainId:payer:token" → { balance, cachedAt }.
+// Bounded so a Jet serving many payers can't grow without limit.
+var _balanceCache = new _bounded.BoundedMap({ max: 50000, ttlMs: 300000 }); // 5min TTL matches the check interval
 
 /**
  * CID index.
@@ -238,7 +243,15 @@ var _balanceCache = {};
  * Lost on Jet restart; clients retry. Required by buildMerkleProofs().
  * @private
  */
-var _cidIndex = {};
+// _cidIndex is persisted to local/ so a Jet restart doesn't lose the upload
+// index (which otherwise forces clients to re-PUT metadata). Reads use the
+// plain .data object exactly as before; writes call _cidIndexPersist.markDirty().
+var _cidIndexPath = (function () {
+    try { return require('Q').app.DIR + '/local/Safecloud.cidIndex.json'; }
+    catch (e) { return require('path').join(require('os').tmpdir(), 'Safecloud.cidIndex.json'); }
+})();
+var _cidIndexPersist = new _bounded.PersistentIndex(_cidIndexPath, { debounceMs: 2000 });
+var _cidIndex = _cidIndexPersist.data;
 
 /** @private Grace-period sweep interval handle */
 var _graceSweepInterval = null;
@@ -430,7 +443,8 @@ Safecloud_Jets._checkPayerBalance = function (payer, token, amount, chainId, lin
     var maxField  = claimMax || '0';
     var cacheKey  = payer + ':' + lineId + ':' + maxField;
 
-    var cached = Q.getObject([chainId, payer, cacheKey], _balanceCache);
+    var _bcKey = chainId + ':' + payer + ':' + cacheKey;
+    var cached = _balanceCache.get(_bcKey);
     if (cached && (now - cached.cachedAt) < ttl) {
         return Promise.resolve(cached.balance >= BigInt(amount));
     }
@@ -457,18 +471,14 @@ Safecloud_Jets._checkPayerBalance = function (payer, token, amount, chainId, lin
 
     return ocContract.lineAvailable(payer, BigInt(lineId), BigInt(maxField))
         .then(function (available) {
-            if (!_balanceCache[chainId]) { _balanceCache[chainId] = {}; }
-            if (!_balanceCache[chainId][payer]) { _balanceCache[chainId][payer] = {}; }
-            _balanceCache[chainId][payer][cacheKey] = { balance: available, cachedAt: now };
+            _balanceCache.set(_bcKey, { balance: available, cachedAt: now });
             return available >= BigInt(amount);
         })
         .catch(function () {
             // Fallback: try availableToday on token contract, then raw balanceOf
             var erc20 = new ethers.Contract(token, ERC20_ABI, provider);
             return erc20.availableToday(payer).then(function (avail) {
-                if (!_balanceCache[chainId]) { _balanceCache[chainId] = {}; }
-                if (!_balanceCache[chainId][payer]) { _balanceCache[chainId][payer] = {}; }
-                _balanceCache[chainId][payer][cacheKey] = { balance: avail, cachedAt: now };
+                _balanceCache.set(_bcKey, { balance: avail, cachedAt: now });
                 return avail >= BigInt(amount);
             }).catch(function () {
                 return erc20.balanceOf(payer).then(function (bal) {
@@ -1003,13 +1013,24 @@ function Safecloud_Jets_request_handler(req, res, next) {
  * @return {{ internal: Object, socket: Object }}
  */
 Safecloud_Jets.listen = function (options) {
+    // Flush the persisted CID index on graceful shutdown so the latest state
+    // survives a restart. Registered once; idempotent across repeated listen().
+    if (!Safecloud_Jets._shutdownHooked) {
+        Safecloud_Jets._shutdownHooked = true;
+        ['SIGTERM', 'SIGINT'].forEach(function (sig) {
+            process.on(sig, function () {
+                try { _cidIndexPersist.flushSync(); } catch (e) {}
+                process.exit(0);
+            });
+        });
+    }
     if (_listenResult) { return _listenResult; }
 
     options = Q.extend({}, Safecloud_Jets.listen.options, options);
 
     // ── 0. Turnkey wallet bootstrap ───────────────────────────────────────────
     // A Jet without a signing key serves unsigned tokens (Drops serve on
-    // trust). To make `node server.js` a complete setup step, generate a
+    // trust). To make `npm run jet` a complete setup step, generate a
     // wallet on first start, persist it to local/app.json, and print the
     // address with funding instructions. Never overwrites an existing key.
     if (!Q.Config.get(['Safecloud', 'jet', 'privateKey'], null)) {
@@ -1085,7 +1106,8 @@ Safecloud_Jets.listen = function (options) {
     // POST /Safecloud/faucet { address } → transfers faucetWei of Safebux
     // from the Jet wallet. Enable only on testnet:
     //   Safecloud.faucet = { enabled: true, wei: "1000000", perIpPerDay: 3 }
-    var _faucetHits = {}; // ip → [timestamps]
+    // ip → [timestamps]; bounded + 24h TTL so it can't grow without bound.
+    var _faucetHits = new _bounded.BoundedMap({ max: 50000, ttlMs: 86400000 });
     server.attached.express.post('/Safecloud/faucet', function (req, res) {
         if (!Q.Config.get(['Safecloud', 'faucet', 'enabled'], false)) {
             return res.status(404).json({ error: 'faucet disabled' });
@@ -1097,10 +1119,11 @@ Safecloud_Jets.listen = function (options) {
         var ip  = req.ip || 'unknown';
         var now = Date.now();
         var cap = Q.Config.get(['Safecloud', 'faucet', 'perIpPerDay'], 3);
-        _faucetHits[ip] = (_faucetHits[ip] || []).filter(function (t) {
+        var hits = (_faucetHits.get(ip) || []).filter(function (t) {
             return now - t < 86400000;
         });
-        if (_faucetHits[ip].length >= cap) {
+        _faucetHits.set(ip, hits);
+        if (hits.length >= cap) {
             return res.status(429).json({ error: 'rate limited' });
         }
         if (!_settlementReady()) {
@@ -1108,7 +1131,7 @@ Safecloud_Jets.listen = function (options) {
         }
         var wallet = _getJetWallet();
         var sbux   = Q.Config.get(['Safecloud', 'safebux', 'address'], null);
-        _faucetHits[ip].push(now);
+        hits.push(now); _faucetHits.set(ip, hits);
         var wei = _safeBigInt(
             Q.Config.get(['Safecloud', 'faucet', 'wei'], '1000000'), '1000000');
         try {
@@ -1136,7 +1159,11 @@ Safecloud_Jets.listen = function (options) {
     //                         privateKey: null }   // null → Jet wallet signs
     // Body: { viewerId, token?, recipientsHash?, policy?, maxWei? }
     // Returns a signed envelope the player attaches as its payment.
-    var _sponsorWatermarks = {}; // viewerId → cumulative max granted
+    // viewerId → cumulative max granted. Monotonic watermark (anti-over-grant).
+    // Bounded so it can't grow forever; TTL is long (7d) so an active viewer is
+    // never evicted mid-session, and the on-chain contract is the real ceiling
+    // regardless. Evicting a stale viewer at worst re-allows the base grant.
+    var _sponsorWatermarks = new _bounded.BoundedMap({ max: 200000, ttlMs: 604800000 });
     server.attached.express.post('/Safecloud/sponsor/token', function (req, res) {
       try {
         if (!Q.Config.get(['Safecloud', 'sponsor', 'enabled'], false)) {
@@ -1163,7 +1190,7 @@ Safecloud_Jets.listen = function (options) {
         }
         var cap = BigInt(Q.Config.get(
             ['Safecloud', 'sponsor', 'maxWeiPerViewer'], '100000'));
-        var prev = BigInt(_sponsorWatermarks[b.viewerId] || '0');
+        var prev = BigInt(_sponsorWatermarks.get(b.viewerId) || '0');
         var want = b.maxWei ? BigInt(b.maxWei) : (prev + 1000n);
         if (want > cap) {
             return res.status(402).json({
@@ -1173,7 +1200,7 @@ Safecloud_Jets.listen = function (options) {
             });
         }
         if (want <= prev) { want = prev; } // watermarks are monotonic
-        _sponsorWatermarks[b.viewerId] = want.toString();
+        _sponsorWatermarks.set(b.viewerId, want.toString());
 
         var chainHex = _chainIdToHex(SAFEBUX_CHAIN);
         var ocAddr = Q.Config.get(['Users', 'web3', 'contracts',
@@ -1372,7 +1399,7 @@ Safecloud_Jets.listen = function (options) {
                 return ack && ack({ error: { code: 'BadRequest',
                     message: 'rootCid and fragment required' } });
             }
-            _serverFragments[payload.rootCid] = payload.fragment;
+            _serverFragments.set(payload.rootCid, payload.fragment);
             ack && ack(null, { registered: true });
         });
 
@@ -1968,6 +1995,8 @@ function _handleSubtreePut(client, userId, payload, ack) {
                                 }
                             });
                         }
+                        // Persist the index (debounced) so a restart keeps it.
+                        _cidIndexPersist.markDirty();
                     }
                 }
 
@@ -2353,6 +2382,8 @@ function _registerHttpRoutes(app) {
     // TODO: add rate limiting (3 attempts per IP per rootCid), optional
     // payment-gating (require a valid OCP payment token), and device
     // attestation before releasing.
+    // Rate-limited fragment endpoint: 3 attempts per IP per rootCid per hour.
+    var _fragmentRateLimit = new _bounded.BoundedMap({ max: 100000, ttlMs: 3600000 });
     app.get('/safecloud/fragment', function (req, res) {
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET');
@@ -2360,7 +2391,14 @@ function _registerHttpRoutes(app) {
         if (!rootCid) {
             return res.status(400).json({ error: 'rootCid required' });
         }
-        var frag = _serverFragments[rootCid];
+        var ip = req.ip || 'unknown';
+        var rateKey = ip + ':' + rootCid;
+        var hits = _fragmentRateLimit.get(rateKey) || 0;
+        if (hits >= 3) {
+            return res.status(429).json({ error: 'rate limited' });
+        }
+        _fragmentRateLimit.set(rateKey, hits + 1);
+        var frag = _serverFragments.get(rootCid);
         if (!frag) {
             return res.status(404).json({ error: 'No fragment registered' });
         }
@@ -2913,7 +2951,9 @@ function _recipientsHashOf(addr) {
 }
 
 /** @private sigHash → true, so each author token relays on-chain only once */
-var _relayedAuthorTokens = {};
+// Dedup set for relayed author tokens. Bounded + TTL so orphaned entries
+// (from failed relays) can't accumulate; a token past its exp needs no dedup.
+var _relayedAuthorTokens = new _bounded.BoundedMap({ max: 100000, ttlMs: 86400000 });
 
 /** @private dropEVM → cumulative wei watermark on that drop's line */
 var _dropWatermarks = {};
@@ -3035,8 +3075,8 @@ function _relayAuthorTokens(payments, revenue) {
             var key;
             try { key = ethers.keccak256(ethers.toUtf8Bytes(sigHex)); }
             catch (e) { return; }
-            if (_relayedAuthorTokens[key]) { return; }
-            _relayedAuthorTokens[key] = true;
+            if (_relayedAuthorTokens.get(key)) { return; }
+            _relayedAuthorTokens.set(key, true);
 
             // Verify the viewer's signature before spending gas
             var chainIdNum = (typeof stm.chainId === 'number')
@@ -3071,7 +3111,7 @@ function _relayAuthorTokens(payments, revenue) {
                 Q.log('Q.Safecloud.Jets: relayed author token → ' + income
                     + ' tx ' + tx.hash, 'Safecloud');
             }).catch(function (err) {
-                delete _relayedAuthorTokens[key]; // allow retry on next serve
+                _relayedAuthorTokens.delete(key); // allow retry on next serve
                 Q.log('Q.Safecloud.Jets: author token relay failed: '
                     + (err && err.message), 'Safecloud');
             });
