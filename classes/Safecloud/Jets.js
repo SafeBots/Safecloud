@@ -28,7 +28,16 @@
  */
 
 var Q         = require('Q');
-var ethers    = require('ethers');
+var ethers;
+try {
+    ethers = require('ethers');
+} catch (e) {
+    throw new Error(
+        'Safecloud: "ethers" package not found. Run `npm install` in the Safecloud plugin directory.\n'
+        + '  cd plugins/Safecloud && npm install\n'
+        + '  (ethers is required even in signature-only mode for wallet generation and token signing)'
+    );
+}
 var _bounded  = require('./Jets/_bounded.js');
 var crypto    = require('crypto');
 var express   = require('express');
