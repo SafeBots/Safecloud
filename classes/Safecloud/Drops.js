@@ -14,7 +14,6 @@
 
 var Q      = require('Q');
 var crypto = require('crypto');
-var Q      = require('Q');
 
 var Drops = module.exports = {};
 

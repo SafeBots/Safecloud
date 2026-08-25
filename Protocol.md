@@ -233,9 +233,10 @@ Safecloud uses two distinct chain roles:
   stake/slash operations live on BSC. This is hardcoded in the v1 protocol.
 
 - **OpenClaiming payment execution:** the chain specified in each payment
-  token's `stm.chainId` and `stm.contract`. The OpenClaiming contract is
-  deployed at `0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999` on all supported
-  chains. In the **v1 reference deployment all payment flows — Cloud → Jet and
+  token's `stm.chainId` and `stm.contract`. The OpenClaiming address is
+  configured per chain in `Users.web3.contracts["Safecloud/openclaiming"]`
+  and is a SIGNED field: the rail validates `stm.contract == address(this)`.
+  In the **reference deployment all payment flows — Cloud → Jet and
   Jet → Drop — execute on BSC** (`eip155:56`), denominated in Safebux.
 
 The multi-chain capability of the OpenClaiming contract is a protocol feature
@@ -350,6 +351,35 @@ from the canonical wallet address by checking the delegation claim's signature.
 Session lifetime is controlled by `stm.exp` in the delegation claim. Default
 is 30 days. On expiry the Drop or Jet re-runs the ceremony with one interactive
 wallet signature.
+
+**Jet↔Jet hello delegation — concrete typed data (v1).** Node Jets hold their
+wallet key directly, so `safecloud.jet.hello` carries a self-issued delegation
+signed over this exact EIP-712 structure (`classes/Safecloud/Router.js`; the
+signer `_buildJetDelegation` and verifier `_verifyDelegation` must stay
+byte-identical on both ends):
+
+```
+domain:  { name: "Safecloud", version: "1" }          // chain-agnostic session claim
+types:   JetSessionDelegation {
+           iss:              string                    // "data:key/eip712,0x<wallet>"
+           sub:              string                    // "safecloud:session-delegation"
+           sessionKeyEIP712: address                   // wallet address (self-delegation)
+           noisePublicKey:   string                    // hex of hyperswarm Noise static key
+           nbf:              uint256
+           exp:              uint256                   // now + 30 days
+         }
+```
+
+The verifier recovers the signer and requires it to equal the hello's
+`evmAddress`, checks the `nbf`/`exp` window, and — critically — requires
+`stm.noisePublicKey` to equal the Noise static public key of the connection
+the hello arrived on. A delegation captured from one connection therefore
+cannot be replayed over another (see Attacks.md 1.2). Receivers with the
+platform OCP module present verify `ocp: 1` claims through
+`Q.Crypto.OpenClaim.verify` first, so Drop-style platform-issued delegations
+remain acceptable on this edge. Setting
+`Safecloud.swarm.allowUnverifiedDelegations: true` (default `false`) restores
+the pre-v1 lenient behaviour for development meshes.
 
 ---
 
@@ -520,7 +550,7 @@ where `stm` contains the EIP-712 Payment struct fields, signed with an EVM
     "nbf":            0,
     "exp":            0,
     "chainId":        "eip155:56",
-    "contract":       "0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999"
+    "contract":       "0x<OpenClaiming address from config>"
   },
   "key": ["data:key/eip712,0x<payer-EVM-address>"],
   "sig": ["<base64 65-byte EIP-712 r‖s‖v>"]
@@ -608,12 +638,22 @@ reaches `max`.
 **EIP-712 domain** used by all Safecloud payment tokens:
 ```json
 {
-  "name":              "OpenClaiming.payments",
+  "name":              "OpenClaiming",
   "version":           "1",
   "chainId":           <uint256 from stm.chainId CAIP-2>,
-  "verifyingContract": "0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999"
+  "verifyingContract": <OpenClaiming address from config>
 }
 ```
+
+**Signed struct** (8 fields; the `contract` field is validated
+`== address(this)` by the rail):
+```
+Payment(address payer,address token,bytes32 recipientsHash,uint256 max,
+        uint256 line,uint256 nbf,uint256 exp,address contract)
+```
+`recipientsHash` = `keccak256(abi.encode(address[]))` for plain payments,
+or `keccak256(abi.encode(Policy))` for enforced splits — one signed field,
+two non-colliding encodings.
 
 ---
 
@@ -1251,7 +1291,8 @@ on-chain execution (handled by the Assets plugin) performs the definitive check.
 **On-chain execution is NOT performed by Jets.** Jets forward accumulated
 payment tokens to PHP via `POST /Q/node { 'Q/method': 'Safecloud/payment/collect' }`,
 and PHP delegates to the Assets plugin which calls
-`OpenClaiming.paymentsExecute()` at `0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999`.
+`OpenClaiming.paymentsExecute()` at the address configured in
+`Users.web3.contracts["Safecloud/openclaiming"]`.
 
 ---
 
@@ -1589,7 +1630,7 @@ offering storage).
       │
   EVM Provider  (same config as Jet: Safecloud/evm/provider/<chainId>)
       │
-  OpenClaiming contract  at 0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999
+  OpenClaiming contract  (address from Users.web3.contracts config)
 ```
 
 Drops interact with the EVM provider directly from the browser using
@@ -1635,7 +1676,7 @@ const recipients = [dropEVMAddress];
 
 const signer   = new ethers.Wallet(dropSecp256k1PrivateKey, provider);
 const contract = new ethers.Contract(
-    '0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999',
+    OC_ADDRESS, // from Users.web3.contracts["Safecloud/openclaiming"]
     OC_ABI,
     signer
 );
@@ -2071,10 +2112,10 @@ for payment routing, stake accounting, and CoC slashing. Session anonymity
 (the Jet does not know which browser user owns a Drop) is preserved, but the
 Drop's economic identity is fully public within the network.
 
-**Safebux is on BNB Chain (BSC, eip155:56).** This chain is hardcoded into all
-participants. The Safebux ERC-20 contract address and the OpenClaiming contract
-address (`0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999`) are constants in the
-protocol implementation.
+**Safebux is on BNB Chain (BSC, eip155:56).** This chain is the default for
+all participants. The Safebux ERC-20 address and the OpenClaiming address are
+set in config (`Safecloud.safebux.address` and
+`Users.web3.contracts["Safecloud/openclaiming"]`) after deployment.
 
 **Jets.Router.md** covers the full specification for Jet-to-Jet discovery,
 routing, and relay — including Kademlia XOR distance metrics, hyperswarm

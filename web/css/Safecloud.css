@@ -1,0 +1,264 @@
+/**
+ * Safecloud plugin — base stylesheet.
+ * OGC dark theme · responsive · Cloud dashboard · split-entropy UX
+ *
+ * Color system:
+ *   Background tiers: void (#09090b) → base (#111114) → surface (#1a1a1f) → raised (#222228)
+ *   Green accent: #00e87b (primary), #00c468 (hover), #00ff88 (glow)
+ *   Text: #e8e8ec (primary), #9898a8 (muted), #686878 (faint)
+ *   Border: #2a2a32
+ */
+
+:root {
+    --sc-void:       #09090b;
+    --sc-base:       #111114;
+    --sc-surface:    #1a1a1f;
+    --sc-raised:     #222228;
+    --sc-border:     #2a2a32;
+    --sc-border-hi:  #3a3a44;
+    --sc-text:       #e8e8ec;
+    --sc-muted:      #9898a8;
+    --sc-faint:      #686878;
+    --sc-green:      #00e87b;
+    --sc-green-dim:  #00c468;
+    --sc-green-glow: #00ff88;
+    --sc-amber:      #e8a020;
+    --sc-red:        #e84040;
+    --sc-blue:       #3b82f6;
+    --sc-mono:       ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+    --sc-sans:       'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    --sc-radius:     8px;
+    --sc-radius-sm:  4px;
+    --sc-radius-lg:  12px;
+}
+
+/* ─── Base ──────────────────────────────────────────────────────────────── */
+.Safecloud_page, #Safecloud_demo_page, .Safecloud_embed_page {
+    background: var(--sc-base); color: var(--sc-text);
+    font-family: var(--sc-sans); line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* ─── Status ────────────────────────────────────────────────────────────── */
+.Safecloud_status .working, .Safecloud_working { color: var(--sc-amber); }
+.Safecloud_status .ok,      .Safecloud_ok      { color: var(--sc-green); }
+.Safecloud_status .error,   .Safecloud_error   { color: var(--sc-red); }
+
+/* ─── Typography ────────────────────────────────────────────────────────── */
+.Safecloud_cid, .Safecloud_key, .Safecloud_manifest, .Safecloud_mono,
+.sc-mono { font-family: var(--sc-mono); font-size: 0.82em; word-break: break-all; }
+
+/* ─── Buttons ───────────────────────────────────────────────────────────── */
+.sc-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 18px; background: var(--sc-green); color: var(--sc-void);
+    border: none; border-radius: var(--sc-radius);
+    font-family: var(--sc-sans); font-size: 0.88rem; font-weight: 600;
+    cursor: pointer; transition: background .15s; line-height: 1.4;
+}
+.sc-btn:hover { background: var(--sc-green-dim); }
+.sc-btn:active { transform: scale(0.97); }
+.sc-btn:focus-visible { outline: 2px solid var(--sc-green-glow); outline-offset: 2px; }
+.sc-btn-outline { background: transparent; color: var(--sc-green); border: 1px solid var(--sc-green); }
+.sc-btn-outline:hover { background: rgba(0,232,123,.08); }
+.sc-btn-sm { padding: 5px 12px; font-size: 0.8rem; }
+.sc-btn-ghost { background: transparent; color: var(--sc-muted); }
+.sc-btn-ghost:hover { color: var(--sc-text); background: rgba(255,255,255,.04); }
+
+/* ─── Inputs ────────────────────────────────────────────────────────────── */
+.sc-input, .sc-textarea {
+    width: 100%; box-sizing: border-box; padding: 10px 14px;
+    background: var(--sc-raised); color: var(--sc-text);
+    border: 1px solid var(--sc-border); border-radius: var(--sc-radius);
+    font-family: var(--sc-sans); font-size: 0.88rem; transition: border-color .15s;
+}
+.sc-input:focus, .sc-textarea:focus {
+    outline: none; border-color: var(--sc-green);
+    box-shadow: 0 0 0 2px rgba(0,232,123,.12);
+}
+
+/* ─── Demo page ─────────────────────────────────────────────────────────── */
+#Safecloud_demo_page { max-width: 960px; margin: 0 auto; padding: 32px 20px; }
+.Safecloud_demo_header { text-align: center; margin-bottom: 36px; }
+.Safecloud_demo_header h1 {
+    font-size: 1.6rem; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 8px;
+}
+.Safecloud_demo_header p { color: var(--sc-muted); font-size: 0.92rem; margin: 0; }
+.Safecloud_demo_columns {
+    display: grid; grid-template-columns: 1fr 1.4fr; gap: 24px; align-items: start;
+}
+@media (max-width: 720px) { .Safecloud_demo_columns { grid-template-columns: 1fr; } }
+
+/* ─── Upload dropzone ───────────────────────────────────────────────────── */
+.Safecloud_player_dropzone {
+    background: var(--sc-surface); border: 2px dashed var(--sc-border-hi);
+    border-radius: var(--sc-radius-lg); padding: 40px 20px;
+    text-align: center; cursor: pointer; transition: border-color .2s, background .2s;
+}
+.Safecloud_player_dropzone:hover { border-color: var(--sc-green); background: rgba(0,232,123,.03); }
+.Safecloud_player_dragover { border-color: var(--sc-green) !important; background: rgba(0,232,123,.06) !important; }
+.Safecloud_player_drop_icon { font-size: 2.4rem; color: var(--sc-green); margin-bottom: 10px; }
+.Safecloud_player_drop_label { font-size: 0.92rem; color: var(--sc-text); margin-bottom: 6px; }
+.Safecloud_player_drop_sub { font-size: 0.78rem; color: var(--sc-faint); }
+
+/* ─── Progress bar ──────────────────────────────────────────────────────── */
+.Safecloud_player_progress {
+    height: 4px; background: var(--sc-raised); border-radius: 2px; margin-top: 14px; overflow: hidden;
+}
+.Safecloud_player_progress_fill {
+    height: 100%; background: var(--sc-green); border-radius: 2px; transition: width .3s; width: 0;
+}
+.Safecloud_player_status { font-size: .82rem; margin-top: 8px; color: var(--sc-muted); min-height: 1.4em; }
+
+/* ─── Video player ──────────────────────────────────────────────────────── */
+.Safecloud_player_video_wrap, .Safecloud_demo_video_col .Q_video_tool {
+    background: var(--sc-void); border-radius: var(--sc-radius-lg); overflow: hidden;
+}
+.Safecloud_player_video_wrap video, .Q_video_tool video {
+    width: 100%; display: block; border-radius: var(--sc-radius-lg);
+}
+.vjs-default-skin { background: var(--sc-void) !important; }
+.vjs-default-skin .vjs-play-progress { background: var(--sc-green) !important; }
+.vjs-default-skin .vjs-volume-level { background: var(--sc-green) !important; }
+.Q_video_status { font-size: .8rem; margin-top: 8px; color: var(--sc-muted); }
+.Q_video_status.working { color: var(--sc-amber); }
+.Q_video_status.error   { color: var(--sc-red); }
+.Q_video_status.ok      { color: var(--sc-green); }
+
+/* ─── Share panel ───────────────────────────────────────────────────────── */
+#Safecloud_demo_share {
+    margin-top: 24px; background: var(--sc-surface);
+    border: 1px solid var(--sc-border); border-radius: var(--sc-radius-lg); padding: 20px;
+}
+.Safecloud_demo_share_row {
+    display: flex; gap: 10px; align-items: flex-start; margin-bottom: 12px;
+}
+.Safecloud_demo_share_row:last-child { margin-bottom: 0; }
+.Safecloud_demo_share_row label {
+    min-width: 70px; font-size: 0.82rem; font-weight: 600; color: var(--sc-muted); padding-top: 10px;
+}
+.Safecloud_demo_share_row input, .Safecloud_demo_share_row textarea {
+    flex: 1; padding: 8px 12px; border: 1px solid var(--sc-border); border-radius: var(--sc-radius);
+    background: var(--sc-raised); color: var(--sc-text);
+    font-family: var(--sc-mono); font-size: .78em; resize: vertical;
+}
+
+/* ─── Split-entropy passphrase ──────────────────────────────────────────── */
+.Safecloud_split_passphrase {
+    margin-top: 14px; padding: 16px; background: rgba(0,232,123,.06);
+    border: 1px solid rgba(0,232,123,.2); border-radius: var(--sc-radius);
+}
+.Safecloud_split_passphrase_label {
+    font-size: 0.75rem; color: var(--sc-green); font-weight: 600;
+    text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px;
+}
+.Safecloud_split_passphrase_words {
+    font-family: var(--sc-mono); font-size: 1.3rem; font-weight: 600;
+    color: var(--sc-text); letter-spacing: .02em; user-select: all;
+}
+.Safecloud_split_passphrase_hint {
+    font-size: 0.72rem; color: var(--sc-faint); margin-top: 8px;
+}
+
+/* ─── Passphrase modal (split-entropy arrival) ──────────────────────────── */
+.Safecloud_passphrase_overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,.7); backdrop-filter: blur(8px);
+    display: flex; align-items: center; justify-content: center; z-index: 10000;
+}
+.Safecloud_passphrase_modal {
+    background: var(--sc-surface); border: 1px solid var(--sc-border-hi);
+    border-radius: var(--sc-radius-lg); padding: 32px; max-width: 420px; width: 90%;
+    text-align: center;
+}
+.Safecloud_passphrase_modal h2 { font-size: 1.1rem; font-weight: 700; margin: 0 0 8px; }
+.Safecloud_passphrase_modal p { font-size: 0.85rem; color: var(--sc-muted); margin: 0 0 20px; }
+.Safecloud_passphrase_modal input {
+    width: 100%; box-sizing: border-box; padding: 12px 16px;
+    background: var(--sc-raised); color: var(--sc-text);
+    border: 1px solid var(--sc-border); border-radius: var(--sc-radius);
+    font-family: var(--sc-mono); font-size: 1.1rem; text-align: center;
+    letter-spacing: .04em; margin-bottom: 16px;
+}
+.Safecloud_passphrase_modal input:focus {
+    outline: none; border-color: var(--sc-green); box-shadow: 0 0 0 3px rgba(0,232,123,.15);
+}
+.Safecloud_passphrase_modal .sc-btn { width: 100%; justify-content: center; }
+.Safecloud_passphrase_error { color: var(--sc-red); font-size: 0.82rem; margin-top: 10px; }
+
+/* ─── Cloud dashboard ───────────────────────────────────────────────────── */
+.Safecloud_cloud_dashboard {
+    margin-top: 24px; display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px;
+}
+@media (max-width: 720px) { .Safecloud_cloud_dashboard { grid-template-columns: repeat(2, 1fr); } }
+.Safecloud_stat_card {
+    background: var(--sc-surface); border: 1px solid var(--sc-border);
+    border-radius: var(--sc-radius); padding: 14px 16px;
+}
+.Safecloud_stat_value {
+    font-size: 1.4rem; font-weight: 700; font-family: var(--sc-mono);
+    color: var(--sc-text); line-height: 1.2;
+}
+.Safecloud_stat_value.sc-green { color: var(--sc-green); }
+.Safecloud_stat_value.sc-amber { color: var(--sc-amber); }
+.Safecloud_stat_label {
+    font-size: 0.72rem; color: var(--sc-faint); text-transform: uppercase;
+    letter-spacing: .06em; margin-top: 4px;
+}
+
+/* ─── Payer strip ───────────────────────────────────────────────────────── */
+.Safecloud_demo_payer {
+    margin-top: 12px; font-size: 0.78rem; color: var(--sc-faint);
+    font-family: var(--sc-mono); display: flex; gap: 16px; flex-wrap: wrap;
+}
+.Safecloud_demo_payer span { white-space: nowrap; }
+.Safecloud_demo_payer .sc-green { color: var(--sc-green); }
+
+/* ─── Drop dashboard ────────────────────────────────────────────────────── */
+.Safecloud_drop_tool { background: var(--sc-base); border-radius: var(--sc-radius-lg); padding: 20px; }
+.Safecloud_drop_header { display: flex; align-items: center; gap: 10px; margin-bottom: 16px; }
+.Safecloud_drop_indicator {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--sc-green); box-shadow: 0 0 8px rgba(0,232,123,.4);
+}
+.Safecloud_drop_indicator.offline { background: var(--sc-faint); box-shadow: none; }
+.Safecloud_drop_label { font-size: 0.88rem; font-weight: 600; }
+.Safecloud_drop_stats {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+    gap: 10px; margin-bottom: 16px;
+}
+.Safecloud_drop_activity { border-top: 1px solid var(--sc-border); padding-top: 12px; }
+.Safecloud_drop_activity_title {
+    font-size: 0.75rem; color: var(--sc-faint); text-transform: uppercase;
+    letter-spacing: .06em; margin-bottom: 8px;
+}
+.Safecloud_drop_event {
+    font-size: 0.78rem; color: var(--sc-muted); font-family: var(--sc-mono);
+    padding: 3px 0; display: flex; gap: 8px;
+}
+.Safecloud_drop_event_type { color: var(--sc-green); min-width: 40px; }
+.Safecloud_drop_event_time { color: var(--sc-faint); margin-left: auto; }
+.Safecloud_sparkline { display: flex; align-items: flex-end; gap: 1px; height: 32px; margin-bottom: 12px; }
+.Safecloud_sparkline_bar {
+    flex: 1; background: var(--sc-green); opacity: .5;
+    border-radius: 1px 1px 0 0; min-height: 1px; transition: height .3s;
+}
+
+/* ─── Embed ─────────────────────────────────────────────────────────────── */
+.Safecloud_embed_page {
+    margin: 0; padding: 0; background: var(--sc-void); overflow: hidden;
+    width: 100vw; height: 100vh; display: flex; flex-direction: column;
+}
+.Safecloud_embed_page video { width: 100%; height: 100%; object-fit: contain; background: var(--sc-void); }
+.Safecloud_embed_status {
+    position: absolute; bottom: 8px; left: 12px; right: 12px;
+    font-size: 0.75rem; color: var(--sc-muted); font-family: var(--sc-mono);
+    pointer-events: none; z-index: 10;
+}
+
+/* ─── Utilities ─────────────────────────────────────────────────────────── */
+.sc-hidden { display: none !important; }
+@media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}
+:focus-visible { outline: 2px solid var(--sc-green); outline-offset: 2px; }

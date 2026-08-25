@@ -138,7 +138,10 @@ Q.exports(function (Q, _) {
             var loop    = Q.Safecloud.Client._prefetchLoop(videoId, videoManifest, capability, options);
             var fakeUrl = 'https://safecloud-hls.local/' + videoId + '/master.m3u8';
 
-            if (options.videoElement) {
+            // options.setSrc === false lets the caller (e.g. the Q/video
+            // safecloud adapter) attach the URL through its own player —
+            // videojs VHS must handle the m3u8 on browsers without native HLS.
+            if (options.videoElement && options.setSrc !== false) {
                 options.videoElement.src = fakeUrl;
             }
 
@@ -167,7 +170,7 @@ Q.exports(function (Q, _) {
         return Q.Safecloud.Client.fetch(videoManifest, capability, options)
             .then(function (blob) {
                 var url = URL.createObjectURL(blob);
-                if (videoEl) { videoEl.src = url; }
+                if (videoEl && options.setSrc !== false) { videoEl.src = url; }
                 if (options.at && videoEl) { videoEl.currentTime = options.at; }
 
                 return {

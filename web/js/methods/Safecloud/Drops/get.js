@@ -49,8 +49,11 @@ Q.exports(function (Q, _) {
                     });
 
                     return Promise.all(chunkPromises).then(function (chunks) {
-                        // Accumulate real served-bytes stats
-                        var SBUX_PER_MB = 0.02;
+                        // Accumulate real served-bytes stats.
+                        // Rate comes from config so the dashboard matches the
+                        // actual token economics (see Safecloud.drop.sbuxPerMB).
+                        var SBUX_PER_MB = _.jetInfo(['drop', 'sbuxPerMB'],
+                            ['Safecloud', 'drop', 'sbuxPerMB'], 0.02);
                         chunks.forEach(function (ch) {
                             if (!ch) { return; }
                             // ciphertext is base64; estimate plaintext size from length
@@ -60,6 +63,9 @@ Q.exports(function (Q, _) {
                             _._state.servedBytes  += bytes;
                             _._state.servedChunks += 1;
                             _._state.safebuxEarned += (bytes / 1048576) * SBUX_PER_MB;
+                            _.logActivity('get', { bytes: bytes,
+                                paid: !!(paymentToken && paymentToken.sig
+                                     && paymentToken.sig.length) });
                         });
                         var result = { chunks: chunks };
                         if (callback) { callback(null, result); }
@@ -87,7 +93,11 @@ Q.exports(function (Q, _) {
         var minPerChunk = Q.Config.get(['Safecloud', 'drop', 'minPerChunkWei'],
             Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], '1000'));
         if (minPerChunk && chunkCount > 0) {
-            var tokenMax  = BigInt(stm.max || '0');
+            // Watermark semantics: stm.max is the payer's CUMULATIVE channel
+            // ceiling. The per-batch due rides on the envelope as `amount`;
+            // compare the reservation against that (fall back to max for
+            // legacy tokens without the hint).
+            var tokenMax  = BigInt(paymentToken.amount || stm.max || '0');
             var minTotal  = BigInt(minPerChunk) * BigInt(chunkCount);
             if (tokenMax < minTotal) {
                 // Payment below Drop's reservation — reject with 402-equivalent
@@ -96,8 +106,9 @@ Q.exports(function (Q, _) {
             }
         }
         var cacheKey = _.balanceCacheKey(jetEVM) + ':' + (stm.token || '').toLowerCase();
-        var ttl      = Q.Config.get(['Safecloud', 'drop', 'balanceCacheTtlMs'], 3600000);
-        var perChunk = Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], '1000');
+        var ttl      = _.jetInfo(null, ['Safecloud', 'drop', 'balanceCacheTtlMs'], 3600000);
+        var perChunk = _.jetInfo(['safebux', 'perChunkWei'],
+                           ['Safecloud', 'safebux', 'perChunkWei'], '1000');
         var required = BigInt(perChunk) * BigInt(chunkCount);
 
         var cached = _._state.balanceCache[cacheKey];
@@ -105,9 +116,13 @@ Q.exports(function (Q, _) {
             return Promise.resolve(cached.balance >= required);
         }
 
-        // ethers.js must be available (CDN or bundled)
-        if (typeof ethers === 'undefined') { return Promise.resolve(true); }
+        // Lazy-load the vendored ethers bundle; if it can't load, fail open
+        // (same posture as an RPC error — the Drop serves rather than stalls).
+        return Q.Safecloud.ensureEthers().then(function () {
+            return _checkOnChain();
+        }).catch(function () { return true; });
 
+        function _checkOnChain() {
         // Resolve RPC URL from Users.web3.chains (hex chainId) with CAIP-2 → hex conversion
         var chainId = stm.chainId || 'eip155:56';
         var hexId   = chainId.indexOf('eip155:') === 0
@@ -141,6 +156,7 @@ Q.exports(function (Q, _) {
                 return true; // fail open
             });
         });
+        } // _checkOnChain
     }
 
     // ── Token storage ──────────────────────────────────────────────────────
@@ -158,7 +174,7 @@ Q.exports(function (Q, _) {
                     tokenHash:  tokenHash,
                     token:      token,
                     receivedAt: _.nowSec(),
-                    redeemed:   false
+                    redeemed:   0     // integer, not boolean — IDB keys can't be booleans
                 });
                 // Ignore ConstraintError — already stored is fine
                 req.onsuccess = function () { resolve(); };

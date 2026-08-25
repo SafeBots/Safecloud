@@ -34,6 +34,66 @@ var sessions = {};
 // segments[videoId][version][segIndex] = { ciphertext, tag, iv }
 var segments = {};
 
+// ── IndexedDB session persistence ─────────────────────────────────────────────
+// Browsers kill idle service workers; without persistence a restart mid-
+// playback would 404 every request. Sessions therefore also live in the
+// page-shared 'Safecloud.Client' database (store 'swSessions') and are
+// lazily restored on the first request after a restart. This is also what
+// lets an iframe player in a pristine environment resume from IndexedDB
+// alone: keys never re-enter the URL or postMessage after first register.
+
+var IDB_NAME  = 'Safecloud.Client';
+var IDB_STORE = 'swSessions';
+var _dbPromise = null;
+
+function _db() {
+    if (_dbPromise) { return _dbPromise; }
+    _dbPromise = new Promise(function (resolve, reject) {
+        var req = indexedDB.open(IDB_NAME, 1);
+        req.onupgradeneeded = function () {
+            var db = req.result;
+            ['capabilities', 'session', 'swSessions', 'authorTokens']
+            .forEach(function (name) {
+                if (!db.objectStoreNames.contains(name)) {
+                    db.createObjectStore(name);
+                }
+            });
+        };
+        req.onsuccess = function () { resolve(req.result); };
+        req.onerror   = function () { _dbPromise = null; reject(req.error); };
+    });
+    return _dbPromise;
+}
+
+function _idbPutSession(videoId, session) {
+    return _db().then(function (db) {
+        return new Promise(function (resolve) {
+            var tx = db.transaction(IDB_STORE, 'readwrite');
+            tx.objectStore(IDB_STORE).put(session, videoId);
+            tx.oncomplete = resolve;
+            tx.onerror    = resolve;   // persistence is best-effort
+        });
+    }).catch(function () {});
+}
+
+function _idbGetSession(videoId) {
+    return _db().then(function (db) {
+        return new Promise(function (resolve) {
+            var tx  = db.transaction(IDB_STORE, 'readonly');
+            var req = tx.objectStore(IDB_STORE).get(videoId);
+            req.onsuccess = function () { resolve(req.result || null); };
+            req.onerror   = function () { resolve(null); };
+        });
+    }).catch(function () { return null; });
+}
+
+function _idbDeleteSession(videoId) {
+    return _db().then(function (db) {
+        var tx = db.transaction(IDB_STORE, 'readwrite');
+        tx.objectStore(IDB_STORE).delete(videoId);
+    }).catch(function () {});
+}
+
 // ── Message handler ───────────────────────────────────────────────────────────
 
 self.addEventListener('message', function (event) {
@@ -50,6 +110,7 @@ self.addEventListener('message', function (event) {
                 activeVersion: msg.version  || ''
             };
             if (!segments[msg.videoId]) { segments[msg.videoId] = {}; }
+            _idbPutSession(msg.videoId, sessions[msg.videoId]);
             break;
 
         case 'Q.Safecloud.Client.segment':
@@ -82,12 +143,14 @@ self.addEventListener('message', function (event) {
             if (sessions[msg.videoId]) {
                 sessions[msg.videoId].activeVersion = msg.version || '';
                 if (msg.manifest) { sessions[msg.videoId].manifest = msg.manifest; }
+                _idbPutSession(msg.videoId, sessions[msg.videoId]);
             }
             break;
 
         case 'Q.Safecloud.Client.stop':
             delete sessions[msg.videoId];
             delete segments[msg.videoId];
+            _idbDeleteSession(msg.videoId);
             break;
     }
 });
@@ -106,7 +169,20 @@ function handleSafecloudRequest(request, url) {
     var rest    = parts.slice(1).join('/');
 
     var session = sessions[videoId];
-    if (!session) { return new Response('Safecloud session not found', { status: 404 }); }
+    if (session) { return _routeSafecloud(request, videoId, rest, session); }
+
+    // SW may have restarted since register — restore from IndexedDB
+    return _idbGetSession(videoId).then(function (restored) {
+        if (!restored) {
+            return new Response('Safecloud session not found', { status: 404 });
+        }
+        sessions[videoId] = restored;
+        if (!segments[videoId]) { segments[videoId] = {}; }
+        return _routeSafecloud(request, videoId, rest, restored);
+    });
+}
+
+function _routeSafecloud(request, videoId, rest, session) {
 
     if (rest === 'master.m3u8') { return serveMasterPlaylist(videoId, session); }
 

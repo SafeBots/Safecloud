@@ -1,0 +1,9 @@
+# The Safecloud HLS service worker registers at scope '/', which browsers
+# only permit when sw.js is served with this header. Requires mod_headers.
+# nginx equivalent:
+#   location ~ /Safecloud/js/Safecloud/sw\.js$ { add_header Service-Worker-Allowed "/"; }
+<IfModule mod_headers.c>
+    <Files "sw.js">
+        Header set Service-Worker-Allowed "/"
+    </Files>
+</IfModule>

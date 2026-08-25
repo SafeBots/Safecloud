@@ -1,14 +1,14 @@
 "use strict";
 /* jshint node:true */
 /**
- * Safe plugin — server-side entry point.
+ * Safecloud plugin — server-side entry point.
  *
  * Exposes:
  *   Q.Safecloud.Jets   — Jet server (socket.io + HTTP, chunk routing)
  *   Q.Safecloud.Router — pluggable Drop selection + Jet-to-Jet peering
  *
  * Usage (in app's node.js bootstrap, after Q.listen()):
- *   var Safe = Q.require('Safe');
+ *   Q.require('Safecloud');
  *   Q.Safecloud.listen();
  *
  * @module Safecloud
@@ -27,6 +27,8 @@ var Safecloud = module.exports = {};
 
 // Make Q.Safecloud available as the same object
 Q.Safecloud = Safecloud;
+if (!Q.plugins) { Q.plugins = {}; }
+Q.plugins.Safecloud = Safecloud;
 
 Q.makeEventEmitter(Safecloud);
 

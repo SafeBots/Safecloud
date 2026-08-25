@@ -1,0 +1,46 @@
+/**
+ * Safecloud demo page layout (views/Safecloud/content/demo.php).
+ */
+
+#Safecloud_demo_page {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 32px 20px 64px;
+}
+
+.Safecloud_demo_header h1 {
+    margin: 0 0 8px;
+    font-size: 1.9rem;
+}
+.Safecloud_demo_header p {
+    margin: 0 0 28px;
+    color: var(--Safecloud-muted, #9090a0);
+}
+
+.Safecloud_demo_columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 28px;
+    align-items: start;
+}
+@media (max-width: 820px) {
+    .Safecloud_demo_columns { grid-template-columns: 1fr; }
+}
+
+#Safecloud_demo_share {
+    margin-top: 28px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+#Safecloud_demo_share label { white-space: nowrap; }
+#Safecloud_demo_share_url {
+    flex: 1;
+    padding: 8px 10px;
+    border: 1px solid var(--Safecloud-border, #35353d);
+    border-radius: 6px;
+    background: var(--Safecloud-surface, #26262c);
+    color: inherit;
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 0.85em;
+}

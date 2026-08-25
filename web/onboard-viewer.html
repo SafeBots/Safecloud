@@ -1,0 +1,85 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Watch on Safecloud</title>
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--line:#30363d;--txt:#e6edf3;--dim:#8b949e;
+        --green:#3fb950;--purple:#bc8cff;--blue:#58a6ff}
+  body{font-family:system-ui;background:var(--bg);color:var(--txt);margin:0;
+       padding:24px;max-width:680px;margin:0 auto;line-height:1.55}
+  h1{font-size:1.6rem}h2{font-size:1.1rem;margin-top:28px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:16px;margin:14px 0}
+  .step{display:flex;gap:12px;margin:10px 0}
+  .n{background:var(--purple);color:#000;font-weight:700;border-radius:50%;
+     width:26px;height:26px;min-width:26px;display:flex;align-items:center;
+     justify-content:center;font-size:.9rem}
+  .dim{color:var(--dim);font-size:.9rem}
+  .good{color:var(--green)}
+  a{color:var(--blue)}
+  details{margin:8px 0}summary{cursor:pointer;color:var(--blue)}
+</style>
+</head>
+<body>
+<h1>▶ Watching on Safecloud</h1>
+<p class="dim">Streaming where creators keep 90%, nobody tracks you,
+and the video comes from people, not platforms.</p>
+
+<div class="card">
+  <div class="step"><div class="n">1</div><div>
+    <b>Click the link you were given.</b> The video loads in your browser —
+    no app, no account, no sign-up.</div></div>
+  <div class="step"><div class="n">2</div><div>
+    <b>If it asks for a passphrase</b>, the sharer chose extra protection:
+    the link alone can't unlock the video. Type the words they told you
+    separately.</div></div>
+  <div class="step"><div class="n">3</div><div>
+    <b>Press play.</b> That's the whole tutorial.</div></div>
+</div>
+
+<h2>Who pays?</h2>
+<div class="card">
+  <p>Usually: <b>the website you're on</b>. Sites sponsor viewing the way
+  web sites always have — you just watch. Your viewing is
+  <span class="good">anonymous</span>: the payment system sees the site,
+  never you.</p>
+  <p>Some content asks you to pay directly — fractions of a cent per minute,
+  in streaming credits (Safebux). If so, the player shows a balance and a
+  "get credits" button. <b>90% of what you pay goes to the creator</b>,
+  enforced by the payment rail itself — the infrastructure literally cannot
+  collect its 10% without paying the creator in the same transaction.</p>
+</div>
+
+<h2>What makes this different</h2>
+<div class="card">
+  <div class="step"><div class="n">🔒</div><div>
+    <b>Encrypted end to end.</b> The computers storing and delivering the
+    video cannot watch it. Decryption happens only in your browser.</div></div>
+  <div class="step"><div class="n">🕵️</div><div>
+    <b>Private by default.</b> Sponsored viewing leaves no trace of you
+    anywhere public. Even paying yourself, each video uses a separate
+    payment identity.</div></div>
+  <div class="step"><div class="n">🌐</div><div>
+    <b>No platform.</b> The video is served by independent operators
+    who earn per chunk they deliver — and can't see, censor, or
+    cherry-pick what they carry.</div></div>
+</div>
+
+<details><summary>Troubleshooting</summary>
+  <div class="card dim">
+    <p><b>Black screen on iPhone?</b> Requires iOS 17+. Reload once —
+    the first segments pre-load on second visit.</p>
+    <p><b>"Payment required"?</b> The site's sponsorship may be exhausted —
+    tap "get credits" or come back later.</p>
+    <p><b>Passphrase rejected?</b> All four words, lowercase, single
+    spaces.</p>
+  </div>
+</details>
+
+<p class="dim" style="margin-top:28px">Want to support the network with
+spare disk space? <a href="onboard-drop.html">Become a Drop</a> —
+it's one tap.</p>
+</body>
+</html>

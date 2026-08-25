@@ -35,6 +35,8 @@ Q.exports(function (Q, _) {
             dropId:        s.dropId        || null,
             evmAddress:    s.evmAddress    || null,
             prollyRoot:    s.prollyRoot    || null,
+            challenges:    s.challenges    || 0,
+            activity:      (s.activity || []).slice(-12),
             uptime:        s._initTime ? (Date.now() - s._initTime) : null
         };
     };

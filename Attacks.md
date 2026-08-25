@@ -70,6 +70,15 @@ P-256 and secp256k1 session private keys, which are non-extractable `CryptoKey`
 objects in Bob's IndexedDB. The claim without the private keys is useless for
 signing.
 
+For **Jet↔Jet hellos** specifically, session keys are not exercised per
+message after the handshake, so expiry alone would leave a live replay
+window. The v1 `JetSessionDelegation` therefore also binds
+`stm.noisePublicKey` to the sender's hyperswarm Noise static key, and the
+verifier compares it against the key of the connection the hello arrived on
+(`classes/Safecloud/Router.js`). Replaying Bob's delegation over Mallory's
+own Noise connection fails this check; presenting it over Bob's connection
+requires Bob's Noise private key, which is derived from Bob's wallet key.
+
 **Residual risk:** If Mallory has read access to Bob's device (IndexedDB
 contents + non-extractable keys), she has full session access — but this is
 device compromise, not protocol attack.

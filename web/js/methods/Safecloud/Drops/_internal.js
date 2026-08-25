@@ -48,8 +48,33 @@ Q.exports(function (Q) {
         servedBytes:   0,     // total bytes served via GET
         servedChunks:  0,     // total chunks served via GET
         storedChunks:  0,     // total chunks written via PUT
-        safebuxEarned: 0,     // 0.02 SBUX per MB served
-        _initTime:     null   // set to Date.now() in init()      // simulated: 0.02 SBUX per MB served
+        safebuxEarned: 0,     // SBUX at Safecloud.drop.sbuxPerMB per MB served
+        challenges:    0,     // proof-of-storage challenges answered
+        activity:      [],    // ring buffer of recent events (dashboards)
+        _initTime:     null   // set to Date.now() in init()
+    };
+
+    /**
+     * Record a dashboard activity event. Ring buffer capped at 50.
+     * @param {String} kind  'put' | 'get' | 'challenge' | 'claim' | 'announce' | ...
+     * @param {Object} [data]
+     */
+    _.logActivity = function (kind, data) {
+        var a = _._state.activity;
+        a.push(Q.extend({ t: Date.now(), kind: kind }, data || {}));
+        if (a.length > 50) { a.splice(0, a.length - 50); }
+    };
+
+    /**
+     * Jet-published info first (Q.Safecloud.Jets.info), Q.Config fallback.
+     */
+    _.jetInfo = function (infoPath, configPath, def) {
+        var v = Q.getObject(infoPath, Q.Safecloud.Jets && Q.Safecloud.Jets.info);
+        if (v !== undefined && v !== null) { return v; }
+        if (configPath && Q.Config && Q.Config.get) {
+            return Q.Config.get(configPath, def);
+        }
+        return def;
     };
 
     // Lazily initialised in-memory Prolly store

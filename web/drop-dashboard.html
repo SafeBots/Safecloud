@@ -1,0 +1,176 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Safecloud Drop — Dashboard</title>
+<!--
+  Drop operator dashboard. Serve from the SAME ORIGIN as the Drop page so it
+  can read the Drop's IndexedDB ('Q.Safecloud.Drops'): accumulated payment
+  tokens, chunk inventory, and identity meta. On-chain figures (claimed
+  earnings) come straight from public RPC — receivedTotal is one eth_call.
+  Claiming itself runs in the Drop page (it holds the WebAuthn-derived key);
+  the Claim button deep-links there with #claim.
+-->
+<style>
+  body{font-family:system-ui;background:#0d1117;color:#e6edf3;margin:0;padding:24px;max-width:760px;margin:0 auto}
+  h1{font-size:1.3rem}
+  .card{background:#161b22;border:1px solid #30363d;border-radius:10px;padding:16px;margin:12px 0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+  .big{font-size:1.5rem;font-weight:600}
+  .dim{color:#8b949e;font-size:.85rem}
+  code{background:#21262d;padding:2px 6px;border-radius:4px;font-size:.85rem;word-break:break-all}
+  button{background:#238636;color:#fff;border:0;border-radius:8px;padding:10px 18px;font-size:1rem;cursor:pointer}
+  button:disabled{background:#30363d;cursor:default}
+  .warn{color:#d29922}.ok{color:#3fb950}
+</style>
+</head>
+<body>
+<h1>⬢ Safecloud Drop</h1>
+
+<div class="grid">
+  <div class="card"><div class="dim">Identity</div>
+    <div id="idStatus" class="big">…</div>
+    <div class="dim"><code id="evmAddr">—</code></div></div>
+  <div class="card"><div class="dim">Chunks stored</div>
+    <div class="big" id="chunkCount">…</div>
+    <div class="dim" id="chunkBytes"></div></div>
+  <div class="card"><div class="dim">Accumulated (unclaimed tokens)</div>
+    <div class="big" id="pending">…</div>
+    <div class="dim">Safebux, off-chain watermarks</div></div>
+  <div class="card"><div class="dim">Claimed (on-chain, lifetime)</div>
+    <div class="big" id="claimed">…</div>
+    <div class="dim">receivedTotal on OpenClaiming</div></div>
+</div>
+
+<div class="card">
+  <button id="claimBtn" disabled>Claim accumulated Safebux</button>
+  <div class="dim" id="claimNote" style="margin-top:8px">
+    Claiming runs in the Drop tab (it holds your passkey-derived signing key).
+  </div>
+</div>
+
+<div class="card">
+  <div class="dim">Recent activity</div>
+  <div id="log" style="font-size:.85rem;margin-top:8px">…</div>
+</div>
+
+<script src="js/ethers.umd.min.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  var DB = 'Q.Safecloud.Drops';
+  var cfg = {
+    // Overridable via ?rpc=&oc=&sbux= query params (defaults: BSC + config-time constants)
+    rpc:  qs('rpc')  || 'https://bsc-dataseed.binance.org',
+    oc:   qs('oc')   || null,   // OpenClaiming address
+    sbux: qs('sbux') || null    // Safebux address (display only)
+  };
+  function qs(k){ return new URLSearchParams(location.search).get(k); }
+  function $(id){ return document.getElementById(id); }
+  function fmt(wei, dec){ dec = dec || 6;
+    try { return (Number(BigInt(wei)) / Math.pow(10, dec)).toLocaleString(); }
+    catch(e){ return '0'; } }
+
+  function idb(store, mode, fn) {
+    return new Promise(function (res, rej) {
+      var open = indexedDB.open(DB);
+      open.onerror = function(){ rej(open.error); };
+      open.onsuccess = function () {
+        var db = open.result;
+        if (!db.objectStoreNames.contains(store)) { res(null); return; }
+        var tx = db.transaction(store, mode || 'readonly');
+        fn(tx.objectStore(store), res, rej);
+      };
+    });
+  }
+
+  // 1. Identity: EVM address from meta store
+  idb('meta', 'readonly', function (st, res) {
+    var r = st.get('evmAddress');
+    r.onsuccess = function(){ res(r.result || null); };
+    r.onerror   = function(){ res(null); };
+  }).then(function (addr) {
+    if (addr) {
+      $('idStatus').textContent = 'Active';
+      $('idStatus').className = 'big ok';
+      $('evmAddr').textContent = addr;
+      loadOnchain(addr);
+    } else {
+      $('idStatus').textContent = 'Not initialized';
+      $('idStatus').className = 'big warn';
+      $('claimNote').textContent = 'Open the Drop page first to create your passkey identity.';
+    }
+  }).catch(function () {
+    $('idStatus').textContent = 'No Drop data on this origin';
+    $('idStatus').className = 'big warn';
+  });
+
+  // 2. Chunk inventory
+  idb('chunks', 'readonly', function (st, res) {
+    var count = st.count(); var bytes = 0;
+    count.onsuccess = function () {
+      $('chunkCount').textContent = count.result.toLocaleString();
+      // byte total via cursor is expensive for big stores; sample-skip fine
+      res(count.result);
+    };
+  }).catch(function(){ $('chunkCount').textContent = '—'; });
+
+  // 3. Accumulated tokens: sum the latest watermark per payer
+  idb('tokens', 'readonly', function (st, res) {
+    var all = st.getAll();
+    all.onsuccess = function () {
+      var per = {}; (all.result || []).forEach(function (t) {
+        var stm = t && t.stm; if (!stm || !stm.payer) return;
+        var k = String(stm.payer).toLowerCase();
+        try {
+          if (!per[k] || BigInt(stm.max||'0') > BigInt(per[k])) per[k] = stm.max||'0';
+        } catch(e){}
+      });
+      var sum = 0n;
+      Object.keys(per).forEach(function(k){ sum += BigInt(per[k]); });
+      $('pending').textContent = fmt(sum.toString());
+      if (sum > 0n) {
+        $('claimBtn').disabled = false;
+        $('claimBtn').onclick = function () {
+          location.href = './#claim'; // Drop page handles the actual claim
+        };
+      }
+      res(null);
+    };
+  }).catch(function(){ $('pending').textContent = '—'; });
+
+  // 4. On-chain claimed earnings + recent log
+  function loadOnchain(addr) {
+    if (!cfg.oc || !cfg.sbux) { $('claimed').textContent = '—'; return; }
+    try {
+      var provider = new ethers.JsonRpcProvider(cfg.rpc);
+      var oc = new ethers.Contract(cfg.oc,
+        ['function receivedTotal(address,address) view returns (uint256)'],
+        provider);
+      oc.receivedTotal(cfg.sbux, addr).then(function (v) {
+        $('claimed').textContent = fmt(v.toString());
+      }).catch(function(){ $('claimed').textContent = '—'; });
+    } catch (e) { $('claimed').textContent = '—'; }
+  }
+
+  idb('log', 'readonly', function (st, res) {
+    var req = st.openCursor(null, 'prev'); var rows = [];
+    req.onsuccess = function () {
+      var c = req.result;
+      if (c && rows.length < 8) {
+        var e = c.value || {};
+        rows.push('<div>' + new Date(e.t || Date.now()).toLocaleString()
+          + ' — ' + (e.msg || e.type || JSON.stringify(e).slice(0, 60)) + '</div>');
+        c.continue();
+      } else {
+        $('log').innerHTML = rows.join('') || '<span class="dim">no activity yet</span>';
+        res(null);
+      }
+    };
+  }).catch(function(){ $('log').textContent = '—'; });
+})();
+</script>
+</body>
+</html>

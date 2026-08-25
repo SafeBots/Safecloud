@@ -264,7 +264,7 @@ belongs to the Assets plugin. Jets' role is:
    `Safecloud/payment/collect` with the token and serving Drop's public key
 3. PHP delegates to the Assets plugin (`Q.Assets.OpenClaim`) which calls
    `OpenClaiming.executePayment(payment, [dropAddress], signature, dropAddress, amount, address(0))`
-   on the contract deployed at `0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999`
+   on the OpenClaiming contract (address from Users.web3.contracts config)
 
 This delegation means Jets has no Solidity dependencies and Assets plugin
 remains the single place where on-chain OCP execution happens across the
@@ -769,7 +769,7 @@ Jets (Node.js)
   -> POST /Q/node { 'Q/method': 'Safecloud/payment/collect', paymentToken, dropPublicKey }
   -> PHP Assets plugin (Q.Assets.OpenClaim)
   -> OpenClaiming.executePayment(payment, recipients, signature, recipient, amount, address(0))
-     at 0x99996a51cc950d9822D68b83fE1Ad97B32Cd9999
+     at the configured OpenClaiming address
 ```
 
 The `recipients` array is `[dropAddress]` where `dropAddress` is derived from
@@ -837,7 +837,7 @@ handlers are thin adapters over the same internal functions.
   │  PHP / Assets plugin     │
   │  Q.Assets.OpenClaim      │
   │  → OpenClaiming contract │
-  │    at 0x99996a51...9999  │
+  │    (configured address)  │
   └──────────────────────────┘
 ```
 

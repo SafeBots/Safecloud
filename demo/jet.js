@@ -10,7 +10,7 @@
  *   "Safecloud": {
  *     "requirePayment": false,
  *     "drop": { "storageGB": 10, "offlineGraceMs": 60000 },
- *     "safebux": { "perChunkWei": "0", "chainId": "eip155:97" },
+ *     "safebux": { "perChunkWei": "0", "chainId": "eip155:56" },   // eip155:97 for BSC testnet
  *     "jet":  { "address": "0x0000000000000000000000000000000000000000" },
  *     "openclaiming": { "address": "0x0000000000000000000000000000000000000000" },
  *     "swarm": {
@@ -31,7 +31,31 @@
  *   Mode 2 Jets will ignore Mode 1 Jets that lack epoch proofs.
  */
 
-require('../Q.inc')(function (Q) {
+// Resolve Q.inc across the usual layouts:
+//   plugins/Safecloud/demo/jet.js → APP_DIR/Q.inc          (../../..)
+//   sibling platform checkout     → APP_DIR/../platform/…  (…/Q.inc)
+// or set Q_INC=/absolute/path/to/Q.inc explicitly.
+var path = require('path');
+function requireQinc() {
+    var candidates = [
+        process.env.Q_INC,
+        path.resolve(__dirname, '../../../Q.inc'),
+        path.resolve(__dirname, '../../../../platform/Q.inc'),
+        path.resolve(__dirname, '../Q.inc')
+    ].filter(Boolean);
+    for (var i = 0; i < candidates.length; i++) {
+        try { return require(candidates[i]); } catch (e) { /* try next */ }
+    }
+    console.error(
+        'Safecloud demo/jet.js: could not locate Q.inc.\n' +
+        'Run this from inside a Qbix app (plugins/Safecloud/demo/jet.js),\n' +
+        'or set the Q_INC environment variable to its absolute path.\n' +
+        'Tried: ' + candidates.join(', ')
+    );
+    process.exit(1);
+}
+
+requireQinc()(function (Q) {
 
     // Users plugin manages socket.io auth middleware
     Q.plugins.Users.listen();
@@ -43,5 +67,5 @@ require('../Q.inc')(function (Q) {
 
     Q.log('Safecloud Jet ready at ' + Q.nodeUrl(), 'Safecloud');
     Q.log('Safecloud JetSwarm stats: '
-        + JSON.stringify(require('./classes/Safecloud/JetSwarm').stats()), 'Safecloud');
+        + JSON.stringify(require('../classes/Safecloud/JetSwarm').stats()), 'Safecloud');
 });

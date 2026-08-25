@@ -86,6 +86,20 @@ Q.exports(function (Q, _) {
     // ── Wire inbound Drop push handlers ────────────────────────────────────
 
     function _wireDropHandlers(qs) {
+        // Fetch the Jet's payment/network info once per connection. Non-fatal:
+        // older Jets without this event just leave info null (config fallback).
+        try {
+            qs.socket.emit('Safecloud/jet/info', {}, function (err, info) {
+                if (!err && info) {
+                    Q.Safecloud.Jets.info = info;
+                    if (info.evmAddress) {
+                        Q.Safecloud.Jets.jetEvmAddress = info.evmAddress;
+                    }
+                    Q.handle(Q.Safecloud.Jets.onInfo, Q.Safecloud.Jets, [info]);
+                }
+            });
+        } catch (e) { /* ignore — info stays null */ }
+
         // Safecloud/drop/put — Jet pushes chunks to store
         Q.Socket.onEvent('Safecloud/drop/put', '/Safecloud/cloud', qs.url).set(function (payload, ack) { Q.Safecloud.Jets.onDropPut.handle(payload, ack); }, 'Safecloud.drop');
 
@@ -125,6 +139,14 @@ Q.exports(function (Q, _) {
 
         Q.Safecloud.Jets.onDropChallenge.add(function (payload, ack) {
             // Return the actual chunk so Jet can verify SHA-256(ciphertext||tag) === cid
+            try {
+                var ds = Q.Safecloud.Drops._ && Q.Safecloud.Drops._._state;
+                if (ds) {
+                    ds.challenges = (ds.challenges || 0) + 1;
+                    ds.activity.push({ t: Date.now(), kind: 'challenge' });
+                    if (ds.activity.length > 50) { ds.activity.shift(); }
+                }
+            } catch (e) { /* stats only */ }
             Q.Safecloud.Drops.get([payload.cid], {})
                 .then(function (r) {
                     ack && ack(null, r.chunks[0] || null);

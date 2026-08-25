@@ -1,4 +1,17 @@
 {
+    "Q": {
+        "pluginInfo": {
+            "Safecloud": {
+                "version": "1.0.0-beta.3",
+                "compatible": "1.0",
+                "requires": {
+                    "Q": "1.0",
+                    "Users": "1.0",
+                    "Streams": "1.0"
+                }
+            }
+        }
+    },
     "Safecloud": {
         "requirePayment": false,
         "jetUrl": null,
@@ -11,7 +24,8 @@
             "claimBatchSize": 10,
             "minStakeSafebux": "0",
             "minSlashFailures": 3,
-            "slashWindowMs": 3600000
+            "slashWindowMs": 3600000,
+            "sbuxPerMB": 0.02
         },
         "safebux": {
             "address": null,
@@ -23,6 +37,17 @@
         },
         "openclaiming": {
             "address": null
+        },
+        "wallet": {
+            "privateKey": null
+        },
+        "swarm": {
+            "enabled": false,
+            "seed": null,
+            "networkId": "safecloud:jet:v1",
+            "secureIds": false,
+            "bootstrap": null,
+            "allowUnverifiedDelegations": false
         }
     }
 }

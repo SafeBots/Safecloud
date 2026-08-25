@@ -12,7 +12,9 @@
 function Safecloud_demo_response($params)
 {
     Q_Response::addScript('{{Safecloud}}/js/Safecloud.js', 'head');
+    Q_Response::addScript('{{Safecloud}}/js/pages/demo.js');
     Q_Response::addStylesheet('{{Safecloud}}/css/Safecloud.css');
+    Q_Response::addStylesheet('{{Safecloud}}/css/pages/demo.css');
 
     $jetUrl  = Q_Config::get('Safecloud', 'jetUrl', Q_Request::baseUrl());
     $rootCid = Q::ifset($_GET, 'rootCid', null);
@@ -24,7 +26,7 @@ function Safecloud_demo_response($params)
     }
 
     $text = Q_Text::get('Safecloud/content');
-    Q_Response::setSlot('title', Q::ifset($text, 'demo', 'pageTitle', 'Safecloud Demo'));
+    Q_Response::setSlot('title', Q::ifset($text, 'demo', 'PageTitle', 'Safecloud Demo'));
 
     if (Q_Request::slotName('content')) {
         Q_Response::setSlot('content',

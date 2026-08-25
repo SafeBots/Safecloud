@@ -1,15 +1,32 @@
 {
   "name": "safecloud",
-  "version": "1.0.0",
-  "description": "Safecloud Jet server — distributed encrypted storage network",
-  "main": "demo/jet.js",
+  "version": "1.0.0-beta.3",
+  "description": "Safecloud Jet server \u2014 distributed encrypted storage network",
+  "main": "classes/Safecloud.js",
   "dependencies": {
-    "ethers": "^6.0.0",
+    "ethers": "^6.17.0",
     "express": "^4.18.0",
+    "hypercore-crypto": "^3.4.0",
     "hyperswarm": "^4.17.0",
     "socket.io": "^4.6.0"
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "license": "AGPL-3.0-only",
+  "scripts": {
+    "test": "NODE_PATH=test/shims node test/validateManifest.test.js && NODE_PATH=test/shims node test/delegation.test.js && NODE_PATH=test/shims node test/recipientsHash.test.js",
+    "jet": "node demo/jet.js",
+    "test:integration": "node tests/eip712.test.js && node tests/policy_and_sponsor.test.js && node tests/jet_module.test.js && node tests/e2e.test.js && node tests/transport.test.js && node tests/drop_storage.test.js && node tests/adversarial.test.js && node tests/tree_math.test.js && node tests/splitkey.test.js && node tests/pricing_and_encoding.test.js && node tests/drop_identity.test.js && node tests/flow_full_circuit.test.js && node tests/flow_sponsored.test.js && node tests/flow_multidrop.test.js && node tests/http_routes.test.js && node tests/robustness.test.js && node tests/http_hostile.test.js && node tests/chunk_assembly.test.js && node tests/socket_handlers.test.js && node tests/socket_dos.test.js && node tests/router.test.js && node tests/operator_setup.test.js",
+    "test:all": "npm test && npm run test:integration",
+    "test:evm": "node tests/evm/compile.js && node tests/evm/onchain.test.js",
+    "test:everything": "npm run test:all && npm run test:evm"
+  },
+  "devDependencies": {
+    "socket.io": "^4.7.5",
+    "socket.io-client": "^4.7.5",
+    "fake-indexeddb": "^6.0.0",
+    "solc": "^0.8.26",
+    "ganache": "^7.9.2"
   }
 }

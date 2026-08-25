@@ -145,3 +145,18 @@
     cursor: default;
 }
 .Safecloud_drop_claim_btn.Q_working { opacity: .6; cursor: wait; }
+
+/* ── 1.0.0-beta.2 dashboard additions ─────────────────────────────────── */
+.Safecloud_drop_spark { display:inline-block; vertical-align:middle;
+    margin-left:10px; color:var(--Safecloud-green,#4CAF50); }
+.Safecloud_drop_activity_wrap { margin-top:14px; }
+.Safecloud_drop_activity_title { font-size:.75rem; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--Safecloud-muted,#9090a0);
+    margin-bottom:6px; }
+.Safecloud_drop_activity { list-style:none; margin:0; padding:0;
+    max-height:180px; overflow-y:auto;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:.75rem; }
+.Safecloud_drop_activity li { padding:2px 0;
+    border-bottom:1px solid var(--Safecloud-border,#35353d); }
+.Safecloud_drop_activity li .t { color:var(--Safecloud-muted,#9090a0);
+    margin-right:8px; }

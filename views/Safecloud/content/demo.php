@@ -8,9 +8,9 @@
 <div id="Safecloud_demo_page">
 
   <div class="Safecloud_demo_header">
-    <h1><?php echo Q_Html::text(Q::ifset($text, 'demo', 'heading',
+    <h1><?php echo Q_Html::text(Q::ifset($text, 'demo', 'Heading',
         'Safecloud Encrypted Storage')) ?></h1>
-    <p><?php echo Q_Html::text(Q::ifset($text, 'demo', 'subheading',
+    <p><?php echo Q_Html::text(Q::ifset($text, 'demo', 'Subheading',
         'Upload a file. It is encrypted in your browser and streamed back only to you.')) ?></p>
   </div>
 
@@ -38,11 +38,20 @@
   </div>
 
   <div id="Safecloud_demo_share" style="display:none">
-    <label><?php echo Q_Html::text(Q::ifset($text, 'demo', 'shareLabel', 'Share link:')) ?></label>
-    <input type="text" id="Safecloud_demo_share_url" readonly>
-    <button id="Safecloud_demo_copy_btn" class="Q_button">
-      <?php echo Q_Html::text(Q::ifset($text, 'demo', 'copyButton', 'Copy')) ?>
-    </button>
+    <div class="Safecloud_demo_share_row">
+      <label><?php echo Q_Html::text(Q::ifset($text, 'demo', 'ShareLabel', 'Share link:')) ?></label>
+      <input type="text" id="Safecloud_demo_share_url" readonly>
+      <button class="Q_button Safecloud_demo_copy" data-copy="Safecloud_demo_share_url">
+        <?php echo Q_Html::text(Q::ifset($text, 'demo', 'CopyButton', 'Copy')) ?>
+      </button>
+    </div>
+    <div class="Safecloud_demo_share_row">
+      <label><?php echo Q_Html::text(Q::ifset($text, 'demo', 'EmbedLabel', 'Embed:')) ?></label>
+      <textarea id="Safecloud_demo_embed_code" rows="3" readonly></textarea>
+      <button class="Q_button Safecloud_demo_copy" data-copy="Safecloud_demo_embed_code">
+        <?php echo Q_Html::text(Q::ifset($text, 'demo', 'CopyButton', 'Copy')) ?>
+      </button>
+    </div>
   </div>
 
 </div>

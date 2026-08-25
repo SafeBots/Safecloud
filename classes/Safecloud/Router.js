@@ -49,6 +49,41 @@ function _getHyperswarm() {
     return _hyperswarm;
 }
 
+// ethers — lazy, only needed for delegation signing/verification (swarm mode)
+var _ethers = null;
+function _getEthers() {
+    if (_ethers) { return _ethers; }
+    try {
+        _ethers = require('ethers');
+    } catch (e) {
+        throw new Error('Q.Safecloud.Router requires ethers for swarm mode. npm install ethers. ' + e.message);
+    }
+    return _ethers;
+}
+
+/**
+ * EIP-712 typed data for the safecloud.jet.hello session delegation (v1).
+ * MUST be identical on the signing side (_buildJetDelegation) and the
+ * verifying side (_verifyDelegation). Documented in Protocol.md under
+ * "Connection authentication and session key delegation".
+ *
+ * The delegation binds the Jet's EVM wallet to its hyperswarm Noise static
+ * public key, so a captured delegation cannot be replayed over a different
+ * Noise connection (see Attacks.md 1.2).
+ * @private
+ */
+var DELEGATION_DOMAIN = { name: 'Safecloud', version: '1' };
+var DELEGATION_TYPES  = {
+    JetSessionDelegation: [
+        { name: 'iss',              type: 'string'  },
+        { name: 'sub',              type: 'string'  },
+        { name: 'sessionKeyEIP712', type: 'address' },
+        { name: 'noisePublicKey',   type: 'string'  },
+        { name: 'nbf',              type: 'uint256' },
+        { name: 'exp',              type: 'uint256' }
+    ]
+};
+
 Q.makeEventEmitter(Safecloud_Router);
 module.exports = Safecloud_Router;
 
@@ -100,13 +135,21 @@ var _initialized = false;
 /** @private Options passed to init() */
 var _options = {};
 
+/** @private hex of this Jet's Noise static public key — set by init() */
+var _noisePublicKeyHex = null;
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 var RELAY_TOKEN_WINDOW_SEC  = 300;  // 5-minute token validity window
 var MAX_COC_HOPS            = 7;
 var RELIABILITY_INITIAL     = 0.5;
 var RELIABILITY_SUCCESS_W   = 0.1;
-var RELIABILITY_FAIL_W      = 0.1;
+// Asymmetric on purpose: reputation is slow to earn and fast to lose.
+// With symmetric weights a Drop that lies about its capacity (claimed
+// storage is unverified) still captured ~68% of routing after 20 failed
+// serves. Punishing failures 3x harder collapses that window while a
+// genuinely reliable Drop is barely affected — it rarely fails.
+var RELIABILITY_FAIL_W      = 0.3;
 var RELIABILITY_RECONNECT   = 0.25;
 var WEIGHTED_SELECT_TOP_N   = 3;
 var REPLICATION_DEFAULT     = 2;
@@ -173,7 +216,7 @@ Safecloud_Router._deriveNoiseKeypair = function (evmPrivateKey) {
  * @param {Object} hello  safecloud.jet.hello message
  * @return {Promise<Boolean>}
  */
-Safecloud_Router._verifyDelegation = function (hello) {
+Safecloud_Router._verifyDelegation = function (hello, conn) {
     if (!hello || !hello.delegation || !hello.evmAddress) {
         return Promise.resolve(false);
     }
@@ -181,11 +224,124 @@ Safecloud_Router._verifyDelegation = function (hello) {
     if (!d.stm || !d.stm.exp) { return Promise.resolve(false); }
     var now = Math.floor(Date.now() / 1000);
     if (now > d.stm.exp) { return Promise.resolve(false); }
-    if (!d.iss || d.iss.indexOf(hello.evmAddress.toLowerCase()) < 0) {
+    if (d.stm.nbf && now < d.stm.nbf) { return Promise.resolve(false); }
+    var evm = hello.evmAddress.toLowerCase();
+    if (!d.iss || String(d.iss).toLowerCase().indexOf(evm) < 0) {
         return Promise.resolve(false);
     }
-    // TODO Phase 3: Q.Crypto.verify EIP-712 wallet signature
-    return Promise.resolve(true);
+
+    // ── Noise-key binding (anti-replay across connections) ────────────────────
+    // The delegation names the Noise static public key it was issued for.
+    // A delegation captured from one connection is useless on another
+    // (Attacks.md 1.2). Enforced whenever the connection handle is available.
+    if (conn && conn.remotePublicKey) {
+        var remoteHex = Buffer.isBuffer(conn.remotePublicKey)
+            ? conn.remotePublicKey.toString('hex')
+            : String(conn.remotePublicKey);
+        if (!d.stm.noisePublicKey ||
+            String(d.stm.noisePublicKey).toLowerCase() !== remoteHex.toLowerCase()) {
+            return Promise.resolve(false);
+        }
+    }
+
+    // ── Signature verification ─────────────────────────────────────────────────
+    // Preferred: the platform OCP verifier, if this Q build ships it — it
+    // handles arbitrary platform-issued delegation claims (e.g. from
+    // Q.Crypto.delegate). Fallback: direct EIP-712 recovery over the
+    // JetSessionDelegation typed data that _buildJetDelegation signs.
+    var allowUnverified = Q.Config.get(
+        ['Safecloud', 'swarm', 'allowUnverifiedDelegations'], false);
+
+    if (!d.sig || !d.sig.length) {
+        return Promise.resolve(!!allowUnverified);
+    }
+
+    var sig0   = d.sig[0];
+    var sigHex = (sig0 && (sig0.signature || sig0)) || null;
+
+    if (d.ocp === 1 && Q.Crypto && Q.Crypto.OpenClaim &&
+        typeof Q.Crypto.OpenClaim.verify === 'function') {
+        return Promise.resolve(Q.Crypto.OpenClaim.verify(d, { minValid: 1 }))
+        .then(function (ok) {
+            if (ok) { return true; }
+            return _verifyDelegationEIP712(d, evm, sigHex);
+        }).catch(function () {
+            return _verifyDelegationEIP712(d, evm, sigHex);
+        });
+    }
+    return Promise.resolve(_verifyDelegationEIP712(d, evm, sigHex));
+};
+
+/**
+ * Direct EIP-712 recovery over the JetSessionDelegation typed data.
+ * Recovered signer must equal the hello's evmAddress.
+ * @private
+ * @return {Boolean}
+ */
+function _verifyDelegationEIP712(d, evm, sigHex) {
+    if (!sigHex) { return false; }
+    try {
+        var ethers = _getEthers();
+        var value = {
+            iss:              String(d.iss),
+            sub:              String(d.sub || 'safecloud:session-delegation'),
+            sessionKeyEIP712: d.stm.sessionKeyEIP712 || ethers.ZeroAddress,
+            noisePublicKey:   String(d.stm.noisePublicKey || ''),
+            nbf:              BigInt(d.stm.nbf || 0),
+            exp:              BigInt(d.stm.exp || 0)
+        };
+        var recovered = ethers.verifyTypedData(
+            DELEGATION_DOMAIN, DELEGATION_TYPES, value, sigHex);
+        return recovered.toLowerCase() === evm;
+    } catch (e) {
+        return false;
+    }
+}
+
+/**
+ * Build and sign the JetSessionDelegation claim this Jet presents in
+ * safecloud.jet.hello. Signed once per session by the Jet's EVM wallet;
+ * bound to this Jet's Noise static public key.
+ *
+ * @method _buildJetDelegation
+ * @private
+ * @param {String|Buffer} evmPrivateKey   Safecloud.wallet.privateKey
+ * @param {String}        noisePublicKeyHex
+ * @return {Promise<Object>}  OCP-shaped delegation claim
+ */
+Safecloud_Router._buildJetDelegation = function (evmPrivateKey, noisePublicKeyHex) {
+    var ethers = _getEthers();
+    var pkHex  = Buffer.isBuffer(evmPrivateKey)
+        ? '0x' + evmPrivateKey.toString('hex')
+        : (String(evmPrivateKey).indexOf('0x') === 0
+            ? String(evmPrivateKey) : '0x' + String(evmPrivateKey));
+    var wallet = new ethers.Wallet(pkHex);
+    var now    = Math.floor(Date.now() / 1000);
+    var stm    = {
+        sessionKeyEIP712: wallet.address,
+        noisePublicKey:   String(noisePublicKeyHex || ''),
+        nbf:              now - 60,
+        exp:              now + 30 * 86400   // 30-day session (Protocol.md)
+    };
+    var value = {
+        iss:              'data:key/eip712,' + wallet.address.toLowerCase(),
+        sub:              'safecloud:session-delegation',
+        sessionKeyEIP712: stm.sessionKeyEIP712,
+        noisePublicKey:   stm.noisePublicKey,
+        nbf:              BigInt(stm.nbf),
+        exp:              BigInt(stm.exp)
+    };
+    return wallet.signTypedData(DELEGATION_DOMAIN, DELEGATION_TYPES, value)
+    .then(function (sigHex) {
+        return {
+            ocp: 1,
+            iss: value.iss,
+            sub: value.sub,
+            stm: stm,
+            key: [value.iss],
+            sig: [{ format: 'EIP712', signature: sigHex }]
+        };
+    });
 };
 
 /**
@@ -197,21 +353,49 @@ Safecloud_Router._verifyDelegation = function (hello) {
  * @param {Object} drop   Drop record from Q.Safecloud.Jets.drops
  * @return {Number}
  */
+/**
+ * Coerce an untrusted numeric field to a finite, bounded, non-negative
+ * number. Drop registration payloads are attacker-controlled: a non-numeric
+ * value yields NaN (and NaN > 0 is false, so the Drop would be silently
+ * excluded from routing forever), while an absurd value would let a Drop
+ * capture all routing. Both are handled here.
+ * @private
+ */
+function _sane(v, def, max) {
+    var n = (typeof v === 'number') ? v : parseFloat(v);
+    if (!Number.isFinite(n) || n < 0) { return def; }
+    return (max !== undefined && n > max) ? max : n;
+}
+
 Safecloud_Router._weightDrop = function (drop) {
+    if (!drop) { return 0; }
     var reliability = _reliabilityScore[drop.dropId] !== undefined
         ? _reliabilityScore[drop.dropId]
         : RELIABILITY_INITIAL;
+    reliability = _sane(reliability, RELIABILITY_INITIAL, 1);
 
     // Stake: read from balance cache if available, otherwise assume 1
-    var cached = _balanceCache[drop.evmAddress || ''];
-    var stake  = cached ? Number(cached.balance / BigInt('1000000000000000000')) : 1;
+    var stake = 1;
+    try {
+        var cached = _balanceCache[drop.evmAddress || ''];
+        if (cached && typeof cached.balance === 'bigint') {
+            stake = _sane(Number(cached.balance / BigInt('1000000000000000000')), 1);
+        }
+    } catch (e) { stake = 1; }
 
-    // Available storage
-    var storageGB  = (drop.storage && drop.storage.GB) || 0;
-    var usedGB     = (drop.used || 0) / (1024 * 1024 * 1024);
+    // Available storage. CLAIMED storage is unverified — a Drop asserts it in
+    // its registration message. Clamp to maxClaimedGB so no Drop can claim an
+    // absurd figure and monopolise routing, and take the square root so
+    // weight grows sub-linearly: bigger Drops are preferred, but a Drop
+    // claiming 10000x more storage gets 100x the weight, not 10000x.
+    var maxGB      = Q.Config.get(['Safecloud', 'router', 'maxClaimedGB'], 65536);
+    var storageGB  = _sane(drop.storage && drop.storage.GB, 0, maxGB);
+    var usedBytes  = _sane(drop.used, 0);
+    var usedGB     = usedBytes / (1024 * 1024 * 1024);
     var available  = Math.max(0, storageGB - usedGB);
 
-    return stake * reliability * available;
+    var w = stake * reliability * Math.sqrt(available);
+    return Number.isFinite(w) && w > 0 ? w : 0;
 };
 
 /**
@@ -487,13 +671,32 @@ Safecloud_Router.gossipCoC = function (coc) {
     if (_cocStore[cocHash]) { return; } // already seen
     _cocStore[cocHash] = coc;
 
-    // Mark subject as corrupt locally
+    // ── Verify before acting ───────────────────────────────────────────────────
+    // An unverified CoC must never change routing state: otherwise any peer
+    // could grief an honest Drop off the network with one fabricated message.
+    // The claim is stored above for forensics either way; the corrupt-actor
+    // mark and event fire only after Q.Crypto.OpenClaim.verify succeeds.
     var subjectEVM = coc.stm && coc.stm.subjectEVM;
-    if (subjectEVM) {
+    if (!subjectEVM) { return; }
+
+    var verifier = (Q.Crypto && Q.Crypto.OpenClaim &&
+        typeof Q.Crypto.OpenClaim.verify === 'function')
+        ? Q.Crypto.OpenClaim.verify(coc, { minValid: 1 })
+        : false;
+
+    Promise.resolve(verifier).then(function (ok) {
+        if (!ok) {
+            Q.log('Q.Safecloud.Router: unverified CoC recorded (no action) for '
+                + subjectEVM, 'Safecloud');
+            return;
+        }
         _corruptActors[subjectEVM.toLowerCase()] = true;
         Safecloud_Router.emit('corruptActorDetected', subjectEVM, coc);
         Q.log('Q.Safecloud.Router: corrupt actor detected: ' + subjectEVM, 'Safecloud');
-    }
+    }).catch(function () {
+        Q.log('Q.Safecloud.Router: CoC verification error (no action) for '
+            + subjectEVM, 'Safecloud');
+    });
 
     // Flood to peers (decrement hopCount)
     // TODO Phase 4: gossip over Noise connections
@@ -522,7 +725,7 @@ Safecloud_Router.peerJets = function () {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function _handleHello(conn, hello) {
-    Safecloud_Router._verifyDelegation(hello).then(function (ok) {
+    Safecloud_Router._verifyDelegation(hello, conn).then(function (ok) {
         if (!ok) {
             Q.log('Q.Safecloud.Router: rejected hello from ' + hello.evmAddress + ' (invalid delegation)', 'Safecloud');
             conn.destroy();
@@ -609,20 +812,65 @@ function _handleSubscribe(conn, msg) {
 function _onConnection(conn, info) {
     Q.log('Q.Safecloud.Router: hyperswarm connection from peer', 'Safecloud');
 
-    // Send hello immediately
-    var jetEVM    = Q.Config.get(['Safecloud', 'jet', 'address'], null);
-    var jetUrl    = Q.Config.get(['Safecloud', 'jet', 'url'], null);
-    var delegation = _options.delegation || null; // set by init()
+    // Attach framing BEFORE the (async) hello send, so a fast peer's first
+    // frame is never lost while our delegation is being prepared.
+    _attachFraming(conn);
 
-    _sendMessage(conn, {
-        type:            'safecloud.jet.hello',
-        url:             jetUrl,
-        version:         1,
-        evmAddress:      jetEVM,
-        delegation:      delegation,
-        secondLevelRoot: _jetProllyRoot
+    // Send hello with a fresh (re-signed if near expiry) session delegation
+    var jetEVM = Q.Config.get(['Safecloud', 'jet', 'address'], null);
+    var jetUrl = Q.Config.get(['Safecloud', 'jet', 'url'], null);
+
+    _freshDelegation().then(function (delegation) {
+        _sendMessage(conn, {
+            type:            'safecloud.jet.hello',
+            url:             jetUrl,
+            version:         1,
+            evmAddress:      jetEVM,
+            delegation:      delegation,
+            secondLevelRoot: _jetProllyRoot
+        });
+    }).catch(function (err) {
+        Q.log('Q.Safecloud.Router: could not prepare hello delegation: '
+            + err, 'Safecloud');
     });
 
+    conn.on('error', function (err) {
+        Q.log('Q.Safecloud.Router: Noise connection error: ' + err, 'Safecloud');
+    });
+    conn.on('close', function () {
+        var evm = _connToEVM(conn);
+        if (evm) {
+            delete _peers[evm];
+            Safecloud_Router.emit('peerDisconnected', evm);
+        }
+    });
+}
+
+/**
+ * Return the current session delegation, re-signing when absent or within
+ * one hour of expiry. Caches on _options.delegation (which init() may have
+ * pre-populated, or an app may have supplied explicitly).
+ * @private
+ * @return {Promise<Object|null>}
+ */
+function _freshDelegation() {
+    var d   = _options.delegation;
+    var now = Math.floor(Date.now() / 1000);
+    if (d && d.stm && d.stm.exp && (d.stm.exp - now) > 3600) {
+        return Promise.resolve(d);
+    }
+    var evmPrivKey = Q.Config.get(['Safecloud', 'wallet', 'privateKey'], null);
+    if (!evmPrivKey || !_noisePublicKeyHex) {
+        return Promise.resolve(d || null);
+    }
+    return Safecloud_Router._buildJetDelegation(evmPrivKey, _noisePublicKeyHex)
+    .then(function (fresh) {
+        _options.delegation = fresh;
+        return fresh;
+    });
+}
+
+function _attachFraming(conn) {
     // Read length-prefixed JSON frames
     _frameConn(conn, function (msg) {
         if (!msg || !msg.type) { return; }
@@ -649,17 +897,6 @@ function _onConnection(conn, info) {
             default:
                 // Ignore unknown message types
                 break;
-        }
-    });
-
-    conn.on('error', function (err) {
-        Q.log('Q.Safecloud.Router: Noise connection error: ' + err, 'Safecloud');
-    });
-    conn.on('close', function () {
-        var evm = _connToEVM(conn);
-        if (evm) {
-            delete _peers[evm];
-            Safecloud_Router.emit('peerDisconnected', evm);
         }
     });
 }
@@ -696,20 +933,36 @@ Safecloud_Router.init = function (options) {
     }
 
     var noiseKeypair = Safecloud_Router._deriveNoiseKeypair(evmPrivKey);
-    _swarm = new Hyperswarm({ keyPair: noiseKeypair });
+    _noisePublicKeyHex = noiseKeypair.publicKey.toString('hex');
 
-    var topic = crypto.createHash('sha256')
-        .update('safecloud-jets')
-        .digest();
+    // Sign the session delegation once up front (unless the app supplied one),
+    // so the first hello never races the signer.
+    var delegationReady = _options.delegation
+        ? Promise.resolve(_options.delegation)
+        : Safecloud_Router._buildJetDelegation(evmPrivKey, _noisePublicKeyHex)
+            .then(function (d) { _options.delegation = d; return d; })
+            .catch(function (err) {
+                Q.log('Q.Safecloud.Router.init: delegation signing failed: '
+                    + err + ' — hellos will be unsigned', 'Safecloud');
+                return null;
+            });
 
-    var discovery = _swarm.join(topic, { server: true, client: true });
+    return delegationReady.then(function () {
+        _swarm = new Hyperswarm({ keyPair: noiseKeypair });
 
-    _swarm.on('connection', _onConnection);
+        var topic = crypto.createHash('sha256')
+            .update('safecloud-jets')
+            .digest();
 
-    return discovery.flushed().then(function () {
-        Q.log('Q.Safecloud.Router: hyperswarm announced on safecloud-jets topic', 'Safecloud');
-    }).catch(function (err) {
-        Q.log('Q.Safecloud.Router.init: hyperswarm error: ' + err, 'Safecloud');
+        var discovery = _swarm.join(topic, { server: true, client: true });
+
+        _swarm.on('connection', _onConnection);
+
+        return discovery.flushed().then(function () {
+            Q.log('Q.Safecloud.Router: hyperswarm announced on safecloud-jets topic', 'Safecloud');
+        }).catch(function (err) {
+            Q.log('Q.Safecloud.Router.init: hyperswarm error: ' + err, 'Safecloud');
+        });
     });
 };
 

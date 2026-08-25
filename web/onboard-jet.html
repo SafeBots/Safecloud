@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Run a Safecloud Jet</title>
+<style>
+  :root{--bg:#0d1117;--card:#161b22;--line:#30363d;--txt:#e6edf3;--dim:#8b949e;
+        --green:#3fb950;--purple:#bc8cff;--blue:#58a6ff;--amber:#d29922}
+  body{font-family:system-ui;background:var(--bg);color:var(--txt);margin:0;
+       padding:24px;max-width:680px;margin:0 auto;line-height:1.55}
+  h1{font-size:1.6rem}h2{font-size:1.1rem;margin-top:28px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;
+        padding:16px;margin:14px 0}
+  .step{display:flex;gap:12px;margin:10px 0}
+  .n{background:var(--blue);color:#000;font-weight:700;border-radius:50%;
+     width:26px;height:26px;min-width:26px;display:flex;align-items:center;
+     justify-content:center;font-size:.9rem}
+  .dim{color:var(--dim);font-size:.9rem}
+  a{color:var(--blue)}
+  pre{background:#21262d;padding:12px;border-radius:8px;overflow-x:auto;
+      font-size:.85rem}
+  code{background:#21262d;padding:2px 6px;border-radius:4px}
+  details{margin:8px 0}summary{cursor:pointer;color:var(--blue)}
+</style>
+</head>
+<body>
+<h1>⬡ Run a Jet</h1>
+<p class="dim">A Jet is the router of the Safecloud network: it connects
+viewers to Drops, verifies micropayments, and settles them on-chain.
+Permissionless — no registration, no staking, no approval.</p>
+
+<h2>Setup — three steps, five minutes</h2>
+<div class="card">
+  <div class="step"><div class="n">1</div><div><b>Install and start</b>
+    (Node 18+, any VPS or home server with a reachable domain):
+    <pre>git clone &lt;your-qbix-app&gt; && cd &lt;app&gt;
+npm install
+node server.js</pre></div></div>
+  <div class="step"><div class="n">2</div><div><b>Fund the printed address.</b>
+    On first start the Jet <b>generates its own wallet</b>, saves it to
+    <code>local/app.json</code> (back that file up!), and prints its
+    address. Send it <b>~0.01 BNB</b> — that's transaction gas for
+    settlements, roughly a month's worth.</div></div>
+  <div class="step"><div class="n">3</div><div><b>Verify.</b> Open
+    <code>https://your-host/Safecloud/health</code> — you should see
+    <code>"signing": true</code>. Your live dashboard is at
+    <code>/Safecloud/dashboard</code>.</div></div>
+</div>
+
+<h2>The economics</h2>
+<div class="card">
+  <p><b>You earn a share of every chunk you route.</b> Under the standard
+  90/10 policy the infrastructure share is ~10%, split between you and your
+  Drops (default ~3% Jet / ~5% Drop / ~2% protocol — you set what you offer
+  Drops, and their reliability adjusts it automatically).</p>
+  <p><b>Two revenue streams, same hardware:</b> content delivery (viewers
+  pay) and storage (owners pay — 100% to infra, no creator share). Storage
+  is the base load; streaming is the upside.</p>
+  <p><b>Working capital:</b> you pay your Drops with signed IOUs against
+  your Safebux balance, replenished as viewer payments settle (automatic,
+  every 15 min by default). Keep roughly one settlement-interval of Drop
+  payouts on hand — the dashboard warns when you're low. Drops can verify
+  your balance on-chain, so solvency is your reputation.</p>
+  <p class="dim">You can't cherry-pick lucrative content — chunks are
+  encrypted and indistinguishable. Your only decision is price.</p>
+</div>
+
+<h2>Configuration that matters</h2>
+<div class="card">
+<pre>{ "Safecloud": {
+  "requirePayment": true,
+  "safebux":      { "address": "0x…", "perChunkWei": "500" },
+  "openclaiming": { "address": "0x…" },
+  "jet": {
+    "minInfraBp": 500,          // reject policies paying infra &lt; 5%
+    "settleIntervalSec": 900,   // auto-settlement cadence
+    "acceptedTokens": []        // additional {App}bux you accept
+  }
+} }</pre>
+  <p class="dim"><code>minInfraBp</code> is your price floor — content
+  offering less gets an automatic 402 with your terms.
+  <code>acceptedTokens</code> makes token acceptance your market decision:
+  accept an app's own currency if you trust its value.</p>
+</div>
+
+<h2>Operating</h2>
+<div class="card">
+  <div class="step"><div class="n">📊</div><div>
+    <b><code>/Safecloud/dashboard</code></b> — Drops, reliability,
+    pending settlements, gas.</div></div>
+  <div class="step"><div class="n">🩺</div><div>
+    <b><code>/Safecloud/health</code></b> — JSON for your monitoring;
+    alert on <code>gasLow: true</code>.</div></div>
+  <div class="step"><div class="n">💧</div><div>
+    <b>Testnet faucet</b> (optional, off by default):
+    <code>"faucet": { "enabled": true }</code> lets new viewers get
+    starter credits from your balance, rate-limited per IP.</div></div>
+</div>
+
+<details><summary>FAQ</summary>
+  <div class="card dim">
+    <p><b>Can I be anonymous?</b> Mostly. Your wallet is pseudonymous; your
+    domain/IP is the visible part. Crypto-paid VPS + privacy domain gets
+    close; viewers must be able to reach you, so full anonymity needs
+    something like an onion service.</p>
+    <p><b>What if I go offline?</b> Nothing breaks for anyone else — viewers
+    find other Jets carrying the content. You just stop earning.</p>
+    <p><b>Do I hold user funds?</b> Never. The payment rail holds nothing
+    and you custody nothing — you route signed messages and settle them.</p>
+  </div>
+</details>
+</body>
+</html>

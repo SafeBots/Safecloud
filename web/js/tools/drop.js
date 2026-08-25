@@ -161,7 +161,45 @@ Q.Tool.define('Safecloud/drop', function (options) {
         _set($te, '.Safecloud_drop_stat_servedMB',     (s.servedMB    || 0).toFixed(3) + ' MB');
         _set($te, '.Safecloud_drop_stat_servedChunks', (s.servedChunks|| 0).toLocaleString());
         _set($te, '.Safecloud_drop_stat_safebux',      (s.safebuxEarned || 0).toFixed(6) + ' SBUX');
+        _set($te, '.Safecloud_drop_stat_requests',
+            ((s.servedChunks || 0) + (s.storedChunks || 0) + (s.challenges || 0))
+                .toLocaleString()
+            + ' (' + (s.challenges || 0) + ' ' 
+            + (Q.getObject('drop.Challenges', tool.text) || 'challenges') + ')');
         _set($te, '.Safecloud_drop_stat_prollyRoot',   _short(s.prollyRoot));
+
+        // Activity feed (most recent first)
+        var $feed = $te.find('.Safecloud_drop_activity');
+        if ($feed.length && s.activity) {
+            var html = s.activity.slice().reverse().map(function (a) {
+                var t = new Date(a.t).toLocaleTimeString();
+                var what = a.kind;
+                if (a.bytes) { what += ' ' + (a.bytes / 1024).toFixed(1) + ' KB'; }
+                if (a.kind === 'get' && a.paid) { what += ' · paid'; }
+                return '<li><span class="t">' + t + '</span> ' + what + '</li>';
+            }).join('');
+            if ($feed.data('html') !== html) {
+                $feed.data('html', html).html(html);
+            }
+        }
+
+        // Served-rate sparkline (last 60 samples)
+        tool._spark = tool._spark || [];
+        var last = tool._sparkLastServed || 0;
+        tool._spark.push(Math.max(0, (s.servedBytes || 0) - last));
+        tool._sparkLastServed = s.servedBytes || 0;
+        if (tool._spark.length > 60) { tool._spark.shift(); }
+        var $spark = $te.find('.Safecloud_drop_spark');
+        if ($spark.length) {
+            var max = Math.max.apply(null, tool._spark.concat([1]));
+            var pts = tool._spark.map(function (v, i) {
+                return (i * 2) + ',' + (20 - Math.round(v / max * 18));
+            }).join(' ');
+            $spark.html('<svg width="120" height="20" viewBox="0 0 120 20"'
+                + ' preserveAspectRatio="none"><polyline fill="none"'
+                + ' stroke="currentColor" stroke-width="1.5" points="'
+                + pts + '"/></svg>');
+        }
 
         var elapsed = s.uptime ? s.uptime / 1000 : 0;
         var h = Math.floor(elapsed / 3600);
@@ -170,10 +208,22 @@ Q.Tool.define('Safecloud/drop', function (options) {
         _set($te, '.Safecloud_drop_stat_uptime',
             [h, m, sec].map(function (n) { return String(n).padStart(2,'0'); }).join(':'));
 
-        // Claim button availability
-        var pending = s.safebuxEarned || 0;
-        var thresh  = parseFloat(Q.Config.get(['Safecloud','drop','claimThresholdSafebux'], '100000')) / 1e6;
-        $te.find('.Safecloud_drop_claim_btn').prop('disabled', pending < thresh);
+        // Claimable tokens (real, from IndexedDB) drive the claim button.
+        // Throttled: getPaymentStats hits IndexedDB.
+        var now = Date.now();
+        if (!tool._payStatsAt || now - tool._payStatsAt > 3000) {
+            tool._payStatsAt = now;
+            if (Q.Safecloud.Drops.getPaymentStats) {
+                Q.Safecloud.Drops.getPaymentStats(function (err, ps) {
+                    if (err || !ps) { return; }
+                    _set($te, '.Safecloud_drop_stat_pending',
+                        ps.tokens + ' token' + (ps.tokens === 1 ? '' : 's')
+                        + ' · ' + ps.totalSbux.toFixed(6) + ' SBUX');
+                    $te.find('.Safecloud_drop_claim_btn')
+                        .prop('disabled', !ps.claimable);
+                });
+            }
+        }
     },
 
     doClaim: function () {
@@ -239,6 +289,11 @@ Q.Template.set('Safecloud/drop',
                 ' (<span class="Safecloud_drop_stat_servedChunks">0</span>)</td></tr>' +
             '<tr><th>{{text.drop.Safebux}}</th>' +
                 '<td class="Safecloud_drop_stat_safebux a">0.000000 SBUX</td></tr>' +
+            '<tr><th>{{text.drop.Pending}}</th>' +
+                '<td class="Safecloud_drop_stat_pending">0 tokens · 0.000000 SBUX</td></tr>' +
+            '<tr><th>{{text.drop.Requests}}</th>' +
+                '<td><span class="Safecloud_drop_stat_requests">0</span>' +
+                ' <span class="Safecloud_drop_spark d"></span></td></tr>' +
             '<tr><th>{{text.drop.Uptime}}</th>' +
                 '<td class="Safecloud_drop_stat_uptime">00:00:00</td></tr>' +
             '<tr><th>{{text.drop.ProllyRoot}}</th>' +
@@ -247,6 +302,10 @@ Q.Template.set('Safecloud/drop',
         '<button class="Safecloud_drop_claim_btn Q_button" disabled>' +
             '{{text.drop.ClaimButton}}' +
         '</button>' +
+        '<div class="Safecloud_drop_activity_wrap">' +
+            '<div class="Safecloud_drop_activity_title">{{text.drop.Activity}}</div>' +
+            '<ul class="Safecloud_drop_activity"></ul>' +
+        '</div>' +
     '</div>' +
 
     '</div>'
