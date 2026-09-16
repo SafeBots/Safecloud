@@ -232,8 +232,12 @@ Q.exports(function (Q, _) {
             return _deriveSessionFromPrf(result.prfOutput);
         })
         .catch(function (err) {
-            // User cancelled, or authenticator error — fall back to anonymous
+            // User cancelled, or authenticator error — fall back to anonymous.
+            // Logged with .stack: this catch also swallows non-WebAuthn bugs
+            // further down the chain (e.g. inside _generateAnonymousSession),
+            // and the message alone isn't enough to tell those apart.
             Q.log('Q.Safecloud.Drops: WebAuthn failed (' + err.message + '), using anonymous session', 'Safecloud');
+            if (err.stack) { console.warn(err.stack); }
             return _generateAnonymousSession();
         });
     }
@@ -256,8 +260,10 @@ Q.exports(function (Q, _) {
         // on a new device, the authenticator returns the existing credential
         // rather than creating a new one — so PRF output stays the same.
         var userHandle = ((Q.info && Q.info.app) || location.hostname);
-        var loggedInId = Q.Users && Q.Users.loggedInUser && Q.Users.loggedInUser()
-            ? Q.Users.loggedInUser().id : null;
+        // Q.Users.loggedInUser is a property (a Q.Users.User instance, or
+        // null/undefined when signed out) — not a method.
+        var loggedInId = (Q.Users && Q.Users.loggedInUser)
+            ? Q.Users.loggedInUser.id : null;
         if (loggedInId) { userHandle += ':' + loggedInId; }
         userHandle += ':safecloud-drop';
 
@@ -395,12 +401,14 @@ Q.exports(function (Q, _) {
         //   delegate(rawSecret, 'safecloud.drop.identity')  →  identitySecret
         //     internalKeypair(identitySecret, 'EIP712')  →  stable EVM address
         //     internalKeypair(identitySecret, 'ES256')   →  stable P-256 signing key
+        var delSecret;
         return Q.Crypto.delegate({
             rootSecret: prfOutput,
             label:      'safecloud.drop.identity',
             context:    '{}',
             format:     'ES256'
         }).then(function (del) {
+            delSecret = del.secret;
             return Promise.all([
                 Q.Crypto.internalKeypair({ secret: del.secret, format: 'EIP712' }),
                 Q.Crypto.internalKeypair({ secret: del.secret, format: 'ES256' })
@@ -434,7 +442,7 @@ Q.exports(function (Q, _) {
                     sig: []
                 };
 
-                return Q.Crypto.OpenClaim.sign(claim, del.secret)
+                return Q.Crypto.OpenClaim.sign(claim, delSecret)
                     .then(function (signedClaim) {
                         sessionStorage.setItem('Q.Safecloud.Drops.delegation', JSON.stringify({
                             exp:   exp,

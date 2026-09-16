@@ -10,7 +10,7 @@
  * because this module is loaded once.
  */
 
-Q.exports(function (Q) {
+Q.exports(function () {
 
     var _ = {};
 
@@ -222,7 +222,7 @@ Q.exports(function (Q) {
         return diff.reduce(function (prev, entry) {
             return prev.then(function (cur) {
                 return entry.added
-                    ? Prolly.insert(cur, { key: entry.cid, value: entry.cid }, store)
+                    ? Prolly.set(cur, entry.cid, entry.cid, store)
                     : Prolly.delete(cur, entry.cid, store);
             });
         }, Promise.resolve(root));

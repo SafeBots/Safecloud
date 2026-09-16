@@ -5,6 +5,26 @@
 (function (Q, $) {
 
 /**
+ * Q.Config is a Node.js/PHP server-side concept — there is no browser
+ * equivalent anywhere in the Qbix platform's own client-side Q.js. Every
+ * Safecloud browser file (Drops, Client, Jets) was written assuming one
+ * exists, calling Q.Config.get(path, default) and expecting the default
+ * to be used when unconfigured — instead every call threw "Cannot read
+ * properties of undefined (reading 'get')", which is the root cause behind
+ * every "WebAuthn failed" / "Drop auto-init failed" error with that message.
+ * None of the config paths Safecloud reads client-side (storageGB,
+ * sessionExpDays, claimBatchSize, etc.) are currently embedded into the
+ * page, so this always returns the caller's own default — same effective
+ * behavior the code already expected, just without throwing first.
+ * @property Q.Config
+ */
+if (!Q.Config) {
+    Q.Config = {
+        get: function (path, def) { return def; }
+    };
+}
+
+/**
  * Text for Safecloud plugin, will be overridden by loaded language file
  * @property Q.text.Safecloud
  * @type {Object}

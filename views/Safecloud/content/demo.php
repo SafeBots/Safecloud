@@ -17,10 +17,10 @@
   <div class="Safecloud_demo_columns">
 
     <div class="Safecloud_demo_upload_col">
-      <?php echo Q_Html::tag('div', Q_Html::toolAttributes('Safecloud/upload', array(
+      <?php echo Q::tool('Safecloud/upload', array(
           'jetUrl' => $jetUrl,
           'accept' => 'video/*,audio/*,image/*'
-      ))); ?>
+      )); ?>
     </div>
 
     <div class="Safecloud_demo_video_col">
@@ -31,7 +31,7 @@
           $videoAttrs['rootCid'] = $rootCid;
           // rootKey lives in JS (URL hash), not PHP
       }
-      echo Q_Html::tag('div', Q_Html::toolAttributes('Safecloud/video', $videoAttrs));
+      echo Q::tool('Safecloud/video', $videoAttrs);
       ?>
     </div>
 

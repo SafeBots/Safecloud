@@ -53,7 +53,7 @@ Q.page('Safecloud/demo', function () {
         Q.Safecloud.Drops.init({ jetUrl: jetUrl }, function (err) {
             if (err) {
                 _identitiesInitialized = false; // allow retry
-                console.warn('Safecloud/demo: Drop auto-init:', err.message || err);
+                console.warn('Safecloud/demo: Drop auto-init:', err.message || err, err.stack || '');
             }
         });
         Q.Safecloud.Client.init({ interactive: true }, function (err, r) {
@@ -181,6 +181,10 @@ Q.page('Safecloud/demo', function () {
             if (!Q.Safecloud || !Q.Safecloud.Jets ||
                 typeof Q.Safecloud.Jets.getCloudStats !== 'function') { return; }
             var s = Q.Safecloud.Jets.getCloudStats();
+            // getCloudStats is a Q.Method shim — its first call (before the
+            // lazy-loaded implementation resolves) returns a Promise, not
+            // the stats object. Skip this tick rather than throw.
+            if (!s || typeof s.fetchedMB !== 'number') { return; }
             div.textContent =
                 'Fetched ' + s.fetchedMB.toFixed(2) + ' MB · '
                 + 'Uploaded ' + s.uploadedMB.toFixed(2) + ' MB · '

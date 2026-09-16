@@ -152,8 +152,10 @@ Q.exports(function (Q, _) {
         crypto.getRandomValues(challenge);
 
         var userHandle = ((Q.info && Q.info.app) || location.hostname);
-        var loggedInId = Q.Users && Q.Users.loggedInUser && Q.Users.loggedInUser()
-            ? Q.Users.loggedInUser().id : null;
+        // Q.Users.loggedInUser is a property (a Q.Users.User instance, or
+        // null/undefined when signed out) — not a method.
+        var loggedInId = (Q.Users && Q.Users.loggedInUser)
+            ? Q.Users.loggedInUser.id : null;
         if (loggedInId) { userHandle += ':' + loggedInId; }
         userHandle += ':safecloud-cloud';
 

@@ -28,6 +28,40 @@
  */
 
 var Q         = require('Q');
+
+// Q.Data — same missing-wiring bug as Q.Crypto below: classes/Q/Data.js
+// fully implements canonicalize/RAWtoDER/DERToRAW/digest/etc. but never
+// self-attaches to the global Q.Data, and nothing else requires it either.
+// Q.Crypto/Crypto.js only keeps a private local reference to it, which does
+// NOT satisfy Client.js's own top-level `var Data = Q.Data;` capture (below)
+// or OpenClaim.js's runtime `Q.Data.canonicalize(...)` calls — both need the
+// global. Must run before require('./Client').
+if (!Q.Data) {
+    Q.Data = require('Q/Data');
+}
+
+// Q.Crypto / Q.Crypto.OpenClaim / Q.Crypto.OpenClaim.EVM — nothing in the
+// platform ever requires classes/Q/Crypto.js on its own, so Q.Crypto was
+// always undefined server-side, even though the file fully implements
+// ES256/EIP712 sign/verify/delegate. Client.js (required below) captures
+// `Q.Crypto` into a top-level local var at its own require-time, so this
+// must run first, before require('./Client'). Without it, every delegation
+// check in this file (and in Client.js) throws "Cannot read properties of
+// undefined (reading 'verify'/'OpenClaim')".
+if (!Q.Crypto) {
+    Q.Crypto = require('Q/Crypto');
+}
+if (!Q.Crypto.OpenClaim) {
+    require('Q/Crypto/OpenClaim'); // self-attaches Q.Crypto.OpenClaim
+}
+if (!Q.Crypto.OpenClaim.EVM) {
+    try {
+        require('Q/Crypto/OpenClaim/EVM'); // self-attaches Q.Crypto.OpenClaim.EVM
+    } catch (e) {
+        // EVM payment-token verification unavailable — non-fatal, see below
+    }
+}
+
 var ethers;
 try {
     ethers = require('ethers');
@@ -45,15 +79,19 @@ var express   = require('express');
 // Server-side Safe layer helpers (same plugin, sibling files)
 var Safecloud_Client = require('./Client');
 var Safecloud_Drops  = require('./Drops');
-var JetSwarm         = require('./JetSwarm');
 
-// Q.Crypto.OpenClaim.EVM — load lazily so Jets works without it (Phase 3)
+// JetSwarm (Jet-to-Jet peering) is optional/experimental (Safecloud.swarm.enabled,
+// default false) and depends on hyperswarm, which pulls in the native udx-native
+// addon. That native addon can fail to load (missing prebuilt binary for this
+// platform, no build toolchain, etc.) — since swarm is opt-in, that failure must
+// not take down the rest of Safecloud (ethers, ES256/EIP712, single-Jet mode).
+var JetSwarm;
 try {
-    var _OCPEvm = Q.Crypto.OpenClaim.EVM;
-    if (Q.Crypto && !Q.Crypto.OpenClaim) { Q.Crypto.OpenClaim = {}; }
-    if (Q.Crypto && Q.Crypto.OpenClaim)  { Q.Crypto.OpenClaim.EVM = _OCPEvm; }
-} catch(e) {
-    // Q.Crypto.OpenClaim.EVM not available — payment sig verification skipped
+    JetSwarm = require('./JetSwarm');
+} catch (e) {
+    JetSwarm = null;
+    Q.log('Q.Safecloud.Jets: JetSwarm unavailable (' + e.message + ') — '
+        + 'swarm/peering disabled; single-Jet mode is unaffected', 'Safecloud');
 }
 
 // Platform dependencies — loaded lazily where noted
@@ -1047,16 +1085,35 @@ Safecloud_Jets.listen = function (options) {
             var newWallet = ethers.Wallet.createRandom();
             var appJsonPath = Q.app.DIR + '/local/app.json';
             var fs2 = require('fs');
-            var appJson = {};
-            try { appJson = JSON.parse(fs2.readFileSync(appJsonPath, 'utf8')); }
-            catch (eRead) { /* file may not exist yet */ }
-            appJson.Safecloud = appJson.Safecloud || {};
-            appJson.Safecloud.jet = appJson.Safecloud.jet || {};
-            if (!appJson.Safecloud.jet.privateKey) {
-                appJson.Safecloud.jet.privateKey = newWallet.privateKey;
-                appJson.Safecloud.jet.address    = newWallet.address;
-                fs2.writeFileSync(appJsonPath,
-                    JSON.stringify(appJson, null, '\t'), { mode: 0o600 });
+            var jsonc = require('jsonc-parser');
+            var existingText = '{}';
+            try { existingText = fs2.readFileSync(appJsonPath, 'utf8'); }
+            catch (eRead) { /* file doesn't exist yet — fine, we'll create it */ }
+
+            // Qbix app.json files commonly contain // and /* */ comments, which
+            // JSON.parse rejects. jsonc-parser tolerates those for reading, and its
+            // modify()/applyEdits() pair patches just the one path we care about —
+            // every other key, comment, and formatting choice in the file survives
+            // untouched. This is much safer than parse-mutate-stringify, which would
+            // silently destroy the rest of the file's content on any parse hiccup.
+            var parseErrors = [];
+            var current = jsonc.parse(existingText, parseErrors, { allowTrailingComma: true });
+            if (parseErrors.length) {
+                throw new Error('local/app.json has invalid JSON syntax near offset '
+                    + parseErrors[0].offset + ' — fix it manually, then restart, '
+                    + 'so Safecloud can persist the generated wallet there');
+            }
+            var existingPrivateKey = current && current.Safecloud
+                && current.Safecloud.jet && current.Safecloud.jet.privateKey;
+            if (!existingPrivateKey) {
+                var formattingOptions = { tabSize: 4, insertSpaces: false, eol: '\n' };
+                var updatedText = jsonc.applyEdits(existingText, jsonc.modify(
+                    existingText, ['Safecloud', 'jet', 'privateKey'],
+                    newWallet.privateKey, { formattingOptions: formattingOptions }));
+                updatedText = jsonc.applyEdits(updatedText, jsonc.modify(
+                    updatedText, ['Safecloud', 'jet', 'address'],
+                    newWallet.address, { formattingOptions: formattingOptions }));
+                fs2.writeFileSync(appJsonPath, updatedText, { mode: 0o600 });
                 Q.Config.set(['Safecloud', 'jet', 'privateKey'], newWallet.privateKey);
                 Q.Config.set(['Safecloud', 'jet', 'address'],    newWallet.address);
                 Q.log('════════════════════════════════════════════════════', 'Safecloud');
@@ -1340,11 +1397,25 @@ Safecloud_Jets.listen = function (options) {
     });
 
     // ── 2. socket.io via Users.Socket.listen ─────────────────────────────────
+    // Must attach to the app's public-facing server (same host:port Streams.js
+    // and Users.js use for the "/Q" namespace), not the Q/nodeInternal default
+    // that a bare Q.listen()/Users.Socket.listen() call would resolve to —
+    // otherwise browsers can never reach the "/Safecloud/cloud" namespace and
+    // get "Invalid namespace", even though the namespace really did register
+    // (just on a server nothing outside 127.0.0.1 can connect to).
     var Users;
     try { Users = Q.require('Users'); } catch (e) {
         throw new Error('Q.Safecloud.Jets.listen: requires the Users plugin. ' + e.message);
     }
-    var socket = Users.Socket.listen(options);
+    var pubHost = Q.Config.get(['Safecloud', 'node', 'host'],
+        Q.Config.get(['Q', 'node', 'host'], null));
+    var pubPort = Q.Config.get(['Safecloud', 'node', 'port'],
+        Q.Config.get(['Q', 'node', 'port'], null));
+    var socket = Users.Socket.listen(Q.extend({
+        host:  pubHost,
+        port:  pubPort,
+        https: Q.Config.get(['Q', 'node', 'https'], false) || {}
+    }, options));
 
     // ── 3. /Safecloud/ namespace handlers ──────────────────────────────────────────
     socket.io.of('/Safecloud/cloud').on('connection', function (client) {
@@ -1371,7 +1442,7 @@ Safecloud_Jets.listen = function (options) {
                     handler(payload, ack);
                 } catch (e) {
                     Q.log('Q.Safecloud.Jets: handler ' + event + ' threw: '
-                        + (e && e.message), 'Safecloud');
+                        + (e && e.message) + '\n' + (e && e.stack), 'Safecloud');
                     if (typeof ack === 'function') {
                         ack({ error: { code: 'InternalError',
                                        message: 'request could not be processed' } });
@@ -1478,8 +1549,17 @@ Safecloud_Jets.listen = function (options) {
         });
 
         // ── Transport disconnect ──────────────────────────────────────────────
-        client.on('disconnect', function () {
+        client.on('disconnect', function (reason) {
+            Q.log('Safecloud client disconnected: ' + client.id
+                + (userId ? ' user:' + userId : ' (anon)')
+                + ' — reason: ' + reason, 'Safecloud');
             _handleClientDisconnect(client);
+        });
+
+        client.on('disconnecting', function (reason) {
+            Q.log('Safecloud client disconnecting: ' + client.id
+                + ' — reason: ' + reason + ', rooms: '
+                + JSON.stringify(Array.from(client.rooms || [])), 'Safecloud');
         });
     });
 
@@ -1590,10 +1670,19 @@ function _registerDrop(client, userId, payload, ack,
     var isReconnect = !!existing;
 
     var drop = existing || {};
+    // client (a socket.io Socket instance) is a deeply circular object graph
+    // (socket -> namespace -> every connected socket -> server -> every
+    // namespace -> ...). Q.isPlainObject() treats any plain-ish class
+    // instance as copyable, and Q.extend's internal Q.copy() recursion has
+    // an off-by-one (levels defaults to 0, but still computes levels-1 = -1,
+    // which stays truthy forever) that makes its depth limit never actually
+    // stop it — so putting a live socket through Q.extend's value-copying
+    // path recurses until the stack overflows. Assign it directly instead;
+    // we want the same live reference here, never a copy.
+    drop.socket   = client;
+    drop.socketId = client.id;
     Q.extend(drop, {
         dropId:           dropId,
-        socketId:         client.id,
-        socket:           client,
         clientId:         payload.clientId || null,
         userId:           userId,
         evmAddress:       evmAddress,
@@ -2234,6 +2323,12 @@ function _initSwarm(options) {
     var swarmEnabled = Q.Config.get(['Safecloud', 'swarm', 'enabled'], false);
     if (!swarmEnabled) { return; }
 
+    if (!JetSwarm) {
+        Q.log('Q.Safecloud.Jets: Safecloud.swarm.enabled is true but JetSwarm '
+            + 'failed to load (see earlier warning) — swarm stays disabled', 'Safecloud');
+        return;
+    }
+
     var seedHex   = Q.Config.get(['Safecloud', 'swarm', 'seed'], null);
     var seed      = seedHex ? Buffer.from(seedHex, 'hex') : null;
     if (!seed) {
@@ -2277,6 +2372,7 @@ function _initSwarm(options) {
 }
 
 function _refreshSwarmRanges() {
+    if (!JetSwarm) { return; }
     var totalChunks = 0;
     Object.values(Safecloud_Jets.drops || {}).forEach(function (drop) {
         if (drop.used) { totalChunks += Math.ceil(drop.used / (256 * 1024)); }
@@ -2287,7 +2383,7 @@ function _refreshSwarmRanges() {
 }
 
 function _handleSubtreeGet_step4(cids, payload, grant, ack, _attachProofsAndAck) {
-    var swarmEnabled = Q.Config.get(['Safecloud', 'swarm', 'enabled'], true);
+    var swarmEnabled = JetSwarm && Q.Config.get(['Safecloud', 'swarm', 'enabled'], true);
 
     Safecloud_Jets.selectDrops(cids, { forGet: true }).then(function (drops) {
         if (drops.length) {
@@ -2338,6 +2434,10 @@ function _getManifestPrice(rootCid) {
 }
 
 function _swarmFallback(cids, grant, ack, _attachProofsAndAck) {
+    if (!JetSwarm) {
+        return ack && ack({ error: { code: 'ServiceUnavailable',
+            message: 'No local Drops could serve the requested chunks' } });
+    }
     Q.log('Q.Safecloud.Jets: local miss on ' + cids.length + ' CIDs — trying JetSwarm', 'Safecloud');
     JetSwarm.fetchChunks(cids, grant).then(function (result) {
         var chunks = result.chunks;

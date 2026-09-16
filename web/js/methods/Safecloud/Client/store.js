@@ -54,13 +54,16 @@ Q.exports(function (Q, _) {
             rootKeyPromise = Promise.resolve(fresh);
         }
 
+        console.warn('Safecloud/store: step 1 — rootKey resolving...');
         var _promise = rootKeyPromise.then(function (rootKey) {
+            console.warn('Safecloud/store: step 1 done — rootKey resolved');
 
             // ── Steps 2–3: derive roots and keypairs ──────────────────────
             return Promise.all([
                 _.deriveEncryptionRoot(rootKey),
                 _.deriveAccessRootBytes(rootKey)
             ]).then(function (roots) {
+                console.warn('Safecloud/store: step 2 done — encRoot/accRoot derived');
                 var encRoot = roots[0].secret;
                 var accRoot = roots[1].secret;
 
@@ -68,14 +71,17 @@ Q.exports(function (Q, _) {
                     Q.Crypto.internalKeypair({ secret: encRoot, format: 'ES256' }),
                     Q.Crypto.internalKeypair({ secret: accRoot, format: 'ES256' })
                 ]).then(function (keypairs) {
+                    console.warn('Safecloud/store: step 3 done — encKP/accKP derived');
                     var encKP = keypairs[0];
                     var accKP = keypairs[1];
 
                     // ── Step 4: Blob → chunks ────────────────────────────
                     return _.blobToBuffer(file.data).then(function (buffer) {
+                        console.warn('Safecloud/store: step 4 done — blob read, ' + buffer.byteLength + ' bytes');
                         var chunkBuffers = _.chunkify(buffer, chunkSize);
                         var chunkCount   = chunkBuffers.length;
                         var fileSize     = buffer.byteLength;
+                        console.warn('Safecloud/store: step 5 — ' + chunkCount + ' chunks to encrypt');
 
                         // ── Step 5: compute tree shape ────────────────────
                         var tp        = _.treeParams(chunkCount, treeN);
@@ -133,6 +139,7 @@ Q.exports(function (Q, _) {
                             }); // encChunks.map
 
                             return Promise.all(encPromises).then(function (encChunks) {
+                                console.warn('Safecloud/store: step 6 done — all ' + encChunks.length + ' chunks encrypted');
                                 var dataCids = encChunks.map(function (c) { return c.cid; });
 
                                 // ── Step 7: build N-ary Merkle tree ──────
@@ -173,6 +180,7 @@ Q.exports(function (Q, _) {
                                 }
 
                                 return indexPromise.then(function (indexFork) {
+                                    console.warn('Safecloud/store: step 8 done — index track ' + (hasIndex ? 'encrypted' : 'skipped'));
                                     if (indexFork) { trackCids.index = [indexFork.cid]; }
 
                                     // Build the actual Merkle root
@@ -199,6 +207,8 @@ Q.exports(function (Q, _) {
                                         rootCid = 'bprovisional' + h.toString(16).padStart(8,'0') + allCids2.length.toString(16);
                                     }
 
+                                    console.warn('Safecloud/store: step 7 done — rootCid computed: ' + rootCid);
+
                                     // ── Step 9: binding proof ─────────────
                                     var encPubB64 = Q.Data.toBase64(encKP.publicKey);
                                     var accPubB64 = Q.Data.toBase64(accKP.publicKey);
@@ -222,6 +232,8 @@ Q.exports(function (Q, _) {
                                         },
                                         format: 'ES256'
                                     }).then(function (bindingProof) {
+                                        console.warn('Safecloud/store: step 9 done — binding proof signed. '
+                                            + 'Calling Jets.put for ' + encChunks.length + ' data chunk(s)...');
 
                                         // ── Steps 10-11: upload via Jets ──
                                         // Upload grants are empty — server allows anonymous
@@ -271,6 +283,8 @@ Q.exports(function (Q, _) {
                                         }
 
                                         return Promise.all(putPromises).then(function () {
+                                            console.warn('Safecloud/store: steps 10-11 done — Jets.put resolved for all tracks. '
+                                                + 'Encrypting+uploading metadata...');
                                             // ── Step 12a: metadata fork ───────────────────────────
                                             // Encrypt and upload a single metadata chunk at track/meta.
                                             // Contains pricing, creator info, and content metadata.
@@ -343,6 +357,7 @@ Q.exports(function (Q, _) {
 
                                             // ── Step 12: manifest ─────────
                                             return metaUploadPromise.then(function (metaCid) {
+                                            console.warn('Safecloud/store: step 12a done — metadata uploaded, metaCid: ' + metaCid);
                                             var manifest = _.buildManifest({
                                                 rootCid:                 rootCid,
                                                 treeN:                   treeN,
@@ -373,6 +388,7 @@ Q.exports(function (Q, _) {
                                                 manifest: manifest,
                                                 rootKey:  Q.Data.toBase64(rootKey)
                                             };
+                                            console.warn('Safecloud/store: step 12 done — manifest built, store() complete');
                                             if (callback) { callback(null, result); }
                                             return result;
                                             }); // metaUploadPromise.then

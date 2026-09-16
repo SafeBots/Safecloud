@@ -32,7 +32,7 @@
  *   Q.Crypto.internalKeypair(opts) → Promise<{format,privateKey,publicKey,[address]}>
  */
 
-Q.exports(function (Q) {
+Q.exports(function () {
 
     var _ = {};
 

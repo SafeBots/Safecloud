@@ -1,13 +1,14 @@
 {
   "name": "safecloud",
   "version": "1.0.0-beta.3",
-  "description": "Safecloud Jet server \u2014 distributed encrypted storage network",
+  "description": "Safecloud Jet server — distributed encrypted storage network",
   "main": "classes/Safecloud.js",
   "dependencies": {
     "ethers": "^6.17.0",
     "express": "^4.18.0",
     "hypercore-crypto": "^3.4.0",
     "hyperswarm": "^4.17.0",
+    "jsonc-parser": "^3.3.1",
     "socket.io": "^4.6.0"
   },
   "engines": {
@@ -23,10 +24,10 @@
     "test:everything": "npm run test:all && npm run test:evm"
   },
   "devDependencies": {
+    "fake-indexeddb": "^6.0.0",
+    "ganache": "^7.9.2",
     "socket.io": "^4.7.5",
     "socket.io-client": "^4.7.5",
-    "fake-indexeddb": "^6.0.0",
-    "solc": "^0.8.26",
-    "ganache": "^7.9.2"
+    "solc": "^0.8.26"
   }
 }

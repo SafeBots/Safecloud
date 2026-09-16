@@ -8,7 +8,7 @@
  * Queued calls made before connect() resolves are drained automatically.
  */
 
-Q.exports(function (Q) {
+Q.exports(function () {
 
     var _ = {};
 
@@ -159,10 +159,14 @@ Q.exports(function (Q) {
         var jitter  = baseMs * 0.3 * (Math.random() * 2 - 1);
         var delay   = Math.round(baseMs + jitter);
 
+        console.warn('Q.Safecloud.Jets: reconnect attempt ' + (attempt + 1)
+            + ' scheduled in ' + delay + 'ms');
+
         _._state.reconnectTimer = setTimeout(function () {
             _._state.reconnectTimer   = null;
             _._state.reconnectAttempt = attempt + 1;
             _._state.connectingPromise = null;
+            console.warn('Q.Safecloud.Jets: reconnecting now (attempt ' + (attempt + 1) + ')');
             Q.Safecloud.Jets.connect();
         }, delay);
     };
