@@ -180,8 +180,41 @@ Q.exports(function (Q, _) {
         })
 
         // Step 5 — reassemble
+        //
+        // For video uploaded through buildVideoIndex.js, track/data chunks
+        // are ONLY the fragmented-MP4 body (moof+mdat pairs) — the ftyp+moov
+        // init segment is deliberately NOT duplicated into them; it's stored
+        // once, separately, in the encrypted index track, and served on its
+        // own by the service-worker HLS path (serveInitSegment/EXT-X-MAP).
+        // Concatenating just the data chunks reproduces a byte-valid
+        // "headerless" fragment stream, not a byte-valid standalone MP4 —
+        // confirmed live: the resulting Blob failed with
+        // "FFmpegDemuxer: open context failed" / NotSupportedError, since
+        // no player can open an MP4 with no ftyp/moov at all. Any consumer
+        // of a full-file Blob (this method's blob-fallback caller in
+        // Client/stream.js, plus direct downloads) needs the init segment
+        // prepended when fetching from the start of an indexed video.
         .then(function (plaintexts) {
-            var blob = new Blob(plaintexts, { type: manifest.type || '' });
+            var hasIndex = manifest.tracks && manifest.tracks.indexOf('index') >= 0;
+            if (!hasIndex || start !== 0) {
+                return plaintexts;
+            }
+            return Q.Safecloud.Client.fetchIndex(manifest, capability, options)
+                .then(function (index) {
+                    if (!index || !index.initSegment) { return plaintexts; }
+                    var initBytes = Q.Data.fromBase64(index.initSegment);
+                    return [initBytes].concat(plaintexts);
+                })
+                .catch(function () {
+                    // No index track / fetch failed — fall back to the
+                    // data-only concatenation rather than blocking playback
+                    // entirely (matches this method's general best-effort
+                    // posture elsewhere, e.g. Merkle.verify unavailable).
+                    return plaintexts;
+                });
+        })
+        .then(function (parts) {
+            var blob = new Blob(parts, { type: manifest.type || '' });
             if (callback) { callback(null, blob); }
             return blob;
         });

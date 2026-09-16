@@ -36,7 +36,25 @@ Q.exports(function (Q, _) {
                 return new Promise(function (resolve) {
                     // Already active on another tab? controllerchange may never fire.
                     // Resolve after a timeout so streaming isn't blocked.
-                    var timer = setTimeout(resolve, 3000);
+                    //
+                    // 3000ms was too tight: demo.js calls this at page load as
+                    // a warm-up (fire-and-forget), and _streamSW re-calls it
+                    // (idempotent, same cached promise) right when playback
+                    // is actually requested — but a FAST/small upload (e.g.
+                    // ~10MB / 18 chunks) can finish encrypting+uploading in
+                    // well under 3s, meaning register→install→activate→
+                    // clients.claim() genuinely hadn't finished yet, this
+                    // promise gave up right on schedule, and playback fell
+                    // back to the (non-HLS) blob path — confirmed live: the
+                    // exact "SW not controlling page, falling back" log line
+                    // fired for a fast upload even with the warm-up call in
+                    // place. Slow uploads (which is why the race was ever
+                    // survivable at all before) had accidentally been giving
+                    // this enough head start; fast ones hadn't. 8000ms
+                    // covers realistic activation latency with margin, at
+                    // the cost of a longer wait only in the rare case the SW
+                    // truly never takes control.
+                    var timer = setTimeout(resolve, 8000);
 
                     navigator.serviceWorker.addEventListener('controllerchange', function onCC() {
                         navigator.serviceWorker.removeEventListener('controllerchange', onCC);
