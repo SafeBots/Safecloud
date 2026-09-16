@@ -163,8 +163,13 @@ Q.exports(function (Q, _) {
 
     function _storeToken(db, token) {
         if (!token) { return Promise.resolve(); }
-        // Hash with Q.Data.canonicalize (RFC 8785) for deterministic dedup key
-        var canonical = Q.Data.canonicalize(token);
+        // Hash with Q.Data.canonicalize (RFC 8785) for deterministic dedup key.
+        // Q.Data.canonicalize is a lazily-loaded Q.Method — on its first-ever
+        // call in a page's lifetime it can return a bare Promise instead of
+        // the real string (see the identical bug fixed in Client/store.js's
+        // index-track builder and Drops/_internal.js's signAnnounce), so this
+        // must be awaited rather than used synchronously.
+        return Promise.resolve(Q.Data.canonicalize(token)).then(function (canonical) {
         var encoded   = new TextEncoder().encode(canonical);
         return Q.Data.digest('SHA-256', encoded).then(function (hashBytes) {
             var tokenHash = Q.Data.toBase64(hashBytes);
@@ -181,5 +186,6 @@ Q.exports(function (Q, _) {
                 req.onerror   = function () { resolve(); };
             });
         });
+        }); // canonicalize.then
     }
 });

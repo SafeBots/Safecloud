@@ -517,6 +517,9 @@ Safecloud_Router.onDropRegistered = function (drop, prollyRoot) {
  */
 Safecloud_Router.onDropAnnounce = function (drop, diff) {
     if (!diff) { return; }
+    Q.log('Q.Safecloud.Router.onDropAnnounce: ' + drop.dropId + ' — '
+        + diff.length + ' diff entries, '
+        + diff.filter(function (e) { return e && e.added; }).length + ' added', 'Safecloud');
     diff.forEach(function (entry) {
         var rootCid = entry.cid;
         if (entry.added) {
@@ -580,6 +583,8 @@ Safecloud_Router.selectForGet = function (cid, options) {
 
     var coverage = _cidCoverage[cid];
     if (!coverage || !Object.keys(coverage).length) {
+        Q.log('Q.Safecloud.Router.selectForGet: NO coverage for cid ' + cid
+            + ' — known cids in _cidCoverage: ' + Object.keys(_cidCoverage).length, 'Safecloud');
         return Promise.resolve(null);
     }
 

@@ -121,11 +121,21 @@ Q.exports(function () {
     // 6. chunkify
     // ─────────────────────────────────────────────────────────────────────
 
-    _.chunkify = function (buffer, chunkSize) {
+    _.chunkify = function (buffer, chunkSizeOrBoundaries) {
         var total = buffer.byteLength, chunks = [];
         if (total === 0) { return [buffer.slice(0, 0)]; }
-        for (var off = 0; off < total; off += chunkSize) {
-            chunks.push(buffer.slice(off, Math.min(off + chunkSize, total)));
+        if (Array.isArray(chunkSizeOrBoundaries)) {
+            // GOP-aligned mode: one chunk per fragment, lengths precomputed
+            // by buildVideoIndex.js from real moof boundaries.
+            var off2 = 0;
+            chunkSizeOrBoundaries.forEach(function (len) {
+                chunks.push(buffer.slice(off2, off2 + len));
+                off2 += len;
+            });
+            return chunks;
+        }
+        for (var off = 0; off < total; off += chunkSizeOrBoundaries) {
+            chunks.push(buffer.slice(off, Math.min(off + chunkSizeOrBoundaries, total)));
         }
         return chunks;
     };
@@ -219,6 +229,11 @@ Q.exports(function () {
             name:                    p.name,
             type:                    p.type,
             tracks:                  p.tracks    || ['data'],
+            // Legacy/working fallback for locating the index track — see
+            // fetchIndex.js, which prefers Q.Data.Merkle.getNode(rootCid,
+            // ["track","index"]) but that method was never implemented, so
+            // this field is what actually resolves the index chunk today.
+            indexCid:                p.indexCid  || null,
             created:                 Math.floor(Date.now() / 1000),
             encryptionRootPublicKey: p.encryptionRootPublicKey,
             accessRootPublicKey:     p.accessRootPublicKey,
@@ -547,6 +562,282 @@ Q.exports(function () {
                 req.onsuccess = function () { resolve(); };
                 req.onerror   = function () { reject(req.error); };
             });
+        });
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 20. MP4 (ISO-BMFF) box-walk helpers — video index track support.
+    //
+    // These are pure functions with no ffmpeg/DOM dependency, used by
+    // Client/buildVideoIndex.js to slice a remuxed fragmented-MP4 byte
+    // stream (ftyp, moov, then repeated moof+mdat fragments — produced by
+    // `ffmpeg -movflags frag_keyframe+empty_moov+default_base_moof`) into:
+    //   - the init segment (everything before the first moof)
+    //   - one GOP-aligned chunk per moof+mdat fragment
+    //   - per-fragment timestamps (from tfdt, authoritative — not re-derived
+    //     via a second ffprobe pass)
+    //   - codec/width/height (from avcC/stsd directly, not ffmpeg log text)
+    //
+    // Scope is deliberately narrow: exactly one avc1 (H.264) video track,
+    // at most one mp4a (AAC) audio track. Anything else — multiple video
+    // tracks, HEVC/AV1/VP9, other audio codecs — must be rejected by the
+    // caller (buildVideoIndex.js) rather than best-effort parsed.
+    // ─────────────────────────────────────────────────────────────────────
+
+    function _u32(view, off) { return view.getUint32(off, false); }
+    function _u64(view, off) {
+        // Safe as a Number for any realistic file (< 2^53 bytes).
+        return view.getUint32(off, false) * 4294967296 + view.getUint32(off + 4, false);
+    }
+    function _str4(view, off) {
+        return String.fromCharCode(
+            view.getUint8(off), view.getUint8(off + 1),
+            view.getUint8(off + 2), view.getUint8(off + 3)
+        );
+    }
+
+    /**
+     * Walk sibling boxes in [start, end) of an ArrayBuffer. Returns
+     * [{ type, start, end, bodyStart }] — bodyStart is where box-specific
+     * content begins (after the 8- or 16-byte size+type header).
+     * Stops (without throwing) on any malformed box rather than looping
+     * forever or reading out of bounds.
+     */
+    _.walkBoxes = function (buffer, start, end) {
+        var view = new DataView(buffer);
+        var boxes = [];
+        var offset = start;
+        while (offset + 8 <= end) {
+            var size32 = _u32(view, offset);
+            var type   = _str4(view, offset + 4);
+            var bodyStart = offset + 8;
+            var size;
+            if (size32 === 1) {
+                if (offset + 16 > end) { break; }
+                size = _u64(view, offset + 8);
+                bodyStart = offset + 16;
+            } else if (size32 === 0) {
+                size = end - offset;
+            } else {
+                size = size32;
+            }
+            if (size < (bodyStart - offset) || offset + size > end) { break; }
+            boxes.push({ type: type, start: offset, end: offset + size, bodyStart: bodyStart });
+            offset += size;
+        }
+        return boxes;
+    };
+
+    _.walkTopLevelBoxes = function (buffer) {
+        return _.walkBoxes(buffer, 0, buffer.byteLength);
+    };
+
+    function _findBox(boxes, type) {
+        for (var i = 0; i < boxes.length; i++) {
+            if (boxes[i].type === type) { return boxes[i]; }
+        }
+        return null;
+    }
+
+    function _fullBoxVersion(view, box) { return view.getUint8(box.bodyStart); }
+
+    /**
+     * Parse moov's own mvhd (movie header — presentation-level, distinct
+     * from each track's mdhd) for the overall timescale/duration.
+     */
+    _.parseMvhd = function (buffer, moovBox) {
+        var view = new DataView(buffer);
+        var mvhd = _findBox(_.walkBoxes(buffer, moovBox.bodyStart, moovBox.end), 'mvhd');
+        if (!mvhd) { return null; }
+        var ver = _fullBoxVersion(view, mvhd);
+        if (ver === 1) {
+            var timescaleOff1 = mvhd.bodyStart + 4 + 8 + 8;
+            return {
+                timescale: _u32(view, timescaleOff1),
+                duration:  _u64(view, timescaleOff1 + 4)
+            };
+        }
+        var timescaleOff0 = mvhd.bodyStart + 4 + 4 + 4;
+        return {
+            timescale: _u32(view, timescaleOff0),
+            duration:  _u32(view, timescaleOff0 + 4)
+        };
+    };
+
+    /**
+     * Parse moov > trak[] to find exactly the tracks buildVideoIndex.js
+     * cares about. Returns { video: {trackId,timescale,codec,width,height}
+     * | null, audio: {trackId,timescale,codec} | null, ok, reason }.
+     * `ok` is false (with `reason`) the moment anything falls outside the
+     * documented v1 scope — caller must abort index-building in that case.
+     */
+    _.parseMoovTracks = function (buffer, moovBox) {
+        var view = new DataView(buffer);
+        var traks = _.walkBoxes(buffer, moovBox.bodyStart, moovBox.end)
+            .filter(function (b) { return b.type === 'trak'; });
+
+        var video = null, audio = null;
+        for (var i = 0; i < traks.length; i++) {
+            var trak = traks[i];
+            var trakChildren = _.walkBoxes(buffer, trak.bodyStart, trak.end);
+            var tkhd = _findBox(trakChildren, 'tkhd');
+            var mdia = _findBox(trakChildren, 'mdia');
+            if (!tkhd || !mdia) { continue; }
+
+            var tkhdVer   = _fullBoxVersion(view, tkhd);
+            // track_ID sits right after version/flags(4) + creation/modification time
+            // (4 bytes each in v0, 8 bytes each in v1).
+            var trackIdOff = tkhd.bodyStart + 4 + (tkhdVer === 1 ? 8 + 8 : 4 + 4);
+            var trackId = _u32(view, trackIdOff);
+
+            var mdiaChildren = _.walkBoxes(buffer, mdia.bodyStart, mdia.end);
+            var hdlr = _findBox(mdiaChildren, 'hdlr');
+            var mdhd = _findBox(mdiaChildren, 'mdhd');
+            var minf = _findBox(mdiaChildren, 'minf');
+            if (!hdlr || !mdhd || !minf) { continue; }
+
+            // hdlr: version/flags(4) + pre_defined(4) + handler_type(4 chars)
+            var handlerType = _str4(view, hdlr.bodyStart + 8);
+
+            var mdhdVer = _fullBoxVersion(view, mdhd);
+            // timescale sits after version/flags(4) + creation/modification time
+            // (4 bytes each in v0, 8 bytes each in v1).
+            var timescaleOff = mdhd.bodyStart + 4 + (mdhdVer === 1 ? 8 + 8 : 4 + 4);
+            var timescale = _u32(view, timescaleOff);
+
+            var stbl = _findBox(_.walkBoxes(buffer, minf.bodyStart, minf.end), 'stbl');
+            var stsd = stbl && _findBox(_.walkBoxes(buffer, stbl.bodyStart, stbl.end), 'stsd');
+            if (!stsd) { continue; }
+            // stsd: version/flags(4) + entry_count(4) + entries...
+            var entryCount = _u32(view, stsd.bodyStart + 4);
+            var entries = _.walkBoxes(buffer, stsd.bodyStart + 8, stsd.end);
+            if (entryCount !== 1 || entries.length !== 1) {
+                return { ok: false, reason: 'multiple sample entries in stsd (track ' + trackId + ')' };
+            }
+            var entry = entries[0];
+
+            if (handlerType === 'vide') {
+                if (video) { return { ok: false, reason: 'multiple video tracks' }; }
+                if (entry.type !== 'avc1') {
+                    return { ok: false, reason: 'unsupported video codec box: ' + entry.type };
+                }
+                var codecInfo = _.parseStsdCodec(buffer, entry);
+                if (!codecInfo) { return { ok: false, reason: 'could not parse avcC' }; }
+                video = {
+                    trackId: trackId, timescale: timescale,
+                    codec: codecInfo.codec, width: codecInfo.width, height: codecInfo.height
+                };
+            } else if (handlerType === 'soun') {
+                if (audio) { return { ok: false, reason: 'multiple audio tracks' }; }
+                if (entry.type !== 'mp4a') {
+                    return { ok: false, reason: 'unsupported audio codec box: ' + entry.type };
+                }
+                // AAC-LC covers the overwhelming majority of real encodes;
+                // a full esds DecoderSpecificInfo parse (to distinguish HE-AAC
+                // etc.) is out of scope for v1 — see Protocol.md discussion.
+                audio = { trackId: trackId, timescale: timescale, codec: 'mp4a.40.2' };
+            }
+            // Any other handler_type (e.g. subtitles) is simply ignored —
+            // it doesn't disqualify the file, it's just not indexed.
+        }
+
+        if (!video) { return { ok: false, reason: 'no avc1 video track found' }; }
+        return { ok: true, video: video, audio: audio };
+    };
+
+    /**
+     * Parse an avc1 VisualSampleEntry (the sole child of stsd for a video
+     * track) for width/height and the avc1.PPCCLL codec string, read
+     * directly from the nested avcC box's profile/compatibility/level
+     * bytes — deterministic, not inferred from ffmpeg log text.
+     */
+    _.parseStsdCodec = function (buffer, avc1Entry) {
+        var view = new DataView(buffer);
+        // VisualSampleEntry fixed layout: 6 reserved + 2 data_reference_index
+        // + 16 pre_defined/reserved + width(2) + height(2) at fixed offsets.
+        var width  = view.getUint16(avc1Entry.bodyStart + 24, false);
+        var height = view.getUint16(avc1Entry.bodyStart + 26, false);
+        // VisualSampleEntry body is 78 bytes before any nested boxes (avcC etc.)
+        var childrenStart = avc1Entry.bodyStart + 78;
+        var avcC = _findBox(_.walkBoxes(buffer, childrenStart, avc1Entry.end), 'avcC');
+        if (!avcC) { return null; }
+        // AVCDecoderConfigurationRecord: configurationVersion(1), then
+        // AVCProfileIndication, profile_compatibility, AVCLevelIndication.
+        var profile      = view.getUint8(avcC.bodyStart + 1);
+        var compat       = view.getUint8(avcC.bodyStart + 2);
+        var level        = view.getUint8(avcC.bodyStart + 3);
+        function hex2(n) { return ('0' + n.toString(16)).slice(-2); }
+        return {
+            width: width, height: height,
+            codec: 'avc1.' + hex2(profile) + hex2(compat) + hex2(level)
+        };
+    };
+
+    /**
+     * Read the baseMediaDecodeTime out of a single moof's traf matching
+     * trackId (a moof may carry traf boxes for more than one track —
+     * only the one for the requested track is used). Returns the raw
+     * value (still in that track's timescale units, not seconds) or null
+     * if no matching/parseable traf is found.
+     */
+    _.readTfdt = function (buffer, moofBox, trackId) {
+        var view  = new DataView(buffer);
+        var trafs = _.walkBoxes(buffer, moofBox.bodyStart, moofBox.end)
+            .filter(function (b) { return b.type === 'traf'; });
+
+        for (var i = 0; i < trafs.length; i++) {
+            var children = _.walkBoxes(buffer, trafs[i].bodyStart, trafs[i].end);
+            var tfhd = _findBox(children, 'tfhd');
+            var tfdt = _findBox(children, 'tfdt');
+            if (!tfhd || !tfdt) { continue; }
+            // tfhd: version/flags(4) + track_ID(4)
+            var thisTrackId = _u32(view, tfhd.bodyStart + 4);
+            if (thisTrackId !== trackId) { continue; }
+            var tfdtVer = _fullBoxVersion(view, tfdt);
+            return tfdtVer === 1
+                ? _u64(view, tfdt.bodyStart + 4)
+                : _u32(view, tfdt.bodyStart + 4);
+        }
+        return null;
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 21. ensureFFmpeg — lazy-load the vendored ffmpeg.wasm UMD bundle
+    // ─────────────────────────────────────────────────────────────────────
+    // ffmpeg.wasm is only needed to remux a video file into fragmented MP4
+    // for the video index track, so it's not part of the base page weight —
+    // same lazy-load-on-first-use shape as Jets/_internal.js's ensureEthers.
+    // The ~32MB WASM core is only fetched once ffmpeg.load() actually runs.
+    var _ffmpegPromise = null;
+    _.ensureFFmpeg = function () {
+        if (typeof FFmpegWASM !== 'undefined') { return Promise.resolve(FFmpegWASM); }
+        if (_ffmpegPromise) { return _ffmpegPromise; }
+        _ffmpegPromise = new Promise(function (resolve, reject) {
+            Q.addScript(Q.url('{{Safecloud}}/js/ffmpeg/ffmpeg.js'), function (err) {
+                if (err || typeof FFmpegWASM === 'undefined') {
+                    _ffmpegPromise = null;
+                    return reject(err || new Error('ffmpeg.wasm failed to load'));
+                }
+                resolve(FFmpegWASM);
+            });
+        });
+        return _ffmpegPromise;
+    };
+
+    /**
+     * Create and .load() a fresh FFmpeg instance pointed at the vendored
+     * core files. Callers should create one instance per remux and let it
+     * be garbage-collected afterward rather than keeping it around —
+     * ffmpeg.wasm's virtual FS holds file contents in Emscripten heap
+     * memory for the lifetime of the instance.
+     */
+    _.newFFmpeg = function () {
+        return _.ensureFFmpeg().then(function (FFmpegWASM) {
+            var ffmpeg = new FFmpegWASM.FFmpeg();
+            return ffmpeg.load({
+                coreURL: Q.url('{{Safecloud}}/js/ffmpeg/core/ffmpeg-core.js'),
+                wasmURL: Q.url('{{Safecloud}}/js/ffmpeg/core/ffmpeg-core.wasm')
+            }).then(function () { return ffmpeg; });
         });
     };
 

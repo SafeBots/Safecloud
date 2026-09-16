@@ -51,10 +51,12 @@ Drops.verifyAnnounce = function (announce, publicKey) {
         var spki = (buf.length === 65) ? _rawP256ToSpki(buf) : buf;
         var key  = crypto.createPublicKey({ key: spki, format: 'der', type: 'spki' });
 
-        // sign(null, ...) = raw bytes, no re-hashing — matches sign(null, ...) on signing side
-        // But WebCrypto ECDSA SHA-256 hashes the payload, so we must hash first
-        var digest = crypto.createHash('sha256').update(payload).digest();
-        return crypto.verify(null, digest, key, derSig);
+        // Pass the raw payload with algorithm 'sha256' so Node hashes it once,
+        // matching what WebCrypto's ECDSA+SHA-256 signed. The earlier
+        // verify(null, sha256(payload)) form hashed twice and rejected every
+        // announce a real Drop ever sent (see the identical fix in
+        // Q.Crypto.OpenClaim.verify's ES256 branch).
+        return crypto.verify('sha256', payload, key, derSig);
     } catch (e) {
         return false;
     }

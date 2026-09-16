@@ -190,6 +190,177 @@
         });
     }
 
+    // ── Jet HTTP base — where chunk-fetch requests go ────────────────────────
+    // Same normalization fetchJetFragment already does (wss:// -> https://).
+    var jetHttpBase = jetUrl ? jetUrl.replace(/^wss?:/, 'https:').replace(/\/$/, '') : null;
+
+    // ── Chunk fetch (HTTP) ────────────────────────────────────────────────────
+    // GET /Safecloud/cloud/subtree/{rootCid}?link=track/data/0/1 — a full
+    // leaf-depth link path resolves to exactly one chunk (see Protocol.md /
+    // classes/Safecloud/Jets.js _handleSubtreeGet's range-resolution logic).
+    // Returns { cid, iv, ciphertext, tag, proof } (all base64) or null.
+    function fetchChunkHttp(rootCid, link) {
+        if (!jetHttpBase) {
+            return Promise.reject(new Error(
+                'Safecloud/player: no Jet URL — pass ?jet=<url> in the embed link'));
+        }
+        var url = jetHttpBase + '/Safecloud/cloud/subtree/'
+            + rootCid + '?link=' + link.join('/');
+        return fetch(url).then(function (r) {
+            if (!r.ok) { throw new Error('subtree fetch failed: HTTP ' + r.status); }
+            return r.json();
+        }).then(function (data) {
+            if (data && data.error) {
+                throw new Error((data.error && data.error.message) || 'subtree fetch error');
+            }
+            return (data && data.chunks && data.chunks[0]) || null;
+        });
+    }
+
+    // Same N-ary tree path math as Client/_internal.js's chunkLinkPath —
+    // ported here because this player deliberately loads no Qbix framework.
+    function chunkLinkPath(absIndex, manifest) {
+        var treeN     = manifest.treeN     || 2;
+        var treeDepth = manifest.treeDepth
+            || Math.max(1, Math.ceil(Math.log(manifest.chunkCount || 1) / Math.log(treeN)));
+        var path = ['track', 'data'];
+        var n    = Math.pow(treeN, treeDepth);
+        var idx  = absIndex;
+        for (var d = 0; d < treeDepth; d++) {
+            n = n / treeN;
+            path.push(String(Math.floor(idx / n)));
+            idx = idx % n;
+        }
+        return path;
+    }
+
+    // ── Index track fetch + decrypt ───────────────────────────────────────────
+    // sw.js only ever decrypts DATA chunks (using the capability it's given
+    // at register time) — the index track is a separate encrypted chunk that
+    // must be fetched and decrypted independently, before registration, so
+    // its plaintext can be merged into the manifest as _index (what sw.js's
+    // serveMasterPlaylist/serveInitSegment actually read).
+    //
+    // Mirrors Q.Crypto.delegate's actual secret derivation (verified against
+    // plugins/Q/web/js/methods/Q/Crypto/delegate.js and Q/Data/{derive,hkdf}.js):
+    // secret = HKDF-SHA256(ikm, salt=SHA-256(""), info="q.crypto.delegate."+label, 32).
+    // The `context` argument Q.Crypto.delegate also takes only affects the
+    // signed statement/proof (irrelevant for a read-only decrypt), not the
+    // secret itself — so this needs only the label chain, not any signing.
+    function delegateSecret(parentSecretBytes, label) {
+        return hkdf(parentSecretBytes, 'q.crypto.delegate.' + label, 32);
+    }
+
+    function fetchAndDecryptIndex(rootCid, rootKeyBytes) {
+        return delegateSecret(rootKeyBytes, 'safecloud.encryption.root')
+            .then(function (encRoot) {
+                return delegateSecret(encRoot, 'safecloud.track.index');
+            })
+            .then(function (indexKeyBytes) {
+                return Promise.all([
+                    crypto.subtle.importKey(
+                        'raw', indexKeyBytes, { name: 'AES-GCM', length: 256 }, false, ['decrypt']),
+                    fetchChunkHttp(rootCid, ['track', 'index'])
+                ]);
+            })
+            .then(function (r) {
+                var cryptoKey = r[0], chunk = r[1];
+                if (!chunk) { throw new Error('index chunk unavailable'); }
+                var ct  = fromBase64(chunk.ciphertext);
+                var tag = fromBase64(chunk.tag);
+                var combined = new Uint8Array(ct.length + tag.length);
+                combined.set(ct, 0);
+                combined.set(tag, ct.length);
+                var aad = new TextEncoder().encode('safecloud.track.index');
+                return crypto.subtle.decrypt(
+                    { name: 'AES-GCM', iv: fromBase64(chunk.iv), additionalData: aad },
+                    cryptoKey, combined
+                );
+            })
+            .then(function (plaintextBuf) {
+                return JSON.parse(new TextDecoder().decode(plaintextBuf));
+            });
+    }
+
+    // ── Data-chunk prefetch loop ──────────────────────────────────────────────
+    // Referenced in sw.js's own doc comment ("Session cache populated by
+    // _prefetchLoop via postMessage") but never implemented anywhere — sw.js
+    // is purely passive, only ever decrypting/serving whatever chunks get
+    // pushed to it this way; nothing ever fetched them, which is why segments
+    // 503'd forever ("Segment not yet available") and playback never started.
+    //
+    // v1: fetch every chunk once, front-to-back, with bounded concurrency.
+    // Reasonable for VOD (every manifest here is #EXT-X-PLAYLIST-TYPE:VOD) —
+    // no seek-reprioritization yet (documented limitation, not attempted).
+    function prefetchLoop(videoId, manifest) {
+        var rootCid = manifest.rootCid;
+        var total   = manifest.chunkCount || 0;
+        var CONCURRENCY = 4;
+        var next   = 0;
+        var active = 0;
+        var stopped = false;
+
+        function pump() {
+            if (stopped) { return; }
+            while (active < CONCURRENCY && next < total) {
+                (function (segIndex) {
+                    active++;
+                    fetchChunkHttp(rootCid, chunkLinkPath(segIndex, manifest))
+                        .then(function (chunk) {
+                            active--;
+                            if (chunk && navigator.serviceWorker.controller) {
+                                navigator.serviceWorker.controller.postMessage({
+                                    type:       'Q.Safecloud.Client.segment',
+                                    videoId:    videoId,
+                                    version:    '',
+                                    segIndex:   segIndex,
+                                    ciphertext: chunk.ciphertext,
+                                    tag:        chunk.tag,
+                                    iv:         chunk.iv
+                                });
+                            }
+                            pump();
+                        })
+                        .catch(function () {
+                            // Best-effort: this segment stays unavailable —
+                            // sw.js keeps 503ing it, native HLS stalls/skips
+                            // rather than crashing. Other segments still load.
+                            active--;
+                            pump();
+                        });
+                })(next++);
+            }
+        }
+        pump();
+
+        return {
+            stop: function () { stopped = true; }
+        };
+    }
+
+    // ── hls.js (lazy-loaded, non-Safari only) ────────────────────────────────
+    // <video>.src = <m3u8 url> only works via native HLS support, which
+    // exists in Safari only — Chrome/Firefox/Edge have no built-in HLS
+    // parser at all, so without this every non-Safari viewer's video
+    // element just sat there with a src it silently couldn't play.
+    // Vendored alongside this file; only fetched when actually needed.
+    var _hlsScriptPromise = null;
+    function ensureHls() {
+        if (window.Hls) { return Promise.resolve(window.Hls); }
+        if (_hlsScriptPromise) { return _hlsScriptPromise; }
+        _hlsScriptPromise = new Promise(function (resolve, reject) {
+            var s = document.createElement('script');
+            s.src = new URL('js/hls/hls.light.min.js', window.location.href).href;
+            s.onload = function () {
+                if (window.Hls) { resolve(window.Hls); }
+                else { reject(new Error('hls.js failed to load')); }
+            };
+            s.onerror = function () { reject(new Error('hls.js failed to load')); };
+            document.head.appendChild(s);
+        });
+        return _hlsScriptPromise;
+    }
+
     // ── Service worker registration ──────────────────────────────────────────
 
     function registerSW() {
@@ -213,6 +384,27 @@
     function startPlayback(manifest, capability) {
         setStatus('Loading…');
 
+        // The index track (initSegment, codec, chapters — see Protocol.md)
+        // is encrypted separately and never embedded in the manifest itself;
+        // sw.js reads it from manifest._index, so it must be fetched and
+        // decrypted here first when the manifest declares one.
+        var hasIndexTrack = manifest.tracks && manifest.tracks.indexOf('index') >= 0;
+        var indexPromise = (hasIndexTrack && capability && capability.rootKey)
+            ? fetchAndDecryptIndex(manifest.rootCid, fromBase64(capability.rootKey))
+                .catch(function (err) {
+                    console.warn('Safecloud/player: index track fetch/decrypt failed — '
+                        + 'continuing without it: ' + (err && err.message || err));
+                    return null;
+                })
+            : Promise.resolve(null);
+
+        indexPromise.then(function (index) {
+            if (index) { manifest = Object.assign({}, manifest, { _index: index }); }
+            return _startPlaybackWithManifest(manifest, capability);
+        });
+    }
+
+    function _startPlaybackWithManifest(manifest, capability) {
         registerSW().then(function () {
             var videoId = manifest.rootCid || 'default';
 
@@ -231,26 +423,75 @@
                 saveCapability(manifest.rootCid, manifest, capability).catch(function () {});
             }
 
-            // Build HLS URL pointing at the SW scope
-            var hlsUrl = new URL(
-                'safecloud/' + videoId + '/master.m3u8',
-                navigator.serviceWorker.controller.scriptURL
-            ).href;
+            // Start fetching every data chunk in the background and feeding
+            // it to the SW — without this, every segment 503s forever.
+            prefetchLoop(videoId, manifest);
 
-            // Warm the first segments through the SW before the <video>
-            // element requests them. Closes the iOS 15/16 first-segment
-            // race (native HLS occasionally bypasses a cold SW) and makes
-            // startup faster everywhere — by the time the media pipeline
-            // asks, segments 0-2 are already decrypted in the SW cache.
+            // Build HLS URL against the fake host sw.js's fetch handler
+            // intercepts (must match HLS_HOST in js/Safecloud/sw.js exactly —
+            // any request to this hostname is caught by the SW and answered
+            // synthetically, never hitting the real network/DNS). The old
+            // code resolved 'safecloud/' + videoId + '/master.m3u8' against
+            // the SW script's own same-origin URL, producing a real,
+            // same-origin path (.../js/Safecloud/safecloud/<id>/master.m3u8)
+            // that sw.js's fetch handler ignores (wrong hostname) and the
+            // real server 404s on — video never had a working src.
+            var hlsUrl = 'https://safecloud-hls.local/' + videoId + '/master.m3u8';
+
+            // Warm the first segments through the SW before playback starts.
+            // Closes the iOS 15/16 first-segment race (native HLS occasionally
+            // bypasses a cold SW) and makes startup faster everywhere — by
+            // the time the media pipeline asks, segments 0-2 are already
+            // decrypted in the SW cache. sw.js serves fMP4 segments named
+            // seg{N}.m4s, not .ts.
             var base = hlsUrl.replace(/master\.m3u8$/, '');
             var warm = [0, 1, 2].map(function (i) {
-                return fetch(base + 'segment-' + i + '.ts')
+                return fetch(base + 'seg' + i + '.m4s')
                     .then(function (r) { return r.ok; })
                     .catch(function () { return false; });
             });
 
+            // Prefer hls.js (MediaSource-based) whenever it's supported —
+            // matches hls.js's own documented priority order. The naive
+            // "check native first" order this used to have was actively
+            // wrong: video.canPlayType('application/vnd.apple.mpegurl')
+            // queries only the container MIME type with no codecs string,
+            // and the spec explicitly allows/encourages browsers to answer
+            // "maybe" when they haven't actually inspected the content yet
+            // — some desktop Chrome builds do exactly that despite having
+            // no real native HLS demuxer, so trusting it sent playback down
+            // video.src=<m3u8> and failed immediately with
+            // PipelineStatus::DEMUXER_ERROR_COULD_NOT_PARSE. In practice
+            // only Safari's native HLS is genuinely reliable; everywhere
+            // else (including any Chrome that happens to answer "maybe")
+            // must go through hls.js.
+            var nativeHls = video.canPlayType('application/vnd.apple.mpegurl');
             Promise.all(warm).then(function () {
-                video.src = hlsUrl;
+                return ensureHls().then(function (Hls) {
+                    if (!Hls.isSupported()) {
+                        // No MediaSource Extensions at all — only remaining
+                        // option is native HLS, if this browser claims it.
+                        if (nativeHls) { video.src = hlsUrl; return; }
+                        throw new Error('HLS playback not supported in this browser');
+                    }
+                    var hls = new Hls();
+                    hls.on(Hls.Events.ERROR, function (event, data) {
+                        if (data && data.fatal) {
+                            setStatus((data.details || 'Playback error'), true);
+                            emit({ event: 'error', message: data.details || 'HLS fatal error' });
+                        }
+                    });
+                    hls.loadSource(hlsUrl);
+                    hls.attachMedia(video);
+                }).catch(function (err) {
+                    // hls.js itself failed to load (e.g. network error
+                    // fetching js/hls/hls.light.min.js) — still try native
+                    // HLS if this browser claims to support it, rather than
+                    // giving up outright.
+                    if (nativeHls) { video.src = hlsUrl; return; }
+                    setStatus(err.message, true);
+                    emit({ event: 'error', message: err.message });
+                });
             });
 
             if (autoplay) {

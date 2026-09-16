@@ -27,6 +27,7 @@ Q.Tool.define('Safecloud/upload', function (options) {
         DropLabel: 'Drop a file here or click to upload',
         DropSub: 'Encrypted with AES-256-GCM · Stored on Safecloud Drops',
         Preparing: 'Preparing…',
+        Remuxing: 'Preparing video for streaming…',
         Encrypting: 'Encrypting…',
         Uploaded: 'Uploaded',
         UploadFailed: 'Upload failed',
@@ -104,27 +105,17 @@ Q.Tool.define('Safecloud/upload', function (options) {
         var state = tool.state;
         var $te   = $(tool.element);
 
-        tool.setStatus(
-            Q.getObject('upload.Preparing', tool.text) || 'Preparing…', 'working');
-        tool.setProgress(0);
-
-        // Wait up to 8 s for a Drop to register before uploading.
-        // Guards against the race where the user drops a file before
-        // WebAuthn completes (same tab auto-init from demo.js).
-        _waitForDrop(15000, function () {
-            tool.setStatus(
-                Q.getObject('upload.Encrypting', tool.text) || 'Encrypting…', 'working');
-
+        function doStore(fileData, extraOptions) {
             Q.Safecloud.Client.store(
-                { data: file, name: file.name, type: file.type },
-                {
+                { data: fileData, name: file.name, type: (extraOptions && extraOptions.type) || file.type },
+                Q.extend({
                     chunkSize: state.chunkSize,
                     onProgress: function (stored, total) {
                         var pct = Math.round(stored / total * 100);
                         tool.setProgress(pct);
                         Q.handle(state.onProgress, tool, [pct]);
                     }
-                },
+                }, extraOptions),
                 function (err, result) {
                     if (err) {
                         tool.setStatus((Q.getObject('upload.UploadFailed', tool.text) || 'Upload failed') +
@@ -135,6 +126,49 @@ Q.Tool.define('Safecloud/upload', function (options) {
                         (Q.getObject('upload.Uploaded', tool.text) || 'Uploaded') + ': ' + file.name, 'ok');
                     tool.setProgress(100);
                     Q.handle(state.onStore, tool, [result.manifest, result.rootKey]);
+                }
+            );
+        }
+
+        tool.setStatus(
+            Q.getObject('upload.Preparing', tool.text) || 'Preparing…', 'working');
+        tool.setProgress(0);
+
+        // Wait up to 8 s for a Drop to register before uploading.
+        // Guards against the race where the user drops a file before
+        // WebAuthn completes (same tab auto-init from demo.js).
+        _waitForDrop(15000, function () {
+            var isVideo = file.type && file.type.indexOf('video/') === 0;
+            if (!isVideo || !Q.Safecloud.Client.buildVideoIndex) {
+                tool.setStatus(
+                    Q.getObject('upload.Encrypting', tool.text) || 'Encrypting…', 'working');
+                return doStore(file, {});
+            }
+
+            // Real MP4 index-track generation (Protocol.md), so the embed/HLS
+            // player can actually play this video — see buildVideoIndex.js.
+            // Never blocks the upload: any failure falls back to plain
+            // store() exactly as for non-video files.
+            tool.setStatus(
+                Q.getObject('upload.Remuxing', tool.text) || 'Preparing video for streaming…', 'working');
+
+            Q.Safecloud.Client.buildVideoIndex(
+                { data: file, name: file.name, type: file.type }, {},
+                function (err, result) {
+                    tool.setStatus(
+                        Q.getObject('upload.Encrypting', tool.text) || 'Encrypting…', 'working');
+
+                    if (err || !result || !result.ok) {
+                        console.warn('Safecloud/upload: buildVideoIndex skipped — '
+                            + (err ? (err.message || err) : (result && result.reason)));
+                        return doStore(file, {});
+                    }
+
+                    doStore(result.buffer, {
+                        type: 'video/mp4',
+                        chunkBoundaries: result.chunkBoundaries,
+                        index: result.index
+                    });
                 }
             );
         });

@@ -205,6 +205,25 @@ Q.Safecloud.Client = Q.Method.define({
     fetchIndex: new Q.Method(),
 
     /**
+     * Remux a video file into fragmented MP4 (one GOP-aligned fragment per
+     * keyframe, via ffmpeg.wasm stream-copy) and build the real index-track
+     * object Protocol.md documents (initSegment, codec, chapters, etc.), so
+     * store() can produce a video whose embed/HLS player actually works.
+     *
+     * Scope: H.264 (avc1) video + at most one AAC (mp4a) audio track only.
+     * Anything else resolves with { ok: false, reason } rather than
+     * throwing — callers should fall back to a plain store() call, never
+     * block the upload because of this.
+     *
+     * @method buildVideoIndex
+     * @param {Object}   file       { data: Blob, name: String, type: String }
+     * @param {Object}   [options]
+     * @param {Function} [callback]
+     * @return {Promise<{ok: Boolean, buffer, chunkBoundaries, index}|{ok: false, reason}>}
+     */
+    buildVideoIndex: new Q.Method(),
+
+    /**
      * Produce a grant for the index track only (no data track access).
      * Shorthand for grant(manifest, rootKey, { indexOnly: true }, callback).
      *

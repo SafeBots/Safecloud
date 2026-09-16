@@ -311,6 +311,14 @@ var _listenResult = null;
 var GRACE_MS_DEFAULT          = 60000;
 var BALANCE_CACHE_TTL_DEFAULT = 3600000;
 var CALL_DROP_TIMEOUT_DEFAULT = 10000;
+// Drops/put.js writes chunks to IndexedDB sequentially ("to keep quota
+// accounting consistent"), so a batch of N chunks genuinely takes longer
+// than a flat timeout as N grows. Observed: 116 chunks took ~11s end to
+// end — just over the old flat 10s CALL_DROP_TIMEOUT_DEFAULT — causing
+// callDrop to reject as "timeout" a moment before the Drop's own success
+// announce arrived, so the Cloud saw "no Drops stored any chunks" even
+// though the Drop had genuinely stored everything.
+var PUT_TIMEOUT_PER_CHUNK_MS  = 150;
 var REPLICATION_DEFAULT       = 2;
 var PER_CHUNK_WEI_DEFAULT     = '1000';
 
@@ -1564,7 +1572,21 @@ Safecloud_Jets.listen = function (options) {
     });
 
     // ── 4. HTTP routes ────────────────────────────────────────────────────────
-    var app = server.attached.express;
+    // Must use the PUBLIC server's express app (same host:port resolved above
+    // for Users.Socket.listen), not the internal `server` from step 1 — that's
+    // the exact same public-vs-internal mistake already fixed for the socket.io
+    // namespace (see the comment above step 2): Q.listen() with no options
+    // resolves to Q/nodeInternal, so server.attached.express here was an
+    // Express app nothing outside 127.0.0.1 could ever reach. These routes
+    // (health, dashboard, and the /Safecloud/cloud/chunk + /subtree GETs the
+    // embed player's HTTP-based chunk fetch depends on) were registering
+    // successfully and then 404ing for every real browser request.
+    var pubServer = Q.listen({
+        host:  pubHost,
+        port:  pubPort,
+        https: Q.Config.get(['Q', 'node', 'https'], false) || {}
+    });
+    var app = pubServer.attached.express;
     _registerHttpRoutes(app);
 
     // ── 5. Grace-period sweep ─────────────────────────────────────────────────
@@ -1750,6 +1772,13 @@ function _handleDropAnnounce(client, payload, ack) {
     if (!drop) {
         return ack && ack({ error: { code: 'NotFound', message: 'Drop not registered' } });
     }
+    Q.log('Q.Safecloud.Jets: announce from ' + dropId
+        + ' reason=' + payload.reason
+        + ' hasSignature=' + !!payload.signature
+        + ' hasPublicKey=' + !!drop.publicKey
+        + ' diffLen=' + (payload.diff ? payload.diff.length : 0)
+        + ' sampleCids=' + JSON.stringify((payload.diff || []).slice(0, 3).map(function (e) { return e && e.cid; })),
+        'Safecloud');
     // Verify this socket owns the dropId — prevent any socket from forging announces
     if (drop.socketId && drop.socketId !== client.id) {
         return ack && ack({ error: { code: 'Unauthorized', message: 'Socket does not own this dropId' } });
@@ -1765,6 +1794,8 @@ function _handleDropAnnounce(client, payload, ack) {
             announceOk = Safecloud_Drops.verifyAnnounce(payload, pubKeyBytes);
         } catch (e) {
             announceOk = false;
+            Q.log('Q.Safecloud.Jets: verifyAnnounce threw for ' + dropId + ': '
+                + (e && e.message), 'Safecloud');
         }
         if (!announceOk) {
             Q.log('Q.Safecloud.Jets: announce signature INVALID from ' + dropId
@@ -2102,12 +2133,30 @@ function _handleSubtreePut(client, userId, payload, ack) {
                 Safecloud_Jets.selectDrops(chunks.map(function(c){return c.cid;}), {
                     replicationFactor: Q.Config.get(['Safecloud', 'put', 'replicationFactor'], REPLICATION_DEFAULT)
                 }).then(function (drops) {
+                    Q.log('Q.Safecloud.Jets._handleSubtreePut: selected ' + drops.length
+                        + ' drop(s) for ' + chunks.length + ' chunk(s): '
+                        + drops.map(function (d) { return d.dropId; }).join(','), 'Safecloud');
                     if (!drops.length) {
                         return ack && ack({ error: { code: 'ServiceUnavailable', message: 'No Drops available' } });
                     }
+                    var putTimeoutMs = Math.max(
+                        CALL_DROP_TIMEOUT_DEFAULT,
+                        chunks.length * PUT_TIMEOUT_PER_CHUNK_MS
+                    );
                     var putPromises = drops.map(function (drop) {
-                        return Safecloud_Jets.callDrop(drop, 'Safecloud/drop/put', { chunks: chunks, options: {} })
-                            .catch(function () { return { results: [] }; });
+                        return Safecloud_Jets.callDrop(drop, 'Safecloud/drop/put',
+                            { chunks: chunks, options: {} }, putTimeoutMs)
+                            .then(function (r) {
+                                Q.log('Q.Safecloud.Jets._handleSubtreePut: callDrop ' + drop.dropId
+                                    + ' succeeded, stored=' + ((r && r.results || []).filter(function (x) { return x && x.stored; }).length)
+                                    + '/' + chunks.length, 'Safecloud');
+                                return r;
+                            })
+                            .catch(function (err) {
+                                Q.log('Q.Safecloud.Jets._handleSubtreePut: callDrop ' + drop.dropId
+                                    + ' FAILED: ' + (err && err.message), 'Safecloud');
+                                return { results: [] };
+                            });
                     });
                     return Promise.all(putPromises).then(function (results) {
                         // Merge results — a chunk is "stored" if at least one Drop confirmed it
@@ -2385,7 +2434,11 @@ function _refreshSwarmRanges() {
 function _handleSubtreeGet_step4(cids, payload, grant, ack, _attachProofsAndAck) {
     var swarmEnabled = JetSwarm && Q.Config.get(['Safecloud', 'swarm', 'enabled'], true);
 
+    Q.log('Q.Safecloud.Jets._handleSubtreeGet_step4: requesting ' + cids.length
+        + ' cid(s), first=' + cids[0], 'Safecloud');
     Safecloud_Jets.selectDrops(cids, { forGet: true }).then(function (drops) {
+        Q.log('Q.Safecloud.Jets._handleSubtreeGet_step4: selectDrops returned '
+            + drops.length + ' drop(s)', 'Safecloud');
         if (drops.length) {
             // Pass revenue through payload for royalty routing
             if (payload && payload._revenue) { payload.revenue = payload._revenue; }
@@ -2469,6 +2522,24 @@ function _handleClientDisconnect(client) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function _registerHttpRoutes(app) {
+    // CORS: the standalone embed player (web/player.js) runs on whatever
+    // third-party origin embeds it — that's the whole point of it being a
+    // dependency-free <iframe> — and fetches these routes directly via
+    // fetch() from there. Without this, the browser blocks every request
+    // with "No 'Access-Control-Allow-Origin' header is present" before it
+    // even reaches these handlers. Matches the existing /safecloud/fragment
+    // route's CORS handling below. GET-only query-param requests are
+    // "simple" requests (no preflight), but the PUT below sends a JSON
+    // body, which is not CORS-safelisted and does trigger an OPTIONS
+    // preflight — handle that too.
+    app.use('/Safecloud/cloud', function (req, res, next) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        if (req.method === 'OPTIONS') { return res.status(204).end(); }
+        next();
+    });
+
     // x402 single-chunk fetch for external clients
     app.get('/Safecloud/cloud/chunk/:cid', function (req, res) {
         _handleHttpChunkGet(req, res);

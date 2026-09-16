@@ -44,12 +44,17 @@ var segments = {};
 
 var IDB_NAME  = 'Safecloud.Client';
 var IDB_STORE = 'swSessions';
+// Must match player.js's DB_VERSION exactly — both open the SAME database
+// name. IndexedDB requires every open() call to agree on (or not conflict
+// with) the current version; this was hardcoded to 1 while player.js
+// already opens it at 4, which errors/blocks depending on open order.
+var IDB_VERSION = 4;
 var _dbPromise = null;
 
 function _db() {
     if (_dbPromise) { return _dbPromise; }
     _dbPromise = new Promise(function (resolve, reject) {
-        var req = indexedDB.open(IDB_NAME, 1);
+        var req = indexedDB.open(IDB_NAME, IDB_VERSION);
         req.onupgradeneeded = function () {
             var db = req.result;
             ['capabilities', 'session', 'swSessions', 'authorTokens']
@@ -247,17 +252,27 @@ function serveSegmentPlaylist(videoId, version, session) {
     if (!manifest) { return new Response('Manifest not found', { status: 404 }); }
 
     var idx        = manifest._index;
-    var chapters   = idx && idx.chapters;   // per-chunk [{pts, duration}] from index track
+    // Per-chunk [{pts, dts, label}] from the index track (Protocol.md schema
+    // — there is no `duration` field; each chapter's own segment duration is
+    // derived from the gap to the next chapter's pts, or totalDuration for
+    // the last one).
+    var chapters   = idx && idx.chapters;
     var totalDur   = (idx && idx.totalDuration) || manifest.duration;
     var chunkCount = manifest.chunkCount || 0;
     var defDur     = manifest.chunkDuration || 6;
     var prefix     = version ? version + '/' : '';
 
+    function chapterDuration(i) {
+        if (!chapters || !chapters[i]) { return defDur; }
+        var next = chapters[i + 1] ? chapters[i + 1].pts : totalDur;
+        return (next != null) ? Math.max(0, next - chapters[i].pts) : defDur;
+    }
+
     // Compute max segment duration for #EXT-X-TARGETDURATION (must be integer, >= all durations)
     var maxDur = defDur;
     if (chapters && chapters.length) {
         for (var j = 0; j < chapters.length; j++) {
-            var d = chapters[j].duration || defDur;
+            var d = chapterDuration(j) || defDur;
             if (d > maxDur) { maxDur = d; }
         }
     }
@@ -278,9 +293,7 @@ function serveSegmentPlaylist(videoId, version, session) {
     lines.push('#EXT-X-MAP:URI="' + prefix + 'init.mp4"');
 
     for (var i = 0; i < chunkCount; i++) {
-        var dur = chapters && chapters[i] && chapters[i].duration
-            ? chapters[i].duration
-            : defDur;
+        var dur = chapterDuration(i);
         lines.push('#EXTINF:' + dur.toFixed(6) + ',');
         lines.push(prefix + 'seg' + i + '.m4s');
     }

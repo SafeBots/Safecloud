@@ -107,9 +107,23 @@ Q.exports(function () {
      * For OCP claim objects (which have a sig field), callers should use
      * Q.Crypto.OpenClaim.canonicalize(claim) instead — it strips sig first.
      * _.canonicalJSON is for non-OCP objects (announce entries, token hashes).
+     *
+     * Always returns a Promise, even though Q.Data.canonicalize's own
+     * implementation is synchronous once loaded — Q.Method's lazy-load shim
+     * returns a plain Promise instead of the real string on a method's very
+     * first call in a page's lifetime (before its script has been fetched),
+     * and every caller here used to assume a synchronous string back. On a
+     * cold Drop (its very first Q.Data.* call ever, right after registering,
+     * before any upload has "warmed" Q.Data), that Promise got passed
+     * straight into TextEncoder().encode(...), which stringifies non-string
+     * input via .toString() — silently signing the literal text
+     * "[object Promise]" instead of the real payload, so the server's
+     * signature check always failed with "Invalid announce signature".
+     * Wrapping in Promise.resolve() makes both the already-loaded (string)
+     * and not-yet-loaded (Promise) cases resolve correctly either way.
      */
     _.canonicalJSON = function (obj) {
-        return Q.Data.canonicalize(obj);
+        return Promise.resolve(Q.Data.canonicalize(obj));
     };
 
     // ─────────────────────────────────────────────────────────────────────
@@ -189,18 +203,29 @@ Q.exports(function () {
             }}
         ];
 
-        // Open all stores; each call returns the same underlying IDBDatabase
-        var opens = stores.map(function (s) {
-            return new Promise(function (resolve, reject) {
-                Q.IndexedDB.open(_.DB_NAME, s.name, s.params, function (err, db) {
-                    if (err) { reject(err); } else { resolve(db); }
+        // Open stores ONE AT A TIME, not in parallel. Q.IndexedDB.open's
+        // "store missing -> close -> reopen at version+1" bootstrap runs as
+        // an independent, uncached sequence per storeName (different names
+        // are different Q.getter cache keys even though they share dbName).
+        // Firing all 5 at once means 5 concurrent connections to the same
+        // physical database each independently closing/reopening it —
+        // exactly the recipe for "InvalidStateError: The database
+        // connection is closing" on one store while another is mid-bump.
+        // Sequential opens let each version bump fully settle before the
+        // next store's Q.IndexedDB.open call ever opens a connection.
+        var lastDb = null;
+        var chain = stores.reduce(function (prev, s) {
+            return prev.then(function () {
+                return new Promise(function (resolve, reject) {
+                    Q.IndexedDB.open(_.DB_NAME, s.name, s.params, function (err, db) {
+                        if (err) { reject(err); } else { lastDb = db; resolve(db); }
+                    });
                 });
             });
-        });
+        }, Promise.resolve());
 
-        _._state._dbPromise = Promise.all(opens).then(function (dbs) {
-            // All dbs are the same IDBDatabase instance (Q.IndexedDB.open caches per dbName)
-            return dbs[0];
+        _._state._dbPromise = chain.then(function () {
+            return lastDb;
         }).catch(function (err) {
             _._state._dbPromise = null; // allow retry
             throw err;
@@ -253,12 +278,14 @@ Q.exports(function () {
      * Returns base64 raw r‖s (IEEE P1363, 64 bytes from WebCrypto ECDSA).
      */
     _.signAnnounce = function (entry, sessionKey) {
-        var payload = new TextEncoder().encode(_.canonicalJSON(entry));
-        return crypto.subtle.sign(
-            { name: 'ECDSA', hash: { name: 'SHA-256' } },
-            sessionKey,
-            payload
-        ).then(function (sigBuf) {
+        return _.canonicalJSON(entry).then(function (canonical) {
+            var payload = new TextEncoder().encode(canonical);
+            return crypto.subtle.sign(
+                { name: 'ECDSA', hash: { name: 'SHA-256' } },
+                sessionKey,
+                payload
+            );
+        }).then(function (sigBuf) {
             return Q.Data.toBase64(new Uint8Array(sigBuf));
         });
     };
@@ -270,14 +297,16 @@ Q.exports(function () {
     _.verifyAnnounce = function (entry, publicKey) {
         var copy = Q.extend({}, entry);
         delete copy.signature;
-        var payload  = new TextEncoder().encode(_.canonicalJSON(copy));
-        var sigBytes = Q.Data.fromBase64(entry.signature);
-        return crypto.subtle.verify(
-            { name: 'ECDSA', hash: { name: 'SHA-256' } },
-            publicKey,
-            sigBytes,
-            payload
-        );
+        return _.canonicalJSON(copy).then(function (canonical) {
+            var payload  = new TextEncoder().encode(canonical);
+            var sigBytes = Q.Data.fromBase64(entry.signature);
+            return crypto.subtle.verify(
+                { name: 'ECDSA', hash: { name: 'SHA-256' } },
+                publicKey,
+                sigBytes,
+                payload
+            );
+        });
     };
 
     return _;
