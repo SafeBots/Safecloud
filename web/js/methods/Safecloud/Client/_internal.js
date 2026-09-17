@@ -520,11 +520,29 @@ Q.exports(function () {
         authorTokens: 'authorTokens'   // retained author-share payment tokens
     };
 
+    // Must match sw.js's IDB_VERSION and player.js's DB_VERSION exactly —
+    // all three open the SAME 'Safecloud.Client' database. This was
+    // hardcoded to 1 while the other two open it at 4; IndexedDB requires
+    // any lower-version connection to close before a higher-version one can
+    // proceed, and with no onversionchange handler here to close it
+    // automatically, this page's own version-1 connection (opened e.g. by
+    // saveCapability() right after upload) permanently blocked the service
+    // worker's version-4 open — which only actually gets exercised when the
+    // SW restarts (browsers kill an idle SW after ~30s) and needs to
+    // restore a session from IndexedDB. Confirmed live: pause a video,
+    // background the tab long enough for the SW to be killed, come back —
+    // every subsequent request to the SW (even master.m3u8, not just
+    // segments) hung forever with no response at all, while whatever was
+    // already buffered in the video element kept playing. This is the
+    // same version-mismatch bug already fixed once in sw.js itself
+    // (hardcoded to 1 there too) — this file was the other place it still
+    // existed.
+    var CLIENT_DB_VERSION = 4;
     var _clientDbPromise = null;
     _.clientDB = function () {
         if (_clientDbPromise) { return _clientDbPromise; }
         _clientDbPromise = new Promise(function (resolve, reject) {
-            var req = indexedDB.open(_.CLIENT_DB, 1);
+            var req = indexedDB.open(_.CLIENT_DB, CLIENT_DB_VERSION);
             req.onupgradeneeded = function () {
                 var db = req.result;
                 Object.keys(_.CLIENT_STORES).forEach(function (k) {
@@ -534,7 +552,15 @@ Q.exports(function () {
                     }
                 });
             };
-            req.onsuccess = function () { resolve(req.result); };
+            req.onsuccess = function () {
+                var db = req.result;
+                // Defensive: if some future connection needs a higher
+                // version, close this one instead of blocking it forever —
+                // exactly the deadlock this fix resolves, guarded against
+                // recurring.
+                db.onversionchange = function () { db.close(); };
+                resolve(db);
+            };
             req.onerror   = function () {
                 _clientDbPromise = null;
                 reject(req.error || new Error('IndexedDB open failed'));

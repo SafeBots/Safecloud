@@ -205,6 +205,29 @@ Q.exports(function (Q, _) {
             _loopTimer = setTimeout(_tick, 1000);
         }
 
+        // Browsers aggressively terminate an idle service worker (Chrome:
+        // ~30s with no activity) — confirmed live: pause the video, switch
+        // tabs for a while, come back, and the SW is a fresh instance whose
+        // in-memory segments[videoId] cache is empty (sw.js restores only
+        // the session metadata from IndexedDB on restart — the actual
+        // decrypted chunk bytes were never persisted anywhere). This page's
+        // own _delivered tracking has no way to know that happened, so
+        // without this it permanently believed already-delivered segments
+        // were still sitting in the SW's cache and never resent them —
+        // every segment beyond whatever was already buffered in the video
+        // element's own MediaSource buffer 503'd forever, escalating to a
+        // fatal hls.js fragLoadError. Treat becoming visible again after
+        // being hidden as "the SW may have restarted" and just resend
+        // everything the loop still thinks is needed from here on — worst
+        // case is a few redundant re-deliveries if it didn't actually
+        // restart, which costs bandwidth but not correctness.
+        var _onVisible = function () {
+            if (document.visibilityState === 'visible') { _delivered = {}; }
+        };
+        if (typeof document !== 'undefined' && document.addEventListener) {
+            document.addEventListener('visibilitychange', _onVisible);
+        }
+
         _loopTimer = setTimeout(_tick, 0);
 
         // ── Public handle ─────────────────────────────────────────────────────
@@ -214,6 +237,9 @@ Q.exports(function (Q, _) {
                 _stopped = true;
                 clearTimeout(_loopTimer);
                 _inFlight = {};
+                if (typeof document !== 'undefined' && document.removeEventListener) {
+                    document.removeEventListener('visibilitychange', _onVisible);
+                }
                 var sw = navigator.serviceWorker && navigator.serviceWorker.controller;
                 if (sw) { sw.postMessage({ type: 'Q.Safecloud.Client.stop', videoId: videoId }); }
             },

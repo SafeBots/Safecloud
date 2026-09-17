@@ -64,7 +64,17 @@ function _db() {
                 }
             });
         };
-        req.onsuccess = function () { resolve(req.result); };
+        req.onsuccess = function () {
+            var db = req.result;
+            // Defensive: a mismatched version number (like the one this
+            // exact file used to have — see comment above) blocked a
+            // higher-version open() forever with no onversionchange handler
+            // to close this connection out of the way. Confirmed live: this
+            // caused every SW request to hang indefinitely (not even a 503)
+            // after the SW restarted following idle termination.
+            db.onversionchange = function () { db.close(); };
+            resolve(db);
+        };
         req.onerror   = function () { _dbPromise = null; reject(req.error); };
     });
     return _dbPromise;

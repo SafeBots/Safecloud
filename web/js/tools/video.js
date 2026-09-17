@@ -77,6 +77,18 @@ Q.Tool.define('Safecloud/video', function (options) {
         var state = tool.state;
         var $te   = $(tool.element);
 
+        // Stop any previous stream first — e.g. the demo page calls
+        // startStream() again if the user uploads a second file without
+        // reloading. Without this, the old _prefetchLoop/hls.js instance
+        // was never told to stop and just kept running orphaned (still
+        // polling the Jet, still attached to hls.js internals) alongside
+        // the new one. The sibling Q/video.js adapter already guards this;
+        // this tool (the one actually in use) didn't.
+        if (tool._handle) {
+            try { tool._handle.stop(); } catch (e) {}
+            tool._handle = null;
+        }
+
         state.manifest   = manifest;
         state.capability = capability;
 

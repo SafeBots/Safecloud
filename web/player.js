@@ -160,7 +160,17 @@
                     if (!db.objectStoreNames.contains(s)) db.createObjectStore(s);
                 });
             };
-            req.onsuccess = function () { resolve(req.result); };
+            req.onsuccess = function () {
+                var db = req.result;
+                // Defensive: without this, a connection left open here
+                // would block any future higher-version open() forever
+                // instead of closing out of the way — the exact deadlock
+                // class that a version mismatch between this file, sw.js
+                // and Client/_internal.js caused (all three open the same
+                // 'Safecloud.Client' database and must stay in sync).
+                db.onversionchange = function () { db.close(); };
+                resolve(db);
+            };
             req.onerror = function () { reject(req.error); };
         });
     }
