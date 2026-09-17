@@ -43,6 +43,19 @@ Q.page('Safecloud/demo', function () {
         Q.Safecloud.Jets.url = jetUrl;
     }
 
+    // Warm up the HLS service worker as early as possible (fire-and-forget).
+    // Client.stream()'s 'sw' path only registers it when startStream() is
+    // called right after upload finishes, racing SW register/activate/
+    // clients.claim() against _ensureServiceWorker's internal 3s timeout —
+    // on a cold profile that race is often lost, silently falling back to
+    // the blob path. Starting registration now gives it the whole upload
+    // duration (tens of seconds for real video) to finish; by the time
+    // startStream() actually checks navigator.serviceWorker.controller,
+    // the SW has almost always already taken control.
+    if (Q.Safecloud && Q.Safecloud.Client && Q.Safecloud.Client._ensureServiceWorker) {
+        Q.Safecloud.Client._ensureServiceWorker().catch(function () {});
+    }
+
     // ── First user gesture: init this tab as a Drop AND establish the payer ──
     // Both need a gesture for WebAuthn. The demo is self-contained: the
     // uploader is their own storage node, and their own micropayment payer.
@@ -53,7 +66,7 @@ Q.page('Safecloud/demo', function () {
         Q.Safecloud.Drops.init({ jetUrl: jetUrl }, function (err) {
             if (err) {
                 _identitiesInitialized = false; // allow retry
-                console.warn('Safecloud/demo: Drop auto-init:', err.message || err);
+                console.warn('Safecloud/demo: Drop auto-init:', err.message || err, err.stack || '');
             }
         });
         Q.Safecloud.Client.init({ interactive: true }, function (err, r) {
@@ -152,9 +165,14 @@ Q.page('Safecloud/demo', function () {
         var el = document.getElementById('Safecloud_demo_share_url');
         if (el) { el.value = url; }
 
-        var embedUrl = window.location.origin
-            + Q.url('{{Safecloud}}/embed.html')
+        // jet= tells the standalone embed player (which loads no Qbix
+        // framework, so it has no other way to find the Jet) where to send
+        // its HTTP chunk-fetch requests. Must be a query param, not part of
+        // the fragment — player.js reads it from location.search.
+        var jetUrl = Q.Safecloud.Jets.url || Q.nodeUrl();
+        var embedUrl = Q.url('{{Safecloud}}/embed.html')
             + '?rootCid=' + encodeURIComponent(manifest.rootCid)
+            + '&jet=' + encodeURIComponent(jetUrl)
             + '#' + frag;
         var embedEl = document.getElementById('Safecloud_demo_embed_code');
         if (embedEl) {
@@ -181,6 +199,10 @@ Q.page('Safecloud/demo', function () {
             if (!Q.Safecloud || !Q.Safecloud.Jets ||
                 typeof Q.Safecloud.Jets.getCloudStats !== 'function') { return; }
             var s = Q.Safecloud.Jets.getCloudStats();
+            // getCloudStats is a Q.Method shim — its first call (before the
+            // lazy-loaded implementation resolves) returns a Promise, not
+            // the stats object. Skip this tick rather than throw.
+            if (!s || typeof s.fetchedMB !== 'number') { return; }
             div.textContent =
                 'Fetched ' + s.fetchedMB.toFixed(2) + ' MB · '
                 + 'Uploaded ' + s.uploadedMB.toFixed(2) + ' MB · '

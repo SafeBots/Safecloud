@@ -54,13 +54,16 @@ Q.exports(function (Q, _) {
             rootKeyPromise = Promise.resolve(fresh);
         }
 
+        console.warn('Safecloud/store: step 1 — rootKey resolving...');
         var _promise = rootKeyPromise.then(function (rootKey) {
+            console.warn('Safecloud/store: step 1 done — rootKey resolved');
 
             // ── Steps 2–3: derive roots and keypairs ──────────────────────
             return Promise.all([
                 _.deriveEncryptionRoot(rootKey),
                 _.deriveAccessRootBytes(rootKey)
             ]).then(function (roots) {
+                console.warn('Safecloud/store: step 2 done — encRoot/accRoot derived');
                 var encRoot = roots[0].secret;
                 var accRoot = roots[1].secret;
 
@@ -68,14 +71,17 @@ Q.exports(function (Q, _) {
                     Q.Crypto.internalKeypair({ secret: encRoot, format: 'ES256' }),
                     Q.Crypto.internalKeypair({ secret: accRoot, format: 'ES256' })
                 ]).then(function (keypairs) {
+                    console.warn('Safecloud/store: step 3 done — encKP/accKP derived');
                     var encKP = keypairs[0];
                     var accKP = keypairs[1];
 
                     // ── Step 4: Blob → chunks ────────────────────────────
                     return _.blobToBuffer(file.data).then(function (buffer) {
-                        var chunkBuffers = _.chunkify(buffer, chunkSize);
+                        console.warn('Safecloud/store: step 4 done — blob read, ' + buffer.byteLength + ' bytes');
+                        var chunkBuffers = _.chunkify(buffer, options.chunkBoundaries || chunkSize);
                         var chunkCount   = chunkBuffers.length;
                         var fileSize     = buffer.byteLength;
+                        console.warn('Safecloud/store: step 5 — ' + chunkCount + ' chunks to encrypt');
 
                         // ── Step 5: compute tree shape ────────────────────
                         var tp        = _.treeParams(chunkCount, treeN);
@@ -133,6 +139,7 @@ Q.exports(function (Q, _) {
                             }); // encChunks.map
 
                             return Promise.all(encPromises).then(function (encChunks) {
+                                console.warn('Safecloud/store: step 6 done — all ' + encChunks.length + ' chunks encrypted');
                                 var dataCids = encChunks.map(function (c) { return c.cid; });
 
                                 // ── Step 7: build N-ary Merkle tree ──────
@@ -148,12 +155,24 @@ Q.exports(function (Q, _) {
                                 var indexPromise = Promise.resolve(null);
                                 if (hasIndex) {
                                     // Index key is derived via path ["track","index"]
+                                    var idxDelSecret;
                                     indexPromise = _.deriveByPath(encRoot, ['track', 'index'], '{}')
                                         .then(function (idxDel) {
-                                            var idxPlaintext = new TextEncoder().encode(
-                                                Q.Data.canonicalize(options.index)
-                                            );
-                                            return Q.Data.importKey(idxDel.secret)
+                                            idxDelSecret = idxDel.secret;
+                                            // Q.Data.canonicalize is a lazily-loaded Q.Method: on
+                                            // its very first call in a page's lifetime (before its
+                                            // script has fetched), the shim returns a bare Promise
+                                            // instead of the real string. TextEncoder.encode()
+                                            // silently coerces any non-string argument via
+                                            // String(...), so an unawaited Promise here would
+                                            // encrypt the literal text "[object Promise]" as the
+                                            // entire index track — permanently, since this runs
+                                            // once at upload time. Must await it like everything
+                                            // else derived from a Q.Data/Q.Crypto method.
+                                            return Q.Data.canonicalize(options.index);
+                                        }).then(function (canonical) {
+                                            var idxPlaintext = new TextEncoder().encode(canonical);
+                                            return Q.Data.importKey(idxDelSecret)
                                                 .then(function (k) {
                                                     // AAD binds ciphertext to the track/index path
                                                     // rootCid not known yet — use placeholder,
@@ -173,22 +192,33 @@ Q.exports(function (Q, _) {
                                 }
 
                                 return indexPromise.then(function (indexFork) {
+                                    console.warn('Safecloud/store: step 8 done — index track ' + (hasIndex ? 'encrypted' : 'skipped'));
                                     if (indexFork) { trackCids.index = [indexFork.cid]; }
 
-                                    // Build the actual Merkle root
-                                    var rootCid;
+                                    // Build the actual Merkle root.
+                                    // Q.Data.Merkle.buildTree (N-ary, multi-track) was never
+                                    // implemented anywhere in the platform — only the flat
+                                    // build/verify/proof methods exist — so this always fell
+                                    // through to the "build" branch below. That branch is
+                                    // itself async (Q.Data.Merkle.build returns a Q.Promise,
+                                    // since it hashes via SubtleCrypto), but the old code
+                                    // assigned its return value directly to rootCid without
+                                    // awaiting it. rootCid was a Promise object for the rest
+                                    // of this function ("[object Promise]" when logged), which
+                                    // is why the manifest, binding proof, and Jets.put all
+                                    // carried a broken rootCid, and playback later failed with
+                                    // "rootCid required".
+                                    var allCids = dataCids.concat(indexFork ? [indexFork.cid] : []);
+                                    var rootCidPromise;
                                     if (Q.Data.Merkle.buildTree) {
-                                        var treeResult = Q.Data.Merkle.buildTree(trackCids, treeN);
-                                        rootCid = treeResult.rootCid;
+                                        rootCidPromise = Promise.resolve(Q.Data.Merkle.buildTree(trackCids, treeN))
+                                            .then(function (treeResult) { return treeResult.rootCid; });
                                     } else if (Q.Data.Merkle.build) {
-                                        // Fallback: flat build over all cids in order
-                                        var allCids = dataCids.concat(indexFork ? [indexFork.cid] : []);
-                                        rootCid = Q.Data.Merkle.build(allCids);
+                                        rootCidPromise = Promise.resolve(Q.Data.Merkle.build(allCids));
                                     } else {
                                         // Platform Merkle not yet available — derive a stable rootCid
                                         // by hashing all leaf CIDs deterministically
-                                        var allCids2 = dataCids.concat(indexFork ? [indexFork.cid] : []);
-                                        var joinedCids = allCids2.join('|');
+                                        var joinedCids = allCids.join('|');
                                         // Use SubtleCrypto synchronously is not possible, so use a
                                         // deterministic djb2 hash as the provisional root identifier
                                         var h = 5381;
@@ -196,8 +226,14 @@ Q.exports(function (Q, _) {
                                             h = ((h << 5) + h) ^ joinedCids.charCodeAt(ci);
                                             h = h >>> 0; // keep unsigned 32-bit
                                         }
-                                        rootCid = 'bprovisional' + h.toString(16).padStart(8,'0') + allCids2.length.toString(16);
+                                        rootCidPromise = Promise.resolve(
+                                            'bprovisional' + h.toString(16).padStart(8,'0') + allCids.length.toString(16)
+                                        );
                                     }
+
+                                    return rootCidPromise.then(function (rootCid) {
+
+                                    console.warn('Safecloud/store: step 7 done — rootCid computed: ' + rootCid);
 
                                     // ── Step 9: binding proof ─────────────
                                     var encPubB64 = Q.Data.toBase64(encKP.publicKey);
@@ -222,6 +258,8 @@ Q.exports(function (Q, _) {
                                         },
                                         format: 'ES256'
                                     }).then(function (bindingProof) {
+                                        console.warn('Safecloud/store: step 9 done — binding proof signed. '
+                                            + 'Calling Jets.put for ' + encChunks.length + ' data chunk(s)...');
 
                                         // ── Steps 10-11: upload via Jets ──
                                         // Upload grants are empty — server allows anonymous
@@ -271,6 +309,8 @@ Q.exports(function (Q, _) {
                                         }
 
                                         return Promise.all(putPromises).then(function () {
+                                            console.warn('Safecloud/store: steps 10-11 done — Jets.put resolved for all tracks. '
+                                                + 'Encrypting+uploading metadata...');
                                             // ── Step 12a: metadata fork ───────────────────────────
                                             // Encrypt and upload a single metadata chunk at track/meta.
                                             // Contains pricing, creator info, and content metadata.
@@ -343,6 +383,7 @@ Q.exports(function (Q, _) {
 
                                             // ── Step 12: manifest ─────────
                                             return metaUploadPromise.then(function (metaCid) {
+                                            console.warn('Safecloud/store: step 12a done — metadata uploaded, metaCid: ' + metaCid);
                                             var manifest = _.buildManifest({
                                                 rootCid:                 rootCid,
                                                 treeN:                   treeN,
@@ -362,6 +403,12 @@ Q.exports(function (Q, _) {
                                                 jurisdiction:  options.jurisdiction  || null,
                                                 aiAttestation: options.aiAttestation || null,
                                                 revenue:       options.revenue       || null,
+                                                // indexCid — CID of the encrypted index-track chunk.
+                                                // Q.Data.Merkle.getNode (the "find it by navigating
+                                                // the tree" approach Protocol.md describes) isn't
+                                                // implemented anywhere, so fetchIndex.js's documented
+                                                // fallback field is the only working path today.
+                                                indexCid:      indexFork ? indexFork.cid : null,
                                                 // metaCid — CID of the encrypted metadata chunk
                                                 // Contains perChunkWei, creatorAddress, incomeContract, split
                                                 metaCid:       metaCid               || null,
@@ -373,11 +420,13 @@ Q.exports(function (Q, _) {
                                                 manifest: manifest,
                                                 rootKey:  Q.Data.toBase64(rootKey)
                                             };
+                                            console.warn('Safecloud/store: step 12 done — manifest built, store() complete');
                                             if (callback) { callback(null, result); }
                                             return result;
                                             }); // metaUploadPromise.then
                                         });
                                     });
+                                    }); // rootCidPromise.then
                                 });
                             });
                     });

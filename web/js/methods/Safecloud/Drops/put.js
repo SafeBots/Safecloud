@@ -114,7 +114,12 @@ Q.exports(function (Q, _) {
                     _._state.prevRoot    = prevRoot;
                     _._state.prollyRoot  = newRoot;
                     _._state.pendingDiff = batchDiff;
-                    return Q.Safecloud.Drops.announce('stored').catch(function () {});
+                    return Q.Safecloud.Drops.announce('stored').catch(function (err) {
+                        console.warn('Safecloud/Drops/put: announce(\'stored\') FAILED — '
+                            + 'chunks were stored locally but the Jet was never told, so '
+                            + 'this Drop will not be selected to serve them: '
+                            + (err && err.stack || err));
+                    });
                 }).then(function () {
                     return { results: results };
                 });
@@ -184,7 +189,10 @@ Q.exports(function (Q, _) {
                 _._state.prollyRoot  = newRoot;
                 _._state.pendingDiff = evictDiff;
                 _._state.bloomFilter = null; // must rebuild after eviction
-                return Q.Safecloud.Drops.announce('eviction').catch(function () {});
+                return Q.Safecloud.Drops.announce('eviction').catch(function (err) {
+                    console.warn('Safecloud/Drops/put: announce(\'eviction\') FAILED: '
+                        + (err && err.stack || err));
+                });
             }).then(function () {
                 // Safe to delete now — Jet has the updated root
                 return new Promise(function (resolve, reject) {

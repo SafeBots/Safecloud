@@ -20,7 +20,18 @@ Q.exports(function (Q, _) {
         var prefetchAhead = options.prefetchAhead  || 3;
         var videoElement  = options.videoElement   || null;
         var onChunk       = options.onChunk        || null;
-        var onError       = options.onError        || function () {};
+        // A silent no-op default meant a segment fetch failure (including
+        // the timeout added to Jets/_internal.js's _.emit) left zero trace
+        // anywhere — confirmed live: playback stalled permanently on a real
+        // upload with fetchedMB flatlined and not a single warning in the
+        // console, because tools/video.js's startStream() never passes
+        // onError. Logging by default costs nothing for callers that do
+        // pass their own (options.onError still wins) and turns a silent,
+        // undiagnosable freeze into a visible, actionable one.
+        var onError       = options.onError        || function (err) {
+            console.warn('Q.Safecloud.Client._prefetchLoop: segment fetch failed — '
+                + (err && err.message || err));
+        };
         var startAt       = options.at             || 0;
         var startVersion  = options.version        || _getFirstVersion(videoManifest);
 
@@ -28,6 +39,17 @@ Q.exports(function (Q, _) {
         var _paused    = false;
         var _version   = startVersion;
         var _inFlight  = {};
+        // Segments already delivered to the SW (or, for MSE, already handed
+        // to onChunk) this "epoch" — without this, _tick() re-requests the
+        // same [current, current+prefetchAhead) window on every 1s tick for
+        // as long as currentTime stays inside it (e.g. ~5s chunks re-fetched
+        // ~5x each over their own playback duration), hammering the Jet/Drop
+        // for content it already has and inflating "Fetched MB" far past the
+        // real file size. Reset on seek/setVersion since the SW prunes its
+        // own segment cache to a small window around the seek target (see
+        // sw.js's 'Q.Safecloud.Client.seek' handler) and a version switch is
+        // an entirely different set of chunks.
+        var _delivered = {};
         var _segStart  = _chunkAtTime(startAt, chunkDuration, videoManifest);
         var _manifest  = _getVersionManifest(videoManifest, _version);
         var _grants    = _getVersionGrants(capability, _version);
@@ -69,7 +91,7 @@ Q.exports(function (Q, _) {
         // ── Fetch (+ optional decrypt for MSE path) ───────────────────────────
 
         function _fetchSeg(segIndex) {
-            if (_inFlight[segIndex]) { return; }
+            if (_inFlight[segIndex] || _delivered[segIndex]) { return; }
             if (segIndex >= _manifest.chunkCount) { return; }
             _inFlight[segIndex] = true;
 
@@ -90,7 +112,7 @@ Q.exports(function (Q, _) {
                 if (onChunk) {
                     // ── MSE path: decrypt and deliver plaintext ──────────────
                     return _decryptChunk(chunk, segIndex).then(function (plaintext) {
-                        if (!_stopped) { onChunk(segIndex, plaintext); }
+                        if (!_stopped) { onChunk(segIndex, plaintext); _delivered[segIndex] = true; }
                     });
                 }
 
@@ -106,6 +128,7 @@ Q.exports(function (Q, _) {
                         tag:        chunk.tag,
                         iv:         chunk.iv
                     });
+                    _delivered[segIndex] = true;
                 }
             }).catch(function (err) {
                 onError(err);
@@ -182,6 +205,29 @@ Q.exports(function (Q, _) {
             _loopTimer = setTimeout(_tick, 1000);
         }
 
+        // Browsers aggressively terminate an idle service worker (Chrome:
+        // ~30s with no activity) — confirmed live: pause the video, switch
+        // tabs for a while, come back, and the SW is a fresh instance whose
+        // in-memory segments[videoId] cache is empty (sw.js restores only
+        // the session metadata from IndexedDB on restart — the actual
+        // decrypted chunk bytes were never persisted anywhere). This page's
+        // own _delivered tracking has no way to know that happened, so
+        // without this it permanently believed already-delivered segments
+        // were still sitting in the SW's cache and never resent them —
+        // every segment beyond whatever was already buffered in the video
+        // element's own MediaSource buffer 503'd forever, escalating to a
+        // fatal hls.js fragLoadError. Treat becoming visible again after
+        // being hidden as "the SW may have restarted" and just resend
+        // everything the loop still thinks is needed from here on — worst
+        // case is a few redundant re-deliveries if it didn't actually
+        // restart, which costs bandwidth but not correctness.
+        var _onVisible = function () {
+            if (document.visibilityState === 'visible') { _delivered = {}; }
+        };
+        if (typeof document !== 'undefined' && document.addEventListener) {
+            document.addEventListener('visibilitychange', _onVisible);
+        }
+
         _loopTimer = setTimeout(_tick, 0);
 
         // ── Public handle ─────────────────────────────────────────────────────
@@ -191,6 +237,9 @@ Q.exports(function (Q, _) {
                 _stopped = true;
                 clearTimeout(_loopTimer);
                 _inFlight = {};
+                if (typeof document !== 'undefined' && document.removeEventListener) {
+                    document.removeEventListener('visibilitychange', _onVisible);
+                }
                 var sw = navigator.serviceWorker && navigator.serviceWorker.controller;
                 if (sw) { sw.postMessage({ type: 'Q.Safecloud.Client.stop', videoId: videoId }); }
             },
@@ -200,7 +249,12 @@ Q.exports(function (Q, _) {
                 if (!_stopped) { clearTimeout(_loopTimer); _loopTimer = setTimeout(_tick, 0); }
             },
             seek: function (seconds) {
-                _inFlight = {};
+                _inFlight  = {};
+                // The SW prunes its own segment cache to a small window
+                // around the seek target (sw.js's 'seek' handler), so
+                // anything outside that window needs to be treated as
+                // undelivered again even though we sent it once before.
+                _delivered = {};
                 _segStart = _chunkAtTime(seconds, chunkDuration, _manifest);
                 if (!_paused && !_stopped) { clearTimeout(_loopTimer); _loopTimer = setTimeout(_tick, 0); }
                 var sw = navigator.serviceWorker && navigator.serviceWorker.controller;
@@ -209,7 +263,8 @@ Q.exports(function (Q, _) {
                 }
             },
             setVersion: function (label, timestamp) {
-                _inFlight = {};
+                _inFlight  = {};
+                _delivered = {}; // switching renditions means an entirely different chunk set
                 _version  = label;
                 _manifest = _getVersionManifest(videoManifest, label);
                 _grants   = _getVersionGrants(capability, label);
@@ -227,12 +282,23 @@ Q.exports(function (Q, _) {
     };
 
     function _chunkAtTime(seconds, chunkDuration, manifest) {
-        if (manifest && manifest.chunks && manifest.chunks.length) {
-            var chunks = manifest.chunks;
-            var lo = 0, hi = chunks.length - 1;
+        // The real, ffmpeg-authoritative per-chunk start times live at
+        // manifest._index.chapters[].pts (see buildVideoIndex.js/Protocol.md)
+        // — manifest.chunks never exists in this schema, so that branch was
+        // pure dead code and every caller silently fell back to the naive
+        // currentTime/chunkDuration guess below. Nothing in the manifest
+        // schema ever sets chunkDuration either, so that guess always used
+        // the flat 6s default — wrong for any content whose real per-chunk
+        // duration differs (e.g. ~5.3s for a typical GOP-fragmented upload),
+        // and the resulting drift compounds over minutes of playback until
+        // the prefetch window undershoots the segment actually needed,
+        // permanently stalling once the buffered-ahead margin runs out.
+        var chapters = manifest && manifest._index && manifest._index.chapters;
+        if (chapters && chapters.length) {
+            var lo = 0, hi = chapters.length - 1;
             while (lo < hi) {
                 var mid = (lo + hi + 1) >> 1;
-                if (chunks[mid].pts <= seconds) { lo = mid; } else { hi = mid - 1; }
+                if (chapters[mid].pts <= seconds) { lo = mid; } else { hi = mid - 1; }
             }
             return lo;
         }

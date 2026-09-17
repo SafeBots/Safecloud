@@ -7,8 +7,8 @@
 <div id="Safecloud_drop_page">
 <?php
 // Activate the Safecloud/drop tool
-echo Q_Html::tag('div', Q_Html::toolAttributes('Safecloud/drop', array(
+echo Q::tool('Safecloud/drop', array(
     'jetUrl' => $jetUrl
-)));
+));
 ?>
 </div>

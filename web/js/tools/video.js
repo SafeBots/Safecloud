@@ -41,7 +41,13 @@ Q.Tool.define('Safecloud/video', function (options) {
     capability: null,
     jetUrl:     null,
     at:         0,
+    // Seconds between onPlaying firings while playing — same option name/
+    // meaning as Q/video's state.positionUpdatePeriod, since Media/clip.js's
+    // watchClip() reads it directly off whichever video tool is playing.
+    positionUpdatePeriod: 5,
     onLoad:     new Q.Event(),
+    onPlay:     new Q.Event(),
+    onPlaying:  new Q.Event(),
     onError:    new Q.Event(function (err) {
         console.warn('Safecloud/video error:', err);
     })
@@ -76,6 +82,18 @@ Q.Tool.define('Safecloud/video', function (options) {
         var tool  = this;
         var state = tool.state;
         var $te   = $(tool.element);
+
+        // Stop any previous stream first — e.g. the demo page calls
+        // startStream() again if the user uploads a second file without
+        // reloading. Without this, the old _prefetchLoop/hls.js instance
+        // was never told to stop and just kept running orphaned (still
+        // polling the Jet, still attached to hls.js internals) alongside
+        // the new one. The sibling Q/video.js adapter already guards this;
+        // this tool (the one actually in use) didn't.
+        if (tool._handle) {
+            try { tool._handle.stop(); } catch (e) {}
+            tool._handle = null;
+        }
 
         state.manifest   = manifest;
         state.capability = capability;
@@ -118,6 +136,23 @@ Q.Tool.define('Safecloud/video', function (options) {
             tool.setStatus('', '');
             $te.find('.Safecloud_video_wrap').show();
             Q.handle(state.onLoad, tool, [handle]);
+
+            // Media/clip.js's watchClip()/joinClip() (credit-earning watch
+            // timer + joining the episode's Media/channel/* stream) rely on
+            // onPlaying/onPlay firing the same way Q/video's do — this tool
+            // had neither before, so a safecloud clip silently never
+            // triggered either.
+            videoEl.addEventListener('play', function () {
+                Q.handle(state.onPlay, tool);
+                tool._clearPlayInterval();
+                tool._playIntervalId = setInterval(function () {
+                    Q.handle(state.onPlaying, tool, [tool]);
+                }, (state.positionUpdatePeriod || 5) * 1000);
+            });
+            videoEl.addEventListener('pause', function () {
+                tool._clearPlayInterval();
+            });
+
             videoEl.play().catch(function () {});
         }).catch(function (err) {
             tool.setStatus(
@@ -137,8 +172,16 @@ Q.Tool.define('Safecloud/video', function (options) {
     seek:  function (t){ var v = $(this.element).find('.Safecloud_video_el')[0];
                          if (v) v.currentTime = t; },
 
+    _clearPlayInterval: function () {
+        if (this._playIntervalId) {
+            clearInterval(this._playIntervalId);
+            this._playIntervalId = null;
+        }
+    },
+
     Q: {
         beforeRemove: function () {
+            this._clearPlayInterval();
             if (this._handle) { try { this._handle.stop(); } catch(e) {} }
         }
     }

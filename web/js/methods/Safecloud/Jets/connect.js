@@ -23,6 +23,21 @@ Q.exports(function (Q, _) {
             return _._state.connectingPromise;
         }
 
+        // Build socket auth options. The server embeds the per-session
+        // capability at Q.Users.capability (see Users.php: "Get the capability
+        // object that will be sent in Q.plugins.Users.capability"), not
+        // Q.capability — that global doesn't exist. Also, when there's no
+        // capability yet, we must omit the "auth" key entirely rather than
+        // pass an empty object: Q.Socket.connect does a *shallow* Q.extend of
+        // this options object over Q.Socket.connect.options, so an explicit
+        // auth:{} here would clobber the app-wide default capability that
+        // Users.js's onInit handler already set up for every other socket.
+        var socketOptions = {};
+        var capability = Q.Users && Q.Users.capability;
+        if (capability) {
+            socketOptions.auth = { capability: JSON.stringify(capability) };
+        }
+
         _._state.connectingPromise = new Promise(function (resolve, reject) {
             Q.Socket.connect('/Safecloud/cloud', url, function (err, qs) {
                 if (err) {
@@ -60,13 +75,12 @@ Q.exports(function (Q, _) {
                 Q.Safecloud.Jets.onConnect.handle(qs);
                 resolve(qs);
 
-            }, {
-                // Auth token from Q capability if available
-                auth: Q.capability ? { capability: JSON.stringify(Q.capability) } : {}
-            });
+            }, socketOptions);
 
             // Listen for disconnect on the namespace socket
-            Q.Socket.onEvent('disconnect', '/Safecloud/cloud', url).add(function () {
+            Q.Socket.onEvent('disconnect', '/Safecloud/cloud', url).add(function (reason, description) {
+                console.warn('Q.Safecloud.Jets: /Safecloud/cloud disconnected — reason:',
+                    reason, description || '');
                 _._state.connected = false;
                 _._state.qs        = null;
                 Q.Safecloud.Jets.onDisconnect.handle();

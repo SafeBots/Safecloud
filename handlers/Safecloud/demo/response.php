@@ -12,6 +12,7 @@
 function Safecloud_demo_response($params)
 {
     Q_Response::addScript('{{Safecloud}}/js/Safecloud.js', 'head');
+    Q_Response::addScript('{{Safecloud}}/js/Safecloud/DataTrees.js', 'head');
     Q_Response::addScript('{{Safecloud}}/js/pages/demo.js');
     Q_Response::addStylesheet('{{Safecloud}}/css/Safecloud.css');
     Q_Response::addStylesheet('{{Safecloud}}/css/pages/demo.css');

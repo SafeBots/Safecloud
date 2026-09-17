@@ -247,12 +247,20 @@ Q.exports(function (Q, _) {
 
         // ── Start prefetch loop ───────────────────────────────────────────────
 
-        _loop = Q.Safecloud.Client._prefetchLoop(
+        // _prefetchLoop is a lazily-loaded Q.Method — on its first-ever call
+        // in a page's lifetime it can return a bare Promise instead of the
+        // real {stop,pause,resume,seek,setVersion} handle (see the identical
+        // bug fixed in Client/stream.js, Drops/announce.js, Client/store.js
+        // and Drops/get.js). Every other use of _loop in this file already
+        // guards with "if (_loop)", so leaving it null until the real handle
+        // resolves means an ultra-early seek/pause/stop silently no-ops
+        // instead of throwing "_loop.seek is not a function".
+        Promise.resolve(Q.Safecloud.Client._prefetchLoop(
             'mse-' + (_manifest.rootCid || Date.now()).toString().slice(0, 12),
             videoManifest,
             capability,
             Q.extend({}, options, { onChunk: _onChunk })
-        );
+        )).then(function (loop) { _loop = loop; });
 
         // ── Public handle ─────────────────────────────────────────────────────
 

@@ -110,7 +110,11 @@ Q.exports(function (Q, _) {
         var baseUrl = options.baseUrl ||
             (window.location.origin + window.location.pathname);
         var embedBase = options.embedBaseUrl ||
-            (window.location.origin + Q.url('{{Safecloud}}/embed.html'));
+            Q.url('{{Safecloud}}/embed.html');
+        // Tells the standalone embed player (no Qbix framework loaded, so no
+        // other way to find the Jet) where to send HTTP chunk-fetch requests.
+        var jetQuery = '&jet=' + encodeURIComponent(
+            options.jetUrl || Q.Safecloud.Jets.url || Q.nodeUrl());
 
         // ── Classic mode (backward compatible) ────────────────────────────────
         if (!options.split) {
@@ -122,7 +126,7 @@ Q.exports(function (Q, _) {
 
             if (options.embed) {
                 var embedUrl = embedBase + '?rootCid='
-                    + encodeURIComponent(rootCid) + '#' + frag;
+                    + encodeURIComponent(rootCid) + jetQuery + '#' + frag;
                 result.embedCode = '<iframe src="' + embedUrl + '"\n'
                     + '        allow="autoplay; encrypted-media; '
                     + 'publickey-credentials-get *"\n'
@@ -211,7 +215,7 @@ Q.exports(function (Q, _) {
 
             if (options.embed) {
                 var eUrl = embedBase + '?rootCid='
-                    + encodeURIComponent(rootCid) + '#' + frag;
+                    + encodeURIComponent(rootCid) + jetQuery + '#' + frag;
                 shareResult.embedCode = '<iframe src="' + eUrl + '"\n'
                     + '        allow="autoplay; encrypted-media; '
                     + 'publickey-credentials-get *"\n'

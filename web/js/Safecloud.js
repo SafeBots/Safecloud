@@ -5,6 +5,26 @@
 (function (Q, $) {
 
 /**
+ * Q.Config is a Node.js/PHP server-side concept — there is no browser
+ * equivalent anywhere in the Qbix platform's own client-side Q.js. Every
+ * Safecloud browser file (Drops, Client, Jets) was written assuming one
+ * exists, calling Q.Config.get(path, default) and expecting the default
+ * to be used when unconfigured — instead every call threw "Cannot read
+ * properties of undefined (reading 'get')", which is the root cause behind
+ * every "WebAuthn failed" / "Drop auto-init failed" error with that message.
+ * None of the config paths Safecloud reads client-side (storageGB,
+ * sessionExpDays, claimBatchSize, etc.) are currently embedded into the
+ * page, so this always returns the caller's own default — same effective
+ * behavior the code already expected, just without throwing first.
+ * @property Q.Config
+ */
+if (!Q.Config) {
+    Q.Config = {
+        get: function (path, def) { return def; }
+    };
+}
+
+/**
  * Text for Safecloud plugin, will be overridden by loaded language file
  * @property Q.text.Safecloud
  * @type {Object}
@@ -35,14 +55,13 @@ Q.Tool.define({
         css:  "{{Safecloud}}/css/tools/player.css",
         text: ["Safecloud/content"]
     },
-    // Safecloud-aware video player. Same file also (re)defines "Q/video" as a
-    // drop-in replacement adding the 'safecloud' adapter — see js/Q/video.js.
-    "Safecloud/video": {
-        js: "{{Safecloud}}/js/Q/video.js"
-    },
-    // Uncommenting this remaps the core Q/video tool to the drop-in above for
-    // the whole app (all existing adapters preserved):
-    // "Q/video": { js: "{{Safecloud}}/js/Q/video.js" },
+    // NOTE: js/Q/video.js is a more feature-complete "drop-in replacement"
+    // for Q/video (preserves clips/ads/metrics/floating, adds a 'safecloud'
+    // adapter) but is intentionally not wired in here — it has never been
+    // exercised/tested, and loading it has the side effect of silently
+    // redefining the app-wide "Q/video" tool. The registration used below
+    // (js/tools/video.js) is the simple, native-<video>-only implementation
+    // that Media/clip.js and /safecloud/demo actually use.
     "Safecloud/video": {
         js:   "{{Safecloud}}/js/tools/video.js",
         css:  "{{Safecloud}}/css/tools/video.css",
@@ -183,6 +202,25 @@ Q.Safecloud.Client = Q.Method.define({
      * @return {Promise<Object|null>}
      */
     fetchIndex: new Q.Method(),
+
+    /**
+     * Remux a video file into fragmented MP4 (one GOP-aligned fragment per
+     * keyframe, via ffmpeg.wasm stream-copy) and build the real index-track
+     * object Protocol.md documents (initSegment, codec, chapters, etc.), so
+     * store() can produce a video whose embed/HLS player actually works.
+     *
+     * Scope: H.264 (avc1) video + at most one AAC (mp4a) audio track only.
+     * Anything else resolves with { ok: false, reason } rather than
+     * throwing — callers should fall back to a plain store() call, never
+     * block the upload because of this.
+     *
+     * @method buildVideoIndex
+     * @param {Object}   file       { data: Blob, name: String, type: String }
+     * @param {Object}   [options]
+     * @param {Function} [callback]
+     * @return {Promise<{ok: Boolean, buffer, chunkBoundaries, index}|{ok: false, reason}>}
+     */
+    buildVideoIndex: new Q.Method(),
 
     /**
      * Produce a grant for the index track only (no data track access).

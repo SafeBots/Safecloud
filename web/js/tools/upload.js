@@ -15,7 +15,10 @@
  *   @param {Number}  [options.chunkSize]    Bytes per chunk. Default 256 KB.
  *   @param {Boolean} [options.multiple]     Allow multiple file uploads.
  *   @param {String}  [options.accept]       File input accept string.
- *   @param {Q.Event} [options.onStore]      Fired with (manifest, rootKey) after upload.
+ *   @param {Q.Event} [options.onStore]      Fired with (manifest, rootKey, videoThumbnail) after upload.
+ *     videoThumbnail is a "data:image/jpeg;base64,..." data URL captured from a
+ *     random frame of the video during the "Preparing…" stage, or null if the
+ *     file wasn't a video or the frame couldn't be captured (e.g. unsupported codec).
  *   @param {Q.Event} [options.onProgress]   Fired with (pct) during upload.
  *   @param {Q.Event} [options.onError]      Fired on error.
  */
@@ -27,6 +30,7 @@ Q.Tool.define('Safecloud/upload', function (options) {
         DropLabel: 'Drop a file here or click to upload',
         DropSub: 'Encrypted with AES-256-GCM · Stored on Safecloud Drops',
         Preparing: 'Preparing…',
+        Remuxing: 'Preparing video for streaming…',
         Encrypting: 'Encrypting…',
         Uploaded: 'Uploaded',
         UploadFailed: 'Upload failed',
@@ -103,28 +107,25 @@ Q.Tool.define('Safecloud/upload', function (options) {
         var tool  = this;
         var state = tool.state;
         var $te   = $(tool.element);
+        var isVideo = file.type && file.type.indexOf('video/') === 0;
 
-        tool.setStatus(
-            Q.getObject('upload.Preparing', tool.text) || 'Preparing…', 'working');
-        tool.setProgress(0);
+        // Captured asynchronously below, in parallel with the drop-wait /
+        // remuxing / encryption steps that follow — by the time doStore()'s
+        // upload finishes (always much later than a single canvas grab),
+        // this closure variable already holds the result (or null).
+        var videoThumbnail = null;
 
-        // Wait up to 8 s for a Drop to register before uploading.
-        // Guards against the race where the user drops a file before
-        // WebAuthn completes (same tab auto-init from demo.js).
-        _waitForDrop(15000, function () {
-            tool.setStatus(
-                Q.getObject('upload.Encrypting', tool.text) || 'Encrypting…', 'working');
-
+        function doStore(fileData, extraOptions) {
             Q.Safecloud.Client.store(
-                { data: file, name: file.name, type: file.type },
-                {
+                { data: fileData, name: file.name, type: (extraOptions && extraOptions.type) || file.type },
+                Q.extend({
                     chunkSize: state.chunkSize,
                     onProgress: function (stored, total) {
                         var pct = Math.round(stored / total * 100);
                         tool.setProgress(pct);
                         Q.handle(state.onProgress, tool, [pct]);
                     }
-                },
+                }, extraOptions),
                 function (err, result) {
                     if (err) {
                         tool.setStatus((Q.getObject('upload.UploadFailed', tool.text) || 'Upload failed') +
@@ -134,7 +135,55 @@ Q.Tool.define('Safecloud/upload', function (options) {
                     tool.setStatus(
                         (Q.getObject('upload.Uploaded', tool.text) || 'Uploaded') + ': ' + file.name, 'ok');
                     tool.setProgress(100);
-                    Q.handle(state.onStore, tool, [result.manifest, result.rootKey]);
+                    Q.handle(state.onStore, tool, [result.manifest, result.rootKey, videoThumbnail]);
+                }
+            );
+        }
+
+        tool.setStatus(
+            Q.getObject('upload.Preparing', tool.text) || 'Preparing…', 'working');
+        tool.setProgress(0);
+
+        if (isVideo) {
+            tool.captureVideoThumbnail(file, function (dataUrl) {
+                videoThumbnail = dataUrl;
+            });
+        }
+
+        // Wait up to 8 s for a Drop to register before uploading.
+        // Guards against the race where the user drops a file before
+        // WebAuthn completes (same tab auto-init from demo.js).
+        _waitForDrop(15000, function () {
+            if (!isVideo || !Q.Safecloud.Client.buildVideoIndex) {
+                tool.setStatus(
+                    Q.getObject('upload.Encrypting', tool.text) || 'Encrypting…', 'working');
+                return doStore(file, {});
+            }
+
+            // Real MP4 index-track generation (Protocol.md), so the embed/HLS
+            // player can actually play this video — see buildVideoIndex.js.
+            // Never blocks the upload: any failure falls back to plain
+            // store() exactly as for non-video files.
+            tool.setStatus(
+                Q.getObject('upload.Remuxing', tool.text) || 'Preparing video for streaming…', 'working');
+
+            Q.Safecloud.Client.buildVideoIndex(
+                { data: file, name: file.name, type: file.type }, {},
+                function (err, result) {
+                    tool.setStatus(
+                        Q.getObject('upload.Encrypting', tool.text) || 'Encrypting…', 'working');
+
+                    if (err || !result || !result.ok) {
+                        console.warn('Safecloud/upload: buildVideoIndex skipped — '
+                            + (err ? (err.message || err) : (result && result.reason)));
+                        return doStore(file, {});
+                    }
+
+                    doStore(result.buffer, {
+                        type: 'video/mp4',
+                        chunkBoundaries: result.chunkBoundaries,
+                        index: result.index
+                    });
                 }
             );
         });
@@ -148,6 +197,74 @@ Q.Tool.define('Safecloud/upload', function (options) {
     setProgress: function (pct) {
         $(this.element).find('.Safecloud_upload_progress_fill')
             .css('width', Math.min(pct, 100) + '%');
+    },
+
+    /**
+     * Grabs a single frame from a random point in the video (10%-90% of its
+     * duration, to avoid black/blank frames right at the start or end) and
+     * returns it as a "data:image/jpeg;base64,..." data URL, downscaled to
+     * at most 800px on the longer side. Never throws — calls back with null
+     * on any failure (unsupported codec, decode error, timeout), so a failed
+     * capture just falls back to whatever default thumbnail the caller uses.
+     * @method captureVideoThumbnail
+     * @param {File} file
+     * @param {Function} callback Called with (dataUrl|null)
+     */
+    captureVideoThumbnail: function (file, callback) {
+        var called = false;
+        var objectUrl;
+        var video = document.createElement('video');
+
+        function finish(dataUrl) {
+            if (called) { return; }
+            called = true;
+            clearTimeout(timeoutId);
+            video.removeAttribute('src');
+            video.load();
+            if (objectUrl) { URL.revokeObjectURL(objectUrl); }
+            callback(dataUrl || null);
+        }
+
+        var timeoutId = setTimeout(function () { finish(null); }, 8000);
+
+        try {
+            objectUrl = URL.createObjectURL(file);
+        } catch (e) {
+            return finish(null);
+        }
+
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = 'auto';
+        video.addEventListener('error', function () { finish(null); });
+        video.addEventListener('loadedmetadata', function () {
+            var duration = video.duration;
+            var seekTo = 0;
+            if (isFinite(duration) && duration > 0.5) {
+                seekTo = duration * (0.1 + Math.random() * 0.8);
+            }
+            try {
+                video.currentTime = seekTo;
+            } catch (e) {
+                finish(null);
+            }
+        });
+        video.addEventListener('seeked', function () {
+            try {
+                var w = video.videoWidth, h = video.videoHeight;
+                if (!w || !h) { return finish(null); }
+                var maxSide = 800;
+                var scale = Math.min(1, maxSide / Math.max(w, h));
+                var canvas = document.createElement('canvas');
+                canvas.width = Math.round(w * scale);
+                canvas.height = Math.round(h * scale);
+                canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+                finish(canvas.toDataURL('image/jpeg', 0.85));
+            } catch (e) {
+                finish(null);
+            }
+        });
+        video.src = objectUrl;
     }
 });
 

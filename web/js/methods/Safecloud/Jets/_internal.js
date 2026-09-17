@@ -8,7 +8,7 @@
  * Queued calls made before connect() resolves are drained automatically.
  */
 
-Q.exports(function (Q) {
+Q.exports(function () {
 
     var _ = {};
 
@@ -159,10 +159,14 @@ Q.exports(function (Q) {
         var jitter  = baseMs * 0.3 * (Math.random() * 2 - 1);
         var delay   = Math.round(baseMs + jitter);
 
+        console.warn('Q.Safecloud.Jets: reconnect attempt ' + (attempt + 1)
+            + ' scheduled in ' + delay + 'ms');
+
         _._state.reconnectTimer = setTimeout(function () {
             _._state.reconnectTimer   = null;
             _._state.reconnectAttempt = attempt + 1;
             _._state.connectingPromise = null;
+            console.warn('Q.Safecloud.Jets: reconnecting now (attempt ' + (attempt + 1) + ')');
             Q.Safecloud.Jets.connect();
         }, delay);
     };
@@ -171,14 +175,39 @@ Q.exports(function (Q) {
     // emit — emit a socket event and return a Promise resolving with the ack
     // ─────────────────────────────────────────────────────────────────────
 
+    // socket.io gives no guarantee an emit's ack ever arrives — a dropped
+    // packet, a brief reconnect, or a server-side hiccup mid-request all
+    // leave the ack callback never called. Without a timeout here, the
+    // returned Promise hung forever: _prefetchLoop marks a segment
+    // _inFlight before calling this and only clears that flag once the
+    // Promise settles, so ONE lost ack during playback permanently
+    // stranded that segment (endless 503s from the service worker, which
+    // never received the ciphertext) with no way to recover — confirmed
+    // by a real share-link playback session where segments stalled mid
+    // stream with zero server-side trace of the corresponding GET ever
+    // completing.
+    var EMIT_TIMEOUT_DEFAULT = 20000;
+
     /**
      * Emit eventName with payload; resolve/reject on ack.
      * Ack convention: ack(errOrNull, result) or ack({ error: {...} })
+     * Rejects after timeoutMs (default 20000) if no ack ever arrives.
      */
-    _.emit = function (eventName, payload) {
+    _.emit = function (eventName, payload, timeoutMs) {
+        timeoutMs = timeoutMs || EMIT_TIMEOUT_DEFAULT;
         return _.withSocket(function (qs) {
             return new Promise(function (resolve, reject) {
+                var settled = false;
+                var timer = setTimeout(function () {
+                    if (settled) { return; }
+                    settled = true;
+                    reject(new Error('Q.Safecloud.Jets: timeout waiting for ack of ' + eventName));
+                }, timeoutMs);
+
                 qs.socket.emit(eventName, payload, function (errOrResult, result) {
+                    if (settled) { return; } // ack arrived after we already timed out
+                    settled = true;
+                    clearTimeout(timer);
                     // Handle both (err, result) and ({ error }) ack shapes
                     if (errOrResult && errOrResult.error) {
                         return reject(new Error(

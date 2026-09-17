@@ -11,6 +11,7 @@
 function Safecloud_drop_response($params)
 {
     Q_Response::addScript('{{Safecloud}}/js/Safecloud.js', 'head');
+    Q_Response::addScript('{{Safecloud}}/js/Safecloud/DataTrees.js', 'head');
     Q_Response::addScript('{{Safecloud}}/js/pages/drop.js');
     Q_Response::addStylesheet('{{Safecloud}}/css/Safecloud.css');
     Q_Response::addStylesheet('{{Safecloud}}/css/pages/drop.css');
