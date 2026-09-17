@@ -55,14 +55,13 @@ Q.Tool.define({
         css:  "{{Safecloud}}/css/tools/player.css",
         text: ["Safecloud/content"]
     },
-    // Safecloud-aware video player. Same file also (re)defines "Q/video" as a
-    // drop-in replacement adding the 'safecloud' adapter — see js/Q/video.js.
-    "Safecloud/video": {
-        js: "{{Safecloud}}/js/Q/video.js"
-    },
-    // Uncommenting this remaps the core Q/video tool to the drop-in above for
-    // the whole app (all existing adapters preserved):
-    // "Q/video": { js: "{{Safecloud}}/js/Q/video.js" },
+    // NOTE: js/Q/video.js is a more feature-complete "drop-in replacement"
+    // for Q/video (preserves clips/ads/metrics/floating, adds a 'safecloud'
+    // adapter) but is intentionally not wired in here — it has never been
+    // exercised/tested, and loading it has the side effect of silently
+    // redefining the app-wide "Q/video" tool. The registration used below
+    // (js/tools/video.js) is the simple, native-<video>-only implementation
+    // that Media/clip.js and /safecloud/demo actually use.
     "Safecloud/video": {
         js:   "{{Safecloud}}/js/tools/video.js",
         css:  "{{Safecloud}}/css/tools/video.css",
