@@ -198,7 +198,7 @@ Q.exports(function (Q, _) {
 
             // _prefetchLoop figures out which segment playback currently
             // needs from manifest._index.chapters[].pts (the real,
-            // ffmpeg-authoritative per-chunk timestamps) when available,
+            // mediabunny-authoritative per-chunk timestamps) when available,
             // falling back to a naive currentTime/chunkDuration guess
             // otherwise. videoManifest here is the ORIGINAL, un-enriched
             // manifest — index/hydratedVersions (with ._index merged in)

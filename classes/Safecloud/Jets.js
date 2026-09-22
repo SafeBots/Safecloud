@@ -1501,6 +1501,31 @@ Safecloud_Jets.listen = function (options) {
             _handleSubtreeGet(client, userId, payload, ack);
         });
 
+        // ── Cloud: check content availability without fetching ────────────────
+        // Lightweight pre-flight check — "is at least one Drop online that can
+        // serve this rootCid right now", with none of the grant/access/payment
+        // checks Safecloud/subtree/get does before an actual fetch. Meant for
+        // callers that need to know BEFORE committing to something (e.g. a
+        // paywall charging credits) whether playback could even succeed, so
+        // they don't charge a user only to hit "No Drops available" afterward.
+        on('Safecloud/subtree/checkAvailable', function (payload, ack) {
+            if (!ack) { return; }
+            payload = payload || {};
+            var rootCid = (typeof payload.rootCid === 'string') ? payload.rootCid : null;
+            if (!rootCid) {
+                return ack({ error: { code: 'BadRequest', message: 'rootCid required' } });
+            }
+            var flatCids = (_cidIndex[rootCid] && _cidIndex[rootCid]['track/data']) || [];
+            if (!flatCids.length) {
+                return ack(null, { available: false });
+            }
+            Safecloud_Jets.selectDrops([flatCids[0]], { forGet: true }).then(function (drops) {
+                ack(null, { available: !!(drops && drops.length) });
+            }).catch(function () {
+                ack(null, { available: false });
+            });
+        });
+
         // ── Jet info — payment + network configuration for browser clients ────
         // Lets Clouds and Drops learn addresses/prices straight from the Jet,
         // with no dependency on PHP exposing plugin config to the page.

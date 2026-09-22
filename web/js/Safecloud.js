@@ -204,15 +204,16 @@ Q.Safecloud.Client = Q.Method.define({
     fetchIndex: new Q.Method(),
 
     /**
-     * Remux a video file into fragmented MP4 (one GOP-aligned fragment per
-     * keyframe, via ffmpeg.wasm stream-copy) and build the real index-track
-     * object Protocol.md documents (initSegment, codec, chapters, etc.), so
+     * Remux (or, only if genuinely necessary, transcode) a video file into
+     * fragmented MP4 via mediabunny and build the real index-track object
+     * Protocol.md documents (initSegment, codec, chapters, etc.), so
      * store() can produce a video whose embed/HLS player actually works.
      *
-     * Scope: H.264 (avc1) video + at most one AAC (mp4a) audio track only.
-     * Anything else resolves with { ok: false, reason } rather than
-     * throwing — callers should fall back to a plain store() call, never
-     * block the upload because of this.
+     * Scope: exactly one video track (any codec mediabunny can read) plus
+     * at most one audio track. Anything else resolves with
+     * { ok: false, reason } rather than throwing — callers should fall
+     * back to a plain store() call, never block the upload because of
+     * this.
      *
      * @method buildVideoIndex
      * @param {Object}   file       { data: Blob, name: String, type: String }
@@ -412,6 +413,17 @@ Q.Safecloud.Jets = Q.Method.define({
      * @return {Promise<{ chunks: Array }>}
      */
     get: new Q.Method(),
+
+    /**
+     * Lightweight pre-flight check: is any Drop currently online to serve
+     * this rootCid? No grants/access/payment checks, no chunk transfer —
+     * just "would a real get() have somewhere to route to right now".
+     * @method checkAvailable
+     * @param {String}   rootCid
+     * @param {Function} [callback]  fn(err, { available: Boolean })
+     * @return {Promise<{ available: Boolean }>}
+     */
+    checkAvailable: new Q.Method(),
 
     /**
      * Register this browser as a Drop.

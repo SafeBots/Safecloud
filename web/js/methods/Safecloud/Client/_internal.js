@@ -691,11 +691,16 @@ Q.exports(function () {
     };
 
     /**
-     * Parse moov > trak[] to find exactly the tracks buildVideoIndex.js
-     * cares about. Returns { video: {trackId,timescale,codec,width,height}
-     * | null, audio: {trackId,timescale,codec} | null, ok, reason }.
-     * `ok` is false (with `reason`) the moment anything falls outside the
-     * documented v1 scope — caller must abort index-building in that case.
+     * Parse moov > trak[] to find the video/audio track IDs and timescales
+     * of a mediabunny-produced fragmented MP4. Codec/dimensions themselves
+     * come straight from mediabunny's own Input track objects (see
+     * buildVideoIndex.js) — this only needs to recover which numeric
+     * trackId in the OUTPUT container's moof/tfhd/tfdt boxes corresponds
+     * to the video track, so readTfdt() can pull the right per-fragment
+     * timestamps. Returns { video: {trackId,timescale} | null,
+     * audio: {trackId,timescale} | null, ok, reason }; `ok` is false only
+     * when the output's own layout is unusable (no video track, or more
+     * than one track of either type).
      */
     _.parseMoovTracks = function (buffer, moovBox) {
         var view = new DataView(buffer);
@@ -719,8 +724,7 @@ Q.exports(function () {
             var mdiaChildren = _.walkBoxes(buffer, mdia.bodyStart, mdia.end);
             var hdlr = _findBox(mdiaChildren, 'hdlr');
             var mdhd = _findBox(mdiaChildren, 'mdhd');
-            var minf = _findBox(mdiaChildren, 'minf');
-            if (!hdlr || !mdhd || !minf) { continue; }
+            if (!hdlr || !mdhd) { continue; }
 
             // hdlr: version/flags(4) + pre_defined(4) + handler_type(4 chars)
             var handlerType = _str4(view, hdlr.bodyStart + 8);
@@ -731,72 +735,19 @@ Q.exports(function () {
             var timescaleOff = mdhd.bodyStart + 4 + (mdhdVer === 1 ? 8 + 8 : 4 + 4);
             var timescale = _u32(view, timescaleOff);
 
-            var stbl = _findBox(_.walkBoxes(buffer, minf.bodyStart, minf.end), 'stbl');
-            var stsd = stbl && _findBox(_.walkBoxes(buffer, stbl.bodyStart, stbl.end), 'stsd');
-            if (!stsd) { continue; }
-            // stsd: version/flags(4) + entry_count(4) + entries...
-            var entryCount = _u32(view, stsd.bodyStart + 4);
-            var entries = _.walkBoxes(buffer, stsd.bodyStart + 8, stsd.end);
-            if (entryCount !== 1 || entries.length !== 1) {
-                return { ok: false, reason: 'multiple sample entries in stsd (track ' + trackId + ')' };
-            }
-            var entry = entries[0];
-
             if (handlerType === 'vide') {
                 if (video) { return { ok: false, reason: 'multiple video tracks' }; }
-                if (entry.type !== 'avc1') {
-                    return { ok: false, reason: 'unsupported video codec box: ' + entry.type };
-                }
-                var codecInfo = _.parseStsdCodec(buffer, entry);
-                if (!codecInfo) { return { ok: false, reason: 'could not parse avcC' }; }
-                video = {
-                    trackId: trackId, timescale: timescale,
-                    codec: codecInfo.codec, width: codecInfo.width, height: codecInfo.height
-                };
+                video = { trackId: trackId, timescale: timescale };
             } else if (handlerType === 'soun') {
                 if (audio) { return { ok: false, reason: 'multiple audio tracks' }; }
-                if (entry.type !== 'mp4a') {
-                    return { ok: false, reason: 'unsupported audio codec box: ' + entry.type };
-                }
-                // AAC-LC covers the overwhelming majority of real encodes;
-                // a full esds DecoderSpecificInfo parse (to distinguish HE-AAC
-                // etc.) is out of scope for v1 — see Protocol.md discussion.
-                audio = { trackId: trackId, timescale: timescale, codec: 'mp4a.40.2' };
+                audio = { trackId: trackId, timescale: timescale };
             }
             // Any other handler_type (e.g. subtitles) is simply ignored —
             // it doesn't disqualify the file, it's just not indexed.
         }
 
-        if (!video) { return { ok: false, reason: 'no avc1 video track found' }; }
+        if (!video) { return { ok: false, reason: 'no video track found' }; }
         return { ok: true, video: video, audio: audio };
-    };
-
-    /**
-     * Parse an avc1 VisualSampleEntry (the sole child of stsd for a video
-     * track) for width/height and the avc1.PPCCLL codec string, read
-     * directly from the nested avcC box's profile/compatibility/level
-     * bytes — deterministic, not inferred from ffmpeg log text.
-     */
-    _.parseStsdCodec = function (buffer, avc1Entry) {
-        var view = new DataView(buffer);
-        // VisualSampleEntry fixed layout: 6 reserved + 2 data_reference_index
-        // + 16 pre_defined/reserved + width(2) + height(2) at fixed offsets.
-        var width  = view.getUint16(avc1Entry.bodyStart + 24, false);
-        var height = view.getUint16(avc1Entry.bodyStart + 26, false);
-        // VisualSampleEntry body is 78 bytes before any nested boxes (avcC etc.)
-        var childrenStart = avc1Entry.bodyStart + 78;
-        var avcC = _findBox(_.walkBoxes(buffer, childrenStart, avc1Entry.end), 'avcC');
-        if (!avcC) { return null; }
-        // AVCDecoderConfigurationRecord: configurationVersion(1), then
-        // AVCProfileIndication, profile_compatibility, AVCLevelIndication.
-        var profile      = view.getUint8(avcC.bodyStart + 1);
-        var compat       = view.getUint8(avcC.bodyStart + 2);
-        var level        = view.getUint8(avcC.bodyStart + 3);
-        function hex2(n) { return ('0' + n.toString(16)).slice(-2); }
-        return {
-            width: width, height: height,
-            codec: 'avc1.' + hex2(profile) + hex2(compat) + hex2(level)
-        };
     };
 
     /**
@@ -828,43 +779,20 @@ Q.exports(function () {
     };
 
     // ─────────────────────────────────────────────────────────────────────
-    // 21. ensureFFmpeg — lazy-load the vendored ffmpeg.wasm UMD bundle
+    // 21. ensureMediabunny — lazy-load the vendored mediabunny ESM bundle
     // ─────────────────────────────────────────────────────────────────────
-    // ffmpeg.wasm is only needed to remux a video file into fragmented MP4
-    // for the video index track, so it's not part of the base page weight —
-    // same lazy-load-on-first-use shape as Jets/_internal.js's ensureEthers.
-    // The ~32MB WASM core is only fetched once ffmpeg.load() actually runs.
-    var _ffmpegPromise = null;
-    _.ensureFFmpeg = function () {
-        if (typeof FFmpegWASM !== 'undefined') { return Promise.resolve(FFmpegWASM); }
-        if (_ffmpegPromise) { return _ffmpegPromise; }
-        _ffmpegPromise = new Promise(function (resolve, reject) {
-            Q.addScript(Q.url('{{Safecloud}}/js/ffmpeg/ffmpeg.js'), function (err) {
-                if (err || typeof FFmpegWASM === 'undefined') {
-                    _ffmpegPromise = null;
-                    return reject(err || new Error('ffmpeg.wasm failed to load'));
-                }
-                resolve(FFmpegWASM);
-            });
-        });
-        return _ffmpegPromise;
-    };
-
-    /**
-     * Create and .load() a fresh FFmpeg instance pointed at the vendored
-     * core files. Callers should create one instance per remux and let it
-     * be garbage-collected afterward rather than keeping it around —
-     * ffmpeg.wasm's virtual FS holds file contents in Emscripten heap
-     * memory for the lifetime of the instance.
-     */
-    _.newFFmpeg = function () {
-        return _.ensureFFmpeg().then(function (FFmpegWASM) {
-            var ffmpeg = new FFmpegWASM.FFmpeg();
-            return ffmpeg.load({
-                coreURL: Q.url('{{Safecloud}}/js/ffmpeg/core/ffmpeg-core.js'),
-                wasmURL: Q.url('{{Safecloud}}/js/ffmpeg/core/ffmpeg-core.wasm')
-            }).then(function () { return ffmpeg; });
-        });
+    // mediabunny is only needed to remux/transcode a video file into
+    // fragmented MP4 for the video index track, so it's not part of the
+    // base page weight — same lazy-load-on-first-use shape as
+    // Jets/_internal.js's ensureEthers. Much lighter than ffmpeg.wasm
+    // (~470KB minified vs. ~32MB of WASM core) and, being a pure WebCodecs
+    // demuxer/muxer rather than a stream-copy-only tool, supports a much
+    // broader set of input codecs/containers.
+    var _mediabunnyPromise = null;
+    _.ensureMediabunny = function () {
+        if (_mediabunnyPromise) { return _mediabunnyPromise; }
+        _mediabunnyPromise = import(Q.url('{{Safecloud}}/js/mediabunny/mediabunny.min.js'));
+        return _mediabunnyPromise;
     };
 
     return _;

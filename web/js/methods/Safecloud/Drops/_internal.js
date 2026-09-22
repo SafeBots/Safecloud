@@ -88,6 +88,9 @@ Q.exports(function () {
         }
         return _._state.prollyStore;
     }
+    // Exposed so Drops/init.js's full-log replay can share the same
+    // in-memory node store instead of duplicating this lazy-init logic.
+    _.getProllyStore = _getProllyStore;
 
     // ─────────────────────────────────────────────────────────────────────
     // 2. nowSec
@@ -244,11 +247,32 @@ Q.exports(function () {
         if (!Prolly) { return Promise.resolve(root); }
         var store = _getProllyStore();
 
+        // Prolly.set/.delete do real synchronous hashing work per CID
+        // (nodeHash/buildLeaves/digest, building/updating a Merkle tree) —
+        // chaining many of these via plain .then() never yields to the
+        // browser's paint/input loop, since promise callbacks run as
+        // microtasks that drain before rendering gets a turn. A Drop with
+        // a large accumulated diff log (this runs once per log entry during
+        // Drops.init()'s full-log replay) can freeze the tab for many
+        // seconds as a result. Yield back to the event loop periodically —
+        // time-boxed rather than every iteration, so small diffs aren't
+        // slowed down by yield overhead — to keep the tab responsive.
+        var lastYield = Date.now();
+        function maybeYield(value) {
+            var now = Date.now();
+            if (now - lastYield < 16) { return value; }
+            lastYield = now;
+            return new Promise(function (resolve) {
+                setTimeout(function () { resolve(value); }, 0);
+            });
+        }
+
         return diff.reduce(function (prev, entry) {
             return prev.then(function (cur) {
-                return entry.added
+                var next = entry.added
                     ? Prolly.set(cur, entry.cid, entry.cid, store)
                     : Prolly.delete(cur, entry.cid, store);
+                return next.then(maybeYield);
             });
         }, Promise.resolve(root));
     };

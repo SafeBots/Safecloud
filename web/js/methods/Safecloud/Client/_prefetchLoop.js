@@ -282,7 +282,7 @@ Q.exports(function (Q, _) {
     };
 
     function _chunkAtTime(seconds, chunkDuration, manifest) {
-        // The real, ffmpeg-authoritative per-chunk start times live at
+        // The real, mediabunny-authoritative per-chunk start times live at
         // manifest._index.chapters[].pts (see buildVideoIndex.js/Protocol.md)
         // — manifest.chunks never exists in this schema, so that branch was
         // pure dead code and every caller silently fell back to the naive
