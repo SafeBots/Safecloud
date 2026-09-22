@@ -138,6 +138,7 @@ Q.Tool.define('Safecloud/upload', function (options) {
                 }, extraOptions),
                 function (err, result) {
                     if (err) {
+                        $te.removeClass('Safecloud_upload_uploading');
                         tool.setStatus((Q.getObject('upload.UploadFailed', tool.text) || 'Upload failed') +
                             ': ' + (err.message || err), 'error');
                         return Q.handle(state.onError, tool, [err]);
@@ -150,6 +151,7 @@ Q.Tool.define('Safecloud/upload', function (options) {
             );
         }
 
+        $te.addClass('Safecloud_upload_uploading');
         tool.setStatus(
             Q.getObject('upload.Preparing', tool.text) || 'Preparing…', 'working');
         tool.setProgress(0);
@@ -207,8 +209,10 @@ Q.Tool.define('Safecloud/upload', function (options) {
     },
 
     setProgress: function (pct) {
-        $(this.element).find('.Safecloud_upload_progress_fill')
-            .css('width', Math.min(pct, 100) + '%');
+        pct = Math.min(Math.max(Math.round(pct), 0), 100);
+        var $te = $(this.element);
+        $te.find('.Safecloud_upload_progress_fill').css('width', pct + '%');
+        $te.find('.Safecloud_upload_progress_pct').text(pct + '%');
     },
 
     /**
@@ -291,8 +295,11 @@ Q.Template.set('Safecloud/upload',
                    '{{#if multiple}} multiple{{/if}}' +
                    ' style="display:none">' +
         '</div>' +
-        '<div class="Safecloud_upload_progress">' +
-            '<div class="Safecloud_upload_progress_fill"></div>' +
+        '<div class="Safecloud_upload_progress_row">' +
+            '<div class="Safecloud_upload_progress">' +
+                '<div class="Safecloud_upload_progress_fill"></div>' +
+            '</div>' +
+            '<div class="Safecloud_upload_progress_pct"></div>' +
         '</div>' +
         '<div class="Safecloud_upload_status"></div>' +
     '</div>'

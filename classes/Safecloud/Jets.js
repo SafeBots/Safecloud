@@ -2132,7 +2132,33 @@ function _handleSubtreePut(client, userId, payload, ack) {
                     }
                     if (rootCid) {
                         if (!_cidIndex[rootCid]) { _cidIndex[rootCid] = {}; }
-                        _cidIndex[rootCid][link.join('/')] = cids;
+                        var linkKey = link.join('/');
+                        // Large uploads arrive as several batched put calls for
+                        // the SAME link (Jets/put.js splits one track's chunks
+                        // across multiple emits to stay under the socket.io
+                        // maxHttpBufferSize) — chunkOffset/totalChunks say where
+                        // this batch's cids belong in the full per-link array,
+                        // so a later batch never clobbers an earlier one, and a
+                        // retried batch (same offset resent) is a no-op rather
+                        // than a duplicate/corruption. A put with no offset info
+                        // (single-batch — the common case for small tracks like
+                        // track/index or track/meta) behaves exactly as before.
+                        var totalForLink = payload.totalChunks || cids.length;
+                        var offsetInLink = payload.chunkOffset || 0;
+                        var existingCids = _cidIndex[rootCid][linkKey];
+                        if (!Array.isArray(existingCids) || existingCids.length < totalForLink) {
+                            var mergedCids = new Array(totalForLink);
+                            if (Array.isArray(existingCids)) {
+                                for (var ei = 0; ei < existingCids.length; ei++) {
+                                    mergedCids[ei] = existingCids[ei];
+                                }
+                            }
+                            existingCids = mergedCids;
+                        }
+                        for (var ci = 0; ci < cids.length; ci++) {
+                            existingCids[offsetInLink + ci] = cids[ci];
+                        }
+                        _cidIndex[rootCid][linkKey] = existingCids;
                         // Store treeN if provided so GET can resolve leaf link ranges
                         if (payload.treeN)     { _cidIndex[rootCid]['_treeN']     = payload.treeN; }
                         if (payload.treeDepth) { _cidIndex[rootCid]['_treeDepth'] = payload.treeDepth; }
