@@ -25,6 +25,8 @@ Q.Tool.define('Safecloud/video', function (options) {
     var tool  = this;
     var state = tool.state;
 
+    tool._startStallTimer = null;
+
         tool.text.video = Q.extend({
         Starting: 'Starting stream…',
         Error: 'Playback error',
@@ -45,9 +47,13 @@ Q.Tool.define('Safecloud/video', function (options) {
     // meaning as Q/video's state.positionUpdatePeriod, since Media/clip.js's
     // watchClip() reads it directly off whichever video tool is playing.
     positionUpdatePeriod: 5,
+    // How long to wait after calling play() for the 'playing' event before
+    // logging a start-stall diagnostic (see startStream).
+    startStallMs: 10000,
     onLoad:     new Q.Event(),
     onPlay:     new Q.Event(),
     onPlaying:  new Q.Event(),
+    onStall:    new Q.Event(),
     onError:    new Q.Event(function (err) {
         console.warn('Safecloud/video error:', err);
     })
@@ -142,13 +148,57 @@ Q.Tool.define('Safecloud/video', function (options) {
             // onPlaying/onPlay firing the same way Q/video's do — this tool
             // had neither before, so a safecloud clip silently never
             // triggered either.
+            //
+            // The billing interval is gated on 'playing'/'waiting', not on
+            // 'play': the DOM 'play' event fires as soon as .play() is
+            // called, even while readyState has no data yet (the spinner
+            // case), whereas 'playing' only fires once frames are actually
+            // rendering. Starting the per-minute charge timer on 'play'
+            // meant a stalled prefetch (e.g. the Jet/Drop socket loop
+            // getting starved by background-tab throttling) kept billing
+            // the viewer for a video that was never actually playing —
+            // confirmed live via a stuck spinner with active per-minute
+            // deductions. 'waiting' fires the moment playback stalls for
+            // lack of data, so it also stops the timer immediately when a
+            // previously-playing video re-buffers, not just on pause.
             videoEl.addEventListener('play', function () {
                 Q.handle(state.onPlay, tool);
+            });
+            videoEl.addEventListener('playing', function () {
+                tool._everPlayed = true;
+                clearTimeout(tool._startStallTimer);
                 tool._clearPlayInterval();
                 tool._playIntervalId = setInterval(function () {
                     Q.handle(state.onPlaying, tool, [tool]);
                 }, (state.positionUpdatePeriod || 5) * 1000);
             });
+            videoEl.addEventListener('waiting', function () {
+                tool._clearPlayInterval();
+            });
+
+            // The reported "player appears, loader just spins, no video
+            // loads" case: 'playing' never fires at all — 'waiting' does
+            // (or nothing does, if the video can't even get that far), so
+            // there's no natural event to hang a diagnostic off. This is
+            // the one case the billing fix above doesn't touch (billing was
+            // already correctly never starting), and until now it left
+            // zero trace anywhere unless devtools happened to be open with
+            // the Network tab already recording. Logs once, with the same
+            // per-content + connection-wide stats _prefetchLoop's own stall
+            // log uses, so a report like "it hung" has something to check
+            // after the fact.
+            tool._startStallTimer = setTimeout(function () {
+                if (tool._everPlayed) { return; }
+                console.warn('Safecloud/video: playback never started within '
+                    + (state.startStallMs / 1000) + 's of calling play() — '
+                    + 'likely the Drop storing this content is slow or unreachable.', {
+                        readyState:     videoEl.readyState,
+                        networkState:   videoEl.networkState,
+                        documentHidden: (typeof document !== 'undefined') && document.hidden,
+                        prefetch:       handle.stats ? handle.stats() : null
+                    });
+                Q.handle(state.onStall, tool, [{ phase: 'start' }]);
+            }, state.startStallMs || 10000);
             videoEl.addEventListener('pause', function () {
                 tool._clearPlayInterval();
             });
@@ -182,6 +232,7 @@ Q.Tool.define('Safecloud/video', function (options) {
     Q: {
         beforeRemove: function () {
             this._clearPlayInterval();
+            clearTimeout(this._startStallTimer);
             if (this._handle) { try { this._handle.stop(); } catch(e) {} }
         }
     }

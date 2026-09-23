@@ -1501,6 +1501,31 @@ Safecloud_Jets.listen = function (options) {
             _handleSubtreeGet(client, userId, payload, ack);
         });
 
+        // ── Cloud: check content availability without fetching ────────────────
+        // Lightweight pre-flight check — "is at least one Drop online that can
+        // serve this rootCid right now", with none of the grant/access/payment
+        // checks Safecloud/subtree/get does before an actual fetch. Meant for
+        // callers that need to know BEFORE committing to something (e.g. a
+        // paywall charging credits) whether playback could even succeed, so
+        // they don't charge a user only to hit "No Drops available" afterward.
+        on('Safecloud/subtree/checkAvailable', function (payload, ack) {
+            if (!ack) { return; }
+            payload = payload || {};
+            var rootCid = (typeof payload.rootCid === 'string') ? payload.rootCid : null;
+            if (!rootCid) {
+                return ack({ error: { code: 'BadRequest', message: 'rootCid required' } });
+            }
+            var flatCids = (_cidIndex[rootCid] && _cidIndex[rootCid]['track/data']) || [];
+            if (!flatCids.length) {
+                return ack(null, { available: false });
+            }
+            Safecloud_Jets.selectDrops([flatCids[0]], { forGet: true }).then(function (drops) {
+                ack(null, { available: !!(drops && drops.length) });
+            }).catch(function () {
+                ack(null, { available: false });
+            });
+        });
+
         // ── Jet info — payment + network configuration for browser clients ────
         // Lets Clouds and Drops learn addresses/prices straight from the Jet,
         // with no dependency on PHP exposing plugin config to the page.
@@ -2107,7 +2132,33 @@ function _handleSubtreePut(client, userId, payload, ack) {
                     }
                     if (rootCid) {
                         if (!_cidIndex[rootCid]) { _cidIndex[rootCid] = {}; }
-                        _cidIndex[rootCid][link.join('/')] = cids;
+                        var linkKey = link.join('/');
+                        // Large uploads arrive as several batched put calls for
+                        // the SAME link (Jets/put.js splits one track's chunks
+                        // across multiple emits to stay under the socket.io
+                        // maxHttpBufferSize) — chunkOffset/totalChunks say where
+                        // this batch's cids belong in the full per-link array,
+                        // so a later batch never clobbers an earlier one, and a
+                        // retried batch (same offset resent) is a no-op rather
+                        // than a duplicate/corruption. A put with no offset info
+                        // (single-batch — the common case for small tracks like
+                        // track/index or track/meta) behaves exactly as before.
+                        var totalForLink = payload.totalChunks || cids.length;
+                        var offsetInLink = payload.chunkOffset || 0;
+                        var existingCids = _cidIndex[rootCid][linkKey];
+                        if (!Array.isArray(existingCids) || existingCids.length < totalForLink) {
+                            var mergedCids = new Array(totalForLink);
+                            if (Array.isArray(existingCids)) {
+                                for (var ei = 0; ei < existingCids.length; ei++) {
+                                    mergedCids[ei] = existingCids[ei];
+                                }
+                            }
+                            existingCids = mergedCids;
+                        }
+                        for (var ci = 0; ci < cids.length; ci++) {
+                            existingCids[offsetInLink + ci] = cids[ci];
+                        }
+                        _cidIndex[rootCid][linkKey] = existingCids;
                         // Store treeN if provided so GET can resolve leaf link ranges
                         if (payload.treeN)     { _cidIndex[rootCid]['_treeN']     = payload.treeN; }
                         if (payload.treeDepth) { _cidIndex[rootCid]['_treeDepth'] = payload.treeDepth; }

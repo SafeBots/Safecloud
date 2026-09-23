@@ -25,7 +25,20 @@ Q.exports(function () {
         dropId:           null,    // from Safecloud/drop/register ack
         dropInfo:         null,    // last registration payload for reconnect
         connectingPromise:      null,  // in-flight connect Promise
-        _defaultHandlersWired:  false  // prevents duplicate handler registration
+        _defaultHandlersWired:  false, // prevents duplicate handler registration
+        // Rolling connection-quality counters across every emit() to this
+        // Jet, regardless of caller — the one place all subtree/get, drop
+        // registration, etc. requests pass through. See _.connectionStats().
+        stats: {
+            requests:        0,
+            acked:           0,
+            timedOut:        0,
+            errored:         0,
+            totalLatencyMs:  0,
+            lastLatencyMs:   null,
+            lastAckAt:       null,
+            recentLatencies: []   // last 20 acked round-trips
+        }
     };
 
     // ── Cloud EVM payment signing state ──────────────────────────────────────
@@ -195,12 +208,14 @@ Q.exports(function () {
      */
     _.emit = function (eventName, payload, timeoutMs) {
         timeoutMs = timeoutMs || EMIT_TIMEOUT_DEFAULT;
+        var startedAt = Date.now();
         return _.withSocket(function (qs) {
             return new Promise(function (resolve, reject) {
                 var settled = false;
                 var timer = setTimeout(function () {
                     if (settled) { return; }
                     settled = true;
+                    _.recordEmitOutcome(startedAt, 'timeout');
                     reject(new Error('Q.Safecloud.Jets: timeout waiting for ack of ' + eventName));
                 }, timeoutMs);
 
@@ -210,23 +225,76 @@ Q.exports(function () {
                     clearTimeout(timer);
                     // Handle both (err, result) and ({ error }) ack shapes
                     if (errOrResult && errOrResult.error) {
+                        _.recordEmitOutcome(startedAt, 'error');
                         return reject(new Error(
                             errOrResult.error.message || JSON.stringify(errOrResult.error)
                         ));
                     }
                     if (errOrResult && !(result !== undefined)) {
                         // Single-argument ack with success object
+                        _.recordEmitOutcome(startedAt, 'ok');
                         return resolve(errOrResult);
                     }
                     if (errOrResult) {
+                        _.recordEmitOutcome(startedAt, 'error');
                         return reject(typeof errOrResult === 'string'
                             ? new Error(errOrResult) : errOrResult);
                     }
+                    _.recordEmitOutcome(startedAt, 'ok');
                     resolve(result);
                 });
             });
         });
     };
+
+    // ── Connection-quality tracking ───────────────────────────────────────────
+    // Populated by every _.emit() call above (subtree/get, drop registration,
+    // jet/info, etc.) so a stall anywhere can be diagnosed against overall
+    // socket health, not just that one request — e.g. distinguishing "this
+    // Drop isn't answering" (isolated timeouts while recentAvgLatencyMs stays
+    // low) from "the socket itself is in trouble" (rising latency/timeouts
+    // across the board).
+    _.recordEmitOutcome = function (startedAt, outcome) {
+        var s = _._state.stats;
+        var elapsed = Date.now() - startedAt;
+        s.requests++;
+        if (outcome === 'ok') {
+            s.acked++;
+            s.lastAckAt      = Date.now();
+            s.lastLatencyMs  = elapsed;
+            s.totalLatencyMs += elapsed;
+            s.recentLatencies.push(elapsed);
+            if (s.recentLatencies.length > 20) { s.recentLatencies.shift(); }
+        } else if (outcome === 'timeout') {
+            s.timedOut++;
+        } else {
+            s.errored++;
+        }
+    };
+
+    _.connectionStats = function () {
+        var s = _._state.stats;
+        var recent = s.recentLatencies;
+        var recentAvg = recent.length
+            ? Math.round(recent.reduce(function (a, b) { return a + b; }, 0) / recent.length)
+            : null;
+        return {
+            connected:          _._state.connected,
+            reconnectAttempt:   _._state.reconnectAttempt,
+            requests:           s.requests,
+            acked:              s.acked,
+            timedOut:           s.timedOut,
+            errored:            s.errored,
+            avgLatencyMs:       s.acked ? Math.round(s.totalLatencyMs / s.acked) : null,
+            recentAvgLatencyMs: recentAvg,
+            lastLatencyMs:      s.lastLatencyMs,
+            msSinceLastAck:     s.lastAckAt ? (Date.now() - s.lastAckAt) : null
+        };
+    };
+    // Cross-namespace access, same pattern as Q.Safecloud.ensureEthers above —
+    // lets any caller (tools/video.js, _prefetchLoop.js, a future in-page
+    // dashboard) read live connection quality without its own Jets method file.
+    Q.Safecloud.Jets.connectionStats = _.connectionStats;
 
     // ─────────────────────────────────────────────────────────────────────
     // ab2b64 / b642ab — ArrayBuffer ↔ base64 for socket.io transport

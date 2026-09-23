@@ -127,6 +127,7 @@ Q.exports(function (Q, _) {
             if (options.embed) {
                 var embedUrl = embedBase + '?rootCid='
                     + encodeURIComponent(rootCid) + jetQuery + '#' + frag;
+                result.embedUrl = embedUrl;
                 result.embedCode = '<iframe src="' + embedUrl + '"\n'
                     + '        allow="autoplay; encrypted-media; '
                     + 'publickey-credentials-get *"\n'
@@ -216,6 +217,7 @@ Q.exports(function (Q, _) {
             if (options.embed) {
                 var eUrl = embedBase + '?rootCid='
                     + encodeURIComponent(rootCid) + jetQuery + '#' + frag;
+                shareResult.embedUrl = eUrl;
                 shareResult.embedCode = '<iframe src="' + eUrl + '"\n'
                     + '        allow="autoplay; encrypted-media; '
                     + 'publickey-credentials-get *"\n'

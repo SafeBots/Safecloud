@@ -132,7 +132,17 @@ Q.exports(function (Q, _) {
 
     /**
      * Replay the full log to rebuild the in-memory Prolly store from scratch.
-     * O(log entries) — typically small.
+     *
+     * Consolidates every diff entry into a final present/absent map FIRST,
+     * then calls Q.Data.Prolly.build() exactly once over the resulting key
+     * set — NOT once per log entry. Q.Data.Prolly.set()/.delete() are each
+     * documented as "v1: full rebuild" (O(existing tree size) per call), so
+     * applying n diffs one at a time here used to cost O(n²) total hashing
+     * work — replaying a Drop with a few thousand stored chunks could
+     * freeze the tab for tens of seconds. A single build() over the final
+     * set is O(n log n) and produces the identical root hash, since the
+     * tree's shape is fully determined by its final contents, not by the
+     * history of how it got there.
      */
     function _replayLog(db) {
         return new Promise(function (resolve, reject) {
@@ -145,14 +155,29 @@ Q.exports(function (Q, _) {
             entries = entries.filter(function (e) { return typeof e.seq === 'number'; });
             entries.sort(function (a, b) { return a.seq - b.seq; });
 
-            return entries.reduce(function (prev, entry) {
-                return prev.then(function (root) {
-                    if (entry.reason === 'reset' || !entry.diff) {
-                        return null; // reset wipes tree
+            var present = new Map();
+            entries.forEach(function (entry) {
+                if (entry.reason === 'reset' || !entry.diff) {
+                    present.clear();
+                    return;
+                }
+                entry.diff.forEach(function (d) {
+                    if (d.added) {
+                        present.set(d.cid, true);
+                    } else {
+                        present.delete(d.cid);
                     }
-                    return _.applyDiff(root, entry.diff);
                 });
-            }, Promise.resolve(null));
+            });
+
+            if (!present.size) {
+                return Promise.resolve(null);
+            }
+            var finalEntries = [];
+            present.forEach(function (_v, cid) {
+                finalEntries.push({ key: cid, value: cid });
+            });
+            return Q.Data.Prolly.build(finalEntries, _.getProllyStore());
         }).then(function (replayedRoot) {
             // Trust the log replay result — even null (after a reset entry)
             // A null result means the tree was explicitly reset; set it to null.

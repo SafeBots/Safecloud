@@ -15,10 +15,12 @@
  *   @param {Number}  [options.chunkSize]    Bytes per chunk. Default 256 KB.
  *   @param {Boolean} [options.multiple]     Allow multiple file uploads.
  *   @param {String}  [options.accept]       File input accept string.
- *   @param {Q.Event} [options.onStore]      Fired with (manifest, rootKey, videoThumbnail) after upload.
+ *   @param {Q.Event} [options.onStore]      Fired with (manifest, rootKey, videoThumbnail, videoDuration) after upload.
  *     videoThumbnail is a "data:image/jpeg;base64,..." data URL captured from a
  *     random frame of the video during the "Preparing…" stage, or null if the
  *     file wasn't a video or the frame couldn't be captured (e.g. unsupported codec).
+ *     videoDuration is the video's length in seconds (from buildVideoIndex's
+ *     remux pass), or null if unavailable.
  *   @param {Q.Event} [options.onProgress]   Fired with (pct) during upload.
  *   @param {Q.Event} [options.onError]      Fired on error.
  */
@@ -109,11 +111,24 @@ Q.Tool.define('Safecloud/upload', function (options) {
         var $te   = $(tool.element);
         var isVideo = file.type && file.type.indexOf('video/') === 0;
 
+        // Progress row is hidden (Safecloud_upload_hasFile in upload.css)
+        // until a file is actually picked — showing it earlier displayed a
+        // 0% bar with nothing happening yet.
+        $te.addClass('Safecloud_upload_hasFile');
+
         // Captured asynchronously below, in parallel with the drop-wait /
         // remuxing / encryption steps that follow — by the time doStore()'s
         // upload finishes (always much later than a single canvas grab),
         // this closure variable already holds the result (or null).
         var videoThumbnail = null;
+
+        // buildVideoIndex() already computes this (from the remuxed
+        // fragments' tfdt boxes, see buildVideoIndex.js) for its own
+        // index-track needs, but that index gets encrypted into
+        // track/index — the plain manifest never carries duration. Capture
+        // it here, before encryption, so callers (e.g. per-minute pricing)
+        // can use it without needing the rootKey to decrypt anything.
+        var videoDuration = null;
 
         function doStore(fileData, extraOptions) {
             Q.Safecloud.Client.store(
@@ -128,6 +143,7 @@ Q.Tool.define('Safecloud/upload', function (options) {
                 }, extraOptions),
                 function (err, result) {
                     if (err) {
+                        $te.removeClass('Safecloud_upload_uploading');
                         tool.setStatus((Q.getObject('upload.UploadFailed', tool.text) || 'Upload failed') +
                             ': ' + (err.message || err), 'error');
                         return Q.handle(state.onError, tool, [err]);
@@ -135,11 +151,12 @@ Q.Tool.define('Safecloud/upload', function (options) {
                     tool.setStatus(
                         (Q.getObject('upload.Uploaded', tool.text) || 'Uploaded') + ': ' + file.name, 'ok');
                     tool.setProgress(100);
-                    Q.handle(state.onStore, tool, [result.manifest, result.rootKey, videoThumbnail]);
+                    Q.handle(state.onStore, tool, [result.manifest, result.rootKey, videoThumbnail, videoDuration]);
                 }
             );
         }
 
+        $te.addClass('Safecloud_upload_uploading');
         tool.setStatus(
             Q.getObject('upload.Preparing', tool.text) || 'Preparing…', 'working');
         tool.setProgress(0);
@@ -179,6 +196,8 @@ Q.Tool.define('Safecloud/upload', function (options) {
                         return doStore(file, {});
                     }
 
+                    videoDuration = Q.getObject('index.totalDuration', result) || null;
+
                     doStore(result.buffer, {
                         type: 'video/mp4',
                         chunkBoundaries: result.chunkBoundaries,
@@ -195,8 +214,10 @@ Q.Tool.define('Safecloud/upload', function (options) {
     },
 
     setProgress: function (pct) {
-        $(this.element).find('.Safecloud_upload_progress_fill')
-            .css('width', Math.min(pct, 100) + '%');
+        pct = Math.min(Math.max(Math.round(pct), 0), 100);
+        var $te = $(this.element);
+        $te.find('.Safecloud_upload_progress_fill').css('width', pct + '%');
+        $te.find('.Safecloud_upload_progress_pct').text(pct + '%');
     },
 
     /**
@@ -279,8 +300,11 @@ Q.Template.set('Safecloud/upload',
                    '{{#if multiple}} multiple{{/if}}' +
                    ' style="display:none">' +
         '</div>' +
-        '<div class="Safecloud_upload_progress">' +
-            '<div class="Safecloud_upload_progress_fill"></div>' +
+        '<div class="Safecloud_upload_progress_row">' +
+            '<div class="Safecloud_upload_progress">' +
+                '<div class="Safecloud_upload_progress_fill"></div>' +
+            '</div>' +
+            '<div class="Safecloud_upload_progress_pct"></div>' +
         '</div>' +
         '<div class="Safecloud_upload_status"></div>' +
     '</div>'

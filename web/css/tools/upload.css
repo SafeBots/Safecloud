@@ -23,6 +23,8 @@
 .Safecloud_upload_zone:hover  { border-color: rgba(0,255,136,.6); background: rgba(0,255,136,.04); }
 .Safecloud_upload_dragover    { border-color: #00ff88 !important; background: rgba(0,255,136,.07) !important; }
 
+.Safecloud_upload_uploading .Safecloud_upload_zone { display: none; }
+
 .Safecloud_upload_icon {
     font-size: 48px;
     color: #00ff88;
@@ -47,7 +49,16 @@
 /* file input is display:none in the template */
 .Safecloud_upload_input { display: none; }
 
+.Safecloud_upload_progress_row {
+    display: none;
+    align-items: center;
+    gap: 10px;
+}
+.Safecloud_upload_tool.Safecloud_upload_hasFile .Safecloud_upload_progress_row {
+    display: flex;
+}
 .Safecloud_upload_progress {
+    flex: 1 1 auto;
     height: 3px;
     background: #1e281e;
     overflow: hidden;
@@ -59,6 +70,13 @@
     background: #00ff88;
     box-shadow: 0 0 6px rgba(0,255,136,.7);
     transition: width .4s cubic-bezier(.4,0,.2,1);
+}
+.Safecloud_upload_progress_pct {
+    flex: 0 0 auto;
+    min-width: 3em;
+    text-align: right;
+    font-size: 11px;
+    color: #5a7a5a;
 }
 
 .Safecloud_upload_status {
