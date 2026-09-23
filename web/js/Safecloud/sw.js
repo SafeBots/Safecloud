@@ -115,6 +115,20 @@ self.addEventListener('message', function (event) {
     var msg = event.data;
     if (!msg || !msg.type) { return; }
 
+    // Diagnostic-only: everything logged so far (Q.Safecloud.sw: fetch /
+    // segmentNotAvailable) is on the FETCH side. Nothing has yet confirmed
+    // whether postMessage() calls for segments are actually reaching this
+    // handler at all — a real possibility given _prefetchLoop reported
+    // delivering 3 segments while segments[videoId] came back completely
+    // empty (haveVersions: [], not just the wrong version key). Logging
+    // every message's type/videoId/segIndex here is what will show
+    // definitively whether the 'segment' case below ever runs for this
+    // videoId, before it does anything else with the message.
+    _notifyClients({
+        event: 'message', msgType: msg.type, videoId: msg.videoId,
+        version: msg.version, segIndex: msg.segIndex
+    });
+
     switch (msg.type) {
 
         case 'Q.Safecloud.Client.register':
@@ -178,21 +192,41 @@ self.addEventListener('fetch', function (event) {
     event.respondWith(handleSafecloudRequest(event.request, url));
 });
 
+// Diagnostic-only: forwards to the page's own console (a service worker's
+// console is a SEPARATE devtools context most people never open, so a
+// silent failure in here previously left zero trace anywhere the page's
+// own diagnostics — _prefetchLoop's stall warning, hls.js's event log —
+// could see). Fire-and-forget; never blocks the actual response.
+function _notifyClients(message) {
+    try {
+        self.clients.matchAll({ includeUncontrolled: true }).then(function (clientList) {
+            clientList.forEach(function (client) {
+                client.postMessage(Object.assign({ type: 'Q.Safecloud.sw.diagnostic' }, message));
+            });
+        });
+    } catch (e) { /* best-effort */ }
+}
+
 function handleSafecloudRequest(request, url) {
     var parts   = url.pathname.replace(/^\//, '').split('/');
     var videoId = parts[0];
     var rest    = parts.slice(1).join('/');
 
     var session = sessions[videoId];
-    if (session) { return _routeSafecloud(request, videoId, rest, session); }
+    if (session) {
+        _notifyClients({ event: 'fetch', videoId: videoId, path: rest, sessionFrom: 'memory' });
+        return _routeSafecloud(request, videoId, rest, session);
+    }
 
     // SW may have restarted since register — restore from IndexedDB
     return _idbGetSession(videoId).then(function (restored) {
         if (!restored) {
+            _notifyClients({ event: 'fetch', videoId: videoId, path: rest, sessionFrom: 'none' });
             return new Response('Safecloud session not found', { status: 404 });
         }
         sessions[videoId] = restored;
         if (!segments[videoId]) { segments[videoId] = {}; }
+        _notifyClients({ event: 'fetch', videoId: videoId, path: rest, sessionFrom: 'indexedDB' });
         return _routeSafecloud(request, videoId, rest, restored);
     });
 }
@@ -342,32 +376,66 @@ function serveInitSegment(videoId, version, session) {
 
 // ── Segment server ─────────────────────────────────────────────────────────────
 
+// hls.js autostarts loading segment 0 the instant it finishes parsing the
+// (locally-served, near-instant) manifest — which is always faster than
+// _prefetchLoop's first real round-trip to the Jet server (avgLatencyMs is
+// in the hundreds of ms). That 503-during-autostart isn't rare, it's the
+// normal first-load sequence, and hls.js's own retry was found (live, via
+// stringified diagnostic logs) to throw a fatal 'internalException' on it
+// rather than cleanly retrying, permanently stalling playback rather than
+// bridging the gap. Instead of trying to make hls.js recover from that,
+// hold the fetch open briefly and poll for the segment to actually arrive
+// — since it typically does within ~1s, this avoids the 503 (and the
+// exception it triggers) for the common case entirely, while still falling
+// back to a 503 (letting hls.js's normal retry take over) if truly nothing
+// arrives in time.
+var SEGMENT_WAIT_MS  = 5000;
+var SEGMENT_POLL_MS  = 150;
+
+function _waitForSegment(videoId, version, segIndex, timeoutMs) {
+    var start = Date.now();
+    return new Promise(function (resolve) {
+        (function check() {
+            var segData = segments[videoId] &&
+                          segments[videoId][version] &&
+                          segments[videoId][version][segIndex];
+            if (segData) { return resolve(segData); }
+            if (Date.now() - start >= timeoutMs) { return resolve(null); }
+            setTimeout(check, SEGMENT_POLL_MS);
+        })();
+    });
+}
+
 function serveSegment(request, videoId, version, segIndex, session) {
-    var segData = segments[videoId] &&
-                  segments[videoId][version] &&
-                  segments[videoId][version][segIndex];
-
-    if (!segData) {
-        return new Response('Segment not yet available', {
-            status: 503, headers: { 'Retry-After': '1' }
-        });
-    }
-
-    return decryptSegment(segData, segIndex, session, version)
-        .then(function (plaintext) {
-            var rangeHeader = request.headers.get('Range');
-            if (rangeHeader) { return serveRange(plaintext, rangeHeader); }
-            return new Response(plaintext, {
-                status: 200,
-                headers: {
-                    'Content-Type':   'video/mp4',
-                    'Content-Length': String(plaintext.byteLength),
-                    'Cache-Control':  'no-store'
-                }
-            });
-        })
-        .catch(function (err) {
-            return new Response('Decryption failed: ' + err.message, { status: 500 });
+    return _waitForSegment(videoId, version, segIndex, SEGMENT_WAIT_MS)
+        .then(function (segData) {
+            if (!segData) {
+                _notifyClients({
+                    event: 'segmentNotAvailable', videoId: videoId, version: version, segIndex: segIndex,
+                    haveVersions: segments[videoId] ? Object.keys(segments[videoId]) : [],
+                    haveSegments: (segments[videoId] && segments[videoId][version])
+                        ? Object.keys(segments[videoId][version]) : []
+                });
+                return new Response('Segment not yet available', {
+                    status: 503, headers: { 'Retry-After': '1' }
+                });
+            }
+            return decryptSegment(segData, segIndex, session, version)
+                .then(function (plaintext) {
+                    var rangeHeader = request.headers.get('Range');
+                    if (rangeHeader) { return serveRange(plaintext, rangeHeader); }
+                    return new Response(plaintext, {
+                        status: 200,
+                        headers: {
+                            'Content-Type':   'video/mp4',
+                            'Content-Length': String(plaintext.byteLength),
+                            'Cache-Control':  'no-store'
+                        }
+                    });
+                })
+                .catch(function (err) {
+                    return new Response('Decryption failed: ' + err.message, { status: 500 });
+                });
         });
 }
 

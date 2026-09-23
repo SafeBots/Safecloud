@@ -23,6 +23,19 @@ Q.exports(function (Q, _) {
 
         var swUrl = Q.url('{{Safecloud}}/js/Safecloud/sw.js');
 
+        // Forward the SW's own diagnostic messages (sw.js's _notifyClients)
+        // into this page's console — a service worker's console is a
+        // separate devtools context almost nobody opens, so without this,
+        // a fetch the SW couldn't serve (session not found, segment not
+        // yet available) left zero trace anywhere the page-side stall/
+        // hls.js diagnostics could see. Attached once, before register()
+        // resolves, so nothing that arrives during activation is missed.
+        navigator.serviceWorker.addEventListener('message', function (event) {
+            var msg = event.data;
+            if (!msg || msg.type !== 'Q.Safecloud.sw.diagnostic') { return; }
+            console.info('Q.Safecloud.sw: ' + msg.event + ' ' + JSON.stringify(msg));
+        });
+
         _promise = navigator.serviceWorker.register(swUrl, { scope: '/' })
             .then(function (registration) {
                 _registration = registration;

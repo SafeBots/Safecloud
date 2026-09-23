@@ -73,9 +73,46 @@ Q.exports(function (Q, _) {
                 fragLoadingMaxRetry:        8,
                 fragLoadingMaxRetryTimeout: 20000
             });
-            var fatalRecoveries = 0;
+            // Diagnostic-only, no behavior change: the last incident (a
+            // fresh upload → immediately redirected to watch it → never
+            // played) left readyState stuck at 0 for 10+ seconds with no
+            // fatal error ever firing — meaning the existing fatal-error
+            // handler below had nothing to react to. That's consistent with
+            // at least two very different failures (the SW never actually
+            // intercepting the fetch to the fake host at all, vs. it
+            // responding but something downstream — MediaSource attach,
+            // fragment append — silently stalling) and nothing here could
+            // tell them apart. Logging hls.js's own lifecycle events (not
+            // just fatal ones) is what will actually distinguish them next
+            // time instead of guessing again.
+            var milestones = [
+                'mediaAttaching', 'mediaAttached', 'manifestLoading', 'manifestParsed',
+                'levelLoading', 'levelLoaded', 'fragLoading', 'fragLoaded',
+                'bufferAppending', 'bufferAppended', 'bufferEos'
+            ];
+            milestones.forEach(function (name) {
+                var evt = Hls.Events[name.replace(/([A-Z])/g, '_$1').toUpperCase()];
+                if (!evt) { return; }
+                hls.on(evt, function () {
+                    console.info('Q.Safecloud.Client.stream: hls.js ' + name + ' ' + JSON.stringify({
+                        videoId: videoId, readyState: video.readyState, networkState: video.networkState
+                    }));
+                });
+            });
             hls.on(Hls.Events.ERROR, function (event, data) {
-                if (!data || !data.fatal) { return; }
+                if (!data) { return; }
+                if (!data.fatal) {
+                    // Non-fatal errors (e.g. a 503 while the SW is still
+                    // waiting for _prefetchLoop to post a segment) are
+                    // normal and usually self-resolve — but a long run of
+                    // them with nothing ever going fatal is itself a useful
+                    // signal, so log them too instead of only the fatal case.
+                    console.warn('Q.Safecloud.Client.stream: non-fatal HLS error: '
+                        + (data.details || 'unknown') + ' ' + JSON.stringify({
+                            videoId: videoId, type: data.type, url: data.url
+                        }));
+                    return;
+                }
                 Q.log('Q.Safecloud.Client.stream: fatal HLS error: '
                     + (data.details || 'unknown'), 'Safecloud');
 
@@ -98,6 +135,24 @@ Q.exports(function (Q, _) {
                     hls.startLoad();
                 } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
                     hls.recoverMediaError();
+                } else if (data.details === 'internalException') {
+                    // hls.js's own textbook advice treats anything that
+                    // isn't NETWORK_ERROR/MEDIA_ERROR as unrecoverable and
+                    // destroys the player — reasonable for a normal CDN,
+                    // but confirmed live to be the wrong call here: a
+                    // fresh upload, watched immediately, hit exactly this
+                    // ('internalException', type OTHER_ERROR) on the very
+                    // first fragment attempt — hls.js autostarts loading
+                    // segment 0 as soon as the manifest parses, before
+                    // _prefetchLoop has delivered anything yet, and the
+                    // SW's by-design 503 ("not yet available", see
+                    // serveSegment) for that very first attempt seems to
+                    // land hls.js in an internal state it doesn't expect.
+                    // That's exactly the transient condition
+                    // fragLoadingMaxRetry above exists to ride out — so
+                    // retry instead of tearing the whole player down over
+                    // it, same as the NETWORK_ERROR case.
+                    hls.startLoad();
                 } else {
                     hls.destroy();
                 }
@@ -223,7 +278,25 @@ Q.exports(function (Q, _) {
                     videoId:    videoId,
                     manifest:   activeManifest,
                     capability: capability,
-                    versions:   hydratedVersions.length ? hydratedVersions : null
+                    versions:   hydratedVersions.length ? hydratedVersions : null,
+                    // Without this, sw.js's register handler defaults
+                    // session.activeVersion to '' (msg.version || ''),
+                    // while _prefetchLoop (below) independently derives
+                    // this exact same startVersion via its own
+                    // _getFirstVersion() and posts every segment under
+                    // THAT key — so whenever a manifest actually has a
+                    // non-empty first version label, segments were stored
+                    // under e.g. "original" but looked up under '' the
+                    // instant a fragment URL didn't embed a version
+                    // (serveSegment's segVersion falls back to
+                    // session.activeVersion). Confirmed live: _prefetchLoop
+                    // reported deliveredCount:3 (real — it did post them)
+                    // while the SW's own serveSegment logged
+                    // segmentNotAvailable for segIndex 0 at the same time —
+                    // two different storage keys, both truthfully empty/full
+                    // from their own side. This is what was actually killing
+                    // playback, not a slow Drop.
+                    version:    startVersion
                 });
             }
 

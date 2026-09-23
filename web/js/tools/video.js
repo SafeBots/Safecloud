@@ -191,12 +191,13 @@ Q.Tool.define('Safecloud/video', function (options) {
                 if (tool._everPlayed) { return; }
                 console.warn('Safecloud/video: playback never started within '
                     + (state.startStallMs / 1000) + 's of calling play() — '
-                    + 'likely the Drop storing this content is slow or unreachable.', {
+                    + 'likely the Drop storing this content is slow or unreachable. '
+                    + JSON.stringify({
                         readyState:     videoEl.readyState,
                         networkState:   videoEl.networkState,
                         documentHidden: (typeof document !== 'undefined') && document.hidden,
                         prefetch:       handle.stats ? handle.stats() : null
-                    });
+                    }));
                 Q.handle(state.onStall, tool, [{ phase: 'start' }]);
             }, state.startStallMs || 10000);
             videoEl.addEventListener('pause', function () {

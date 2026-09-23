@@ -56,6 +56,9 @@ Q.exports(function (Q, _) {
         // an entirely different set of chunks.
         var _delivered = {};
         var _segStart  = _chunkAtTime(startAt, chunkDuration, videoManifest);
+        // Next index the tick loop hasn't requested yet — see _tick() for
+        // why this, not currentTime, drives the window's upper edge.
+        var _frontier  = _segStart;
         var _manifest  = _getVersionManifest(videoManifest, _version);
         var _grants    = _getVersionGrants(capability, _version);
         var _loopTimer = null;
@@ -250,9 +253,11 @@ Q.exports(function (Q, _) {
 
             var snapshot = {
                 videoId:          videoId,
+                version:          _version,
                 segIndex:         _currentSegIndex(),
                 chunkCount:       _manifest.chunkCount,
                 deliveredCount:   Object.keys(_delivered).length,
+                deliveredIndices: Object.keys(_delivered),
                 inFlightCount:    Object.keys(_inFlight).length,
                 msSinceDelivery:  since,
                 nullChunks:       _segStats.nullChunks,
@@ -264,7 +269,8 @@ Q.exports(function (Q, _) {
             };
             console.warn('Q.Safecloud.Client._prefetchLoop: no chunk delivered in '
                 + Math.round(since / 1000) + 's for videoId ' + videoId
-                + ' — likely a slow or unreachable Drop for this content.', snapshot);
+                + ' — likely a slow or unreachable Drop for this content. '
+                + JSON.stringify(snapshot));
             if (options.onStall) { options.onStall(snapshot); }
         }
 
@@ -275,7 +281,25 @@ Q.exports(function (Q, _) {
                 return;
             }
             var current = _currentSegIndex();
-            for (var i = 0; i < prefetchAhead; i++) { _fetchSeg(current + i); }
+            // The window's upper edge must NOT be pinned to current+prefetchAhead:
+            // hls.js buffers forward toward its own target (default ~30s) as fast
+            // as fetches resolve, regardless of how much of the buffer has
+            // actually played back yet — a fresh upload with a fast/local SW
+            // round-trip can exhaust an initial [current, current+prefetchAhead)
+            // window in well under a second, long before currentTime has moved.
+            // Confirmed live: playback consistently stalled right around
+            // prefetchAhead * chunkDuration seconds in. Instead, _frontier keeps
+            // advancing by prefetchAhead segments every tick (~1/s) regardless of
+            // playback position, so the loop races ahead of hls.js's own demand
+            // instead of trailing behind it — while still never falling behind
+            // current itself, so a forward seek (including one driven directly by
+            // the native scrubber, which doesn't go through this loop's own
+            // seek()) doesn't leave the frontier stuck fetching an already-passed
+            // range.
+            if (current > _frontier) { _frontier = current; }
+            var windowEnd = Math.min(_frontier + prefetchAhead, _manifest.chunkCount || Infinity);
+            for (var i = _frontier; i < windowEnd; i++) { _fetchSeg(i); }
+            _frontier = windowEnd;
             _checkStall();
             _loopTimer = setTimeout(_tick, 1000);
         }
@@ -354,6 +378,7 @@ Q.exports(function (Q, _) {
                 _lastDeliveredAt = Date.now();
                 _stalled = false;
                 _segStart = _chunkAtTime(seconds, chunkDuration, _manifest);
+                _frontier = _segStart;
                 if (!_paused && !_stopped) { clearTimeout(_loopTimer); _loopTimer = setTimeout(_tick, 0); }
                 var sw = navigator.serviceWorker && navigator.serviceWorker.controller;
                 if (sw) {
@@ -371,6 +396,7 @@ Q.exports(function (Q, _) {
                 // Update chunkDuration for the new version (may differ between renditions)
                 chunkDuration = _manifest.chunkDuration || videoManifest.chunkDuration || 6;
                 if (timestamp != null) { _segStart = _chunkAtTime(timestamp, chunkDuration, _manifest); }
+                _frontier = _segStart;
                 var sw = navigator.serviceWorker && navigator.serviceWorker.controller;
                 if (sw) {
                     sw.postMessage({ type: 'Q.Safecloud.Client.setVersion', videoId: videoId,
