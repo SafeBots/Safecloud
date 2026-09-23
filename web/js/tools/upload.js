@@ -111,6 +111,11 @@ Q.Tool.define('Safecloud/upload', function (options) {
         var $te   = $(tool.element);
         var isVideo = file.type && file.type.indexOf('video/') === 0;
 
+        // Progress row is hidden (Safecloud_upload_hasFile in upload.css)
+        // until a file is actually picked — showing it earlier displayed a
+        // 0% bar with nothing happening yet.
+        $te.addClass('Safecloud_upload_hasFile');
+
         // Captured asynchronously below, in parallel with the drop-wait /
         // remuxing / encryption steps that follow — by the time doStore()'s
         // upload finishes (always much later than a single canvas grab),

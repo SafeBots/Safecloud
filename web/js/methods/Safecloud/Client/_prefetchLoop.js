@@ -34,6 +34,11 @@ Q.exports(function (Q, _) {
         };
         var startAt       = options.at             || 0;
         var startVersion  = options.version        || _getFirstVersion(videoManifest);
+        // How long with zero chunks delivered before we treat this as a
+        // stall worth logging — not a hard error (the loop keeps retrying
+        // regardless), just the line between "normal buffering" and "this
+        // looks like the Drop for this content isn't answering."
+        var stallLogMs    = options.stallLogMs     || 8000;
 
         var _stopped   = false;
         var _paused    = false;
@@ -54,6 +59,14 @@ Q.exports(function (Q, _) {
         var _manifest  = _getVersionManifest(videoManifest, _version);
         var _grants    = _getVersionGrants(capability, _version);
         var _loopTimer = null;
+        var _loopStartedAt   = Date.now();
+        var _lastDeliveredAt = null;
+        var _stalled         = false;
+        // Per-content counters (as opposed to Q.Safecloud.Jets.connectionStats'
+        // socket-wide ones) — how THIS video's own fetches are faring, so a
+        // stall log can tell "only this content's requests are failing" apart
+        // from "the whole connection is unhealthy."
+        var _segStats = { nullChunks: 0, timeouts: 0, errors: 0 };
 
         function _getFirstVersion(vm) {
             return (vm.versions && vm.versions[0] && vm.versions[0].label) || null;
@@ -107,12 +120,25 @@ Q.exports(function (Q, _) {
                 payments:       options.payments
             }).then(function (result) {
                 var chunk = result.chunks && result.chunks[0];
-                if (!chunk) { return; }
+                if (!chunk) {
+                    // Not an error (Jets/get.js: null means "unavailable,
+                    // retry"), but silently swallowing it left zero trace of
+                    // a Drop that never actually has the chunk it's supposed
+                    // to be serving — count it so a stall log can show
+                    // "N consecutive nulls for this content" instead of
+                    // just "no chunk yet."
+                    _segStats.nullChunks++;
+                    return;
+                }
 
                 if (onChunk) {
                     // ── MSE path: decrypt and deliver plaintext ──────────────
                     return _decryptChunk(chunk, segIndex).then(function (plaintext) {
-                        if (!_stopped) { onChunk(segIndex, plaintext); _delivered[segIndex] = true; }
+                        if (!_stopped) {
+                            onChunk(segIndex, plaintext);
+                            _delivered[segIndex] = true;
+                            _onDelivered();
+                        }
                     });
                 }
 
@@ -129,8 +155,11 @@ Q.exports(function (Q, _) {
                         iv:         chunk.iv
                     });
                     _delivered[segIndex] = true;
+                    _onDelivered();
                 }
             }).catch(function (err) {
+                if (/timeout/i.test(err && err.message)) { _segStats.timeouts++; }
+                else { _segStats.errors++; }
                 onError(err);
             }).then(function () {
                 delete _inFlight[segIndex];
@@ -194,6 +223,51 @@ Q.exports(function (Q, _) {
 
         // ── Tick ──────────────────────────────────────────────────────────────
 
+        function _onDelivered() {
+            _lastDeliveredAt = Date.now();
+            if (_stalled) {
+                _stalled = false;
+                console.info('Q.Safecloud.Client._prefetchLoop: recovered — '
+                    + 'chunk delivered for videoId ' + videoId + ' after a stall.');
+            }
+        }
+
+        // Fires once when this content has gone stallLogMs with zero chunks
+        // delivered — the concrete, actionable version of "the player never
+        // starts / freezes": distinguishes a slow Drop (isolated nulls/
+        // timeouts for THIS content while the socket's overall latency stays
+        // normal) from a broken connection (elevated timedOut/errored across
+        // Q.Safecloud.Jets.connectionStats() too), without needing devtools
+        // open at the exact moment it happens to have caught the raw frames.
+        function _checkStall() {
+            // Fully delivered — nothing left to fetch, not a stall.
+            if (_manifest.chunkCount
+                && Object.keys(_delivered).length >= _manifest.chunkCount) { return; }
+            var since = Date.now() - (_lastDeliveredAt || _loopStartedAt);
+            if (since < stallLogMs) { return; }
+            if (_stalled) { return; } // already logged this episode
+            _stalled = true;
+
+            var snapshot = {
+                videoId:          videoId,
+                segIndex:         _currentSegIndex(),
+                chunkCount:       _manifest.chunkCount,
+                deliveredCount:   Object.keys(_delivered).length,
+                inFlightCount:    Object.keys(_inFlight).length,
+                msSinceDelivery:  since,
+                nullChunks:       _segStats.nullChunks,
+                timeouts:         _segStats.timeouts,
+                errors:           _segStats.errors,
+                documentHidden:   (typeof document !== 'undefined') && document.hidden,
+                connection:       Q.Safecloud.Jets.connectionStats
+                                      ? Q.Safecloud.Jets.connectionStats() : null
+            };
+            console.warn('Q.Safecloud.Client._prefetchLoop: no chunk delivered in '
+                + Math.round(since / 1000) + 's for videoId ' + videoId
+                + ' — likely a slow or unreachable Drop for this content.', snapshot);
+            if (options.onStall) { options.onStall(snapshot); }
+        }
+
         function _tick() {
             if (_stopped || _paused) { return; }
             if (videoElement && videoElement.paused && !options.prefetchWhenPaused) {
@@ -202,6 +276,7 @@ Q.exports(function (Q, _) {
             }
             var current = _currentSegIndex();
             for (var i = 0; i < prefetchAhead; i++) { _fetchSeg(current + i); }
+            _checkStall();
             _loopTimer = setTimeout(_tick, 1000);
         }
 
@@ -243,6 +318,24 @@ Q.exports(function (Q, _) {
                 var sw = navigator.serviceWorker && navigator.serviceWorker.controller;
                 if (sw) { sw.postMessage({ type: 'Q.Safecloud.Client.stop', videoId: videoId }); }
             },
+            // On-demand diagnostic snapshot — same shape _checkStall() logs,
+            // so a caller (tools/video.js's own start-stall watchdog) can
+            // pull it without waiting for stallLogMs to elapse first.
+            stats: function () {
+                return {
+                    videoId:         videoId,
+                    segIndex:        _currentSegIndex(),
+                    chunkCount:      _manifest.chunkCount,
+                    deliveredCount:  Object.keys(_delivered).length,
+                    inFlightCount:   Object.keys(_inFlight).length,
+                    msSinceDelivery: Date.now() - (_lastDeliveredAt || _loopStartedAt),
+                    nullChunks:      _segStats.nullChunks,
+                    timeouts:        _segStats.timeouts,
+                    errors:          _segStats.errors,
+                    connection:      Q.Safecloud.Jets.connectionStats
+                                         ? Q.Safecloud.Jets.connectionStats() : null
+                };
+            },
             pause: function () { _paused = true; },
             resume: function () {
                 _paused = false;
@@ -255,6 +348,11 @@ Q.exports(function (Q, _) {
                 // anything outside that window needs to be treated as
                 // undelivered again even though we sent it once before.
                 _delivered = {};
+                // Give the new position a fresh stallLogMs grace period
+                // instead of comparing against a pre-seek delivery time that
+                // may already be stale.
+                _lastDeliveredAt = Date.now();
+                _stalled = false;
                 _segStart = _chunkAtTime(seconds, chunkDuration, _manifest);
                 if (!_paused && !_stopped) { clearTimeout(_loopTimer); _loopTimer = setTimeout(_tick, 0); }
                 var sw = navigator.serviceWorker && navigator.serviceWorker.controller;
@@ -265,6 +363,8 @@ Q.exports(function (Q, _) {
             setVersion: function (label, timestamp) {
                 _inFlight  = {};
                 _delivered = {}; // switching renditions means an entirely different chunk set
+                _lastDeliveredAt = Date.now();
+                _stalled = false;
                 _version  = label;
                 _manifest = _getVersionManifest(videoManifest, label);
                 _grants   = _getVersionGrants(capability, label);

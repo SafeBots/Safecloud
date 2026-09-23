@@ -50,9 +50,12 @@
 .Safecloud_upload_input { display: none; }
 
 .Safecloud_upload_progress_row {
-    display: flex;
+    display: none;
     align-items: center;
     gap: 10px;
+}
+.Safecloud_upload_tool.Safecloud_upload_hasFile .Safecloud_upload_progress_row {
+    display: flex;
 }
 .Safecloud_upload_progress {
     flex: 1 1 auto;

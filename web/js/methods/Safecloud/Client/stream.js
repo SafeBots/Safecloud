@@ -48,6 +48,11 @@ Q.exports(function (Q, _) {
         return _hlsScriptPromise;
     }
 
+    // Fatal errors get a few recovery attempts (hls.js's own documented
+    // pattern) before this instance gives up for good — bounded so a
+    // truly-broken stream doesn't retry forever.
+    var MAX_FATAL_RECOVERIES = 3;
+
     function _attachHls(video, hlsUrl) {
         var nativeHls = video.canPlayType('application/vnd.apple.mpegurl');
         return _ensureHls().then(function (Hls) {
@@ -55,11 +60,46 @@ Q.exports(function (Q, _) {
                 if (nativeHls) { video.src = hlsUrl; return; }
                 throw new Error('HLS playback not supported in this browser');
             }
-            var hls = new Hls();
+            var hls = new Hls({
+                // The service worker answers a not-yet-delivered segment
+                // with a bare 503 (sw.js's serveSegment) rather than holding
+                // the fetch open until _prefetchLoop posts it — so hls.js's
+                // own retry/backoff is what bridges that gap. The defaults
+                // are tuned for a normal CDN 404, not "the SW's in-memory
+                // segment cache was just evicted after a long background
+                // stall and needs a fresh round trip to the Jet" — widen
+                // the budget so that redelivery has time to land instead of
+                // hls.js exhausting retries first.
+                fragLoadingMaxRetry:        8,
+                fragLoadingMaxRetryTimeout: 20000
+            });
+            var fatalRecoveries = 0;
             hls.on(Hls.Events.ERROR, function (event, data) {
-                if (data && data.fatal) {
-                    Q.log('Q.Safecloud.Client.stream: fatal HLS error: '
-                        + (data.details || 'unknown'), 'Safecloud');
+                if (!data || !data.fatal) { return; }
+                Q.log('Q.Safecloud.Client.stream: fatal HLS error: '
+                    + (data.details || 'unknown'), 'Safecloud');
+
+                // Without this, ANY fatal error permanently killed playback
+                // — hls.js does not retry past a fatal error on its own,
+                // and this handler used to just log. Confirmed live:
+                // returning to a tab after 10-20 minutes away hit a
+                // fragLoadError with no recovery, so playback stayed dead
+                // even after clicking play again, despite the underlying
+                // connection being healthy (Q.Safecloud.Jets.connectionStats()
+                // showed normal latency — the data was gettable, nothing
+                // fetched it back).
+                if (fatalRecoveries >= MAX_FATAL_RECOVERIES) {
+                    Q.log('Q.Safecloud.Client.stream: giving up after '
+                        + MAX_FATAL_RECOVERIES + ' fatal-error recovery attempts', 'Safecloud');
+                    return;
+                }
+                fatalRecoveries++;
+                if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                    hls.startLoad();
+                } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                    hls.recoverMediaError();
+                } else {
+                    hls.destroy();
                 }
             });
             hls.loadSource(hlsUrl);
@@ -239,7 +279,8 @@ Q.exports(function (Q, _) {
                         setVersion: loop.setVersion.bind(loop),
                         pause:      loop.pause.bind(loop),
                         resume:     loop.resume.bind(loop),
-                        stop:       loop.stop.bind(loop)
+                        stop:       loop.stop.bind(loop),
+                        stats:      loop.stats.bind(loop)
                     };
                 });
             });
@@ -269,7 +310,10 @@ Q.exports(function (Q, _) {
                     stop: function () {
                         if (videoEl) { videoEl.src = ''; }
                         URL.revokeObjectURL(url);
-                    }
+                    },
+                    // No prefetch loop on this path — the whole file was
+                    // already decrypted upfront, so there's nothing to stall.
+                    stats: function () { return null; }
                 };
             });
     }
