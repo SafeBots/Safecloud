@@ -36,7 +36,12 @@ Q.Tool.define('Safecloud/upload', function (options) {
         Encrypting: 'Encrypting…',
         Uploaded: 'Uploaded',
         UploadFailed: 'Upload failed',
-        WaitingForDrop: 'Waiting for storage node…'
+        WaitingForDrop: 'Waiting for storage node…',
+        NoDropsMessage: 'No storage nodes (Drops) are online right now. '
+            + 'You can help by becoming one yourself: open the link below in another '
+            + 'tab, click "Connect to Safecloud" there, then come back to this tab '
+            + 'and try uploading again.',
+        OpenDropButton: 'Open Safecloud Drop'
     }, tool.text.upload || {});
 
     if (state.jetUrl) { Q.Safecloud.Jets.url = state.jetUrl; }
@@ -66,7 +71,8 @@ Q.Tool.define('Safecloud/upload', function (options) {
         Q.Template.render('Safecloud/upload', {
             text:     tool.text,
             accept:   state.accept,
-            multiple: state.multiple
+            multiple: state.multiple,
+            dropUrl:  Q.url('safecloud/drop')
         }, function (err, html) {
             if (err) return Q.handle(state.onError, tool, [err]);
             $te.html(html, true).activate(function () {
@@ -111,6 +117,10 @@ Q.Tool.define('Safecloud/upload', function (options) {
         var $te   = $(tool.element);
         var isVideo = file.type && file.type.indexOf('video/') === 0;
 
+        // Hide any hint left over from a previous failed attempt — a retry
+        // shouldn't keep showing "no Drops available" once it's underway.
+        $te.find('.Safecloud_upload_noDrops').hide();
+
         // Progress row is hidden (Safecloud_upload_hasFile in upload.css)
         // until a file is actually picked — showing it earlier displayed a
         // 0% bar with nothing happening yet.
@@ -144,8 +154,17 @@ Q.Tool.define('Safecloud/upload', function (options) {
                 function (err, result) {
                     if (err) {
                         $te.removeClass('Safecloud_upload_uploading');
+                        var errMsg = err.message || String(err);
                         tool.setStatus((Q.getObject('upload.UploadFailed', tool.text) || 'Upload failed') +
-                            ': ' + (err.message || err), 'error');
+                            ': ' + errMsg, 'error');
+                        // The Jet returns this exact message (Jets.js) when no
+                        // Drop is registered to store the chunks at all — as
+                        // opposed to other failures (network, quota, etc.),
+                        // this one has a concrete action the uploader can take
+                        // themselves: become a Drop and retry.
+                        if (/no drops available/i.test(errMsg)) {
+                            $te.find('.Safecloud_upload_noDrops').show();
+                        }
                         return Q.handle(state.onError, tool, [err]);
                     }
                     tool.setStatus(
@@ -307,6 +326,11 @@ Q.Template.set('Safecloud/upload',
             '<div class="Safecloud_upload_progress_pct"></div>' +
         '</div>' +
         '<div class="Safecloud_upload_status"></div>' +
+        '<div class="Safecloud_upload_noDrops" style="display:none">' +
+            '<div class="Safecloud_upload_noDropsMessage">{{text.upload.NoDropsMessage}}</div>' +
+            '<a class="Safecloud_upload_openDrop Q_button" href="{{dropUrl}}"' +
+               ' target="_blank" rel="noopener">{{text.upload.OpenDropButton}}</a>' +
+        '</div>' +
     '</div>'
 );
 

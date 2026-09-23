@@ -89,3 +89,23 @@
 .Safecloud_upload_status.working { color: #ffaa00; }
 .Safecloud_upload_status.ok      { color: #00ff88; }
 .Safecloud_upload_status.error   { color: #ff3344; }
+
+.Safecloud_upload_noDrops {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px 14px;
+    border: 1px solid rgba(255,170,0,.35);
+    background: rgba(255,170,0,.06);
+    border-radius: 4px;
+}
+.Safecloud_upload_noDropsMessage {
+    font-size: 11px;
+    line-height: 1.5;
+    color: #d8c8a0;
+    text-transform: none;
+    letter-spacing: normal;
+}
+.Safecloud_upload_openDrop {
+    align-self: flex-start;
+}
