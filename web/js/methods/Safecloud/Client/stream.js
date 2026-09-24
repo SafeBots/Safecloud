@@ -78,7 +78,16 @@ Q.exports(function (Q, _) {
                 // the budget so that redelivery has time to land instead of
                 // hls.js exhausting retries first.
                 fragLoadingMaxRetry:        8,
-                fragLoadingMaxRetryTimeout: 20000
+                fragLoadingMaxRetryTimeout: 20000,
+                // Same reasoning, but for the manifest fetch itself:
+                // handleSafecloudRequest's _waitForSession can hold a
+                // master.m3u8 request open for up to 15s (SESSION_WAIT_MS in
+                // sw.js) while a session that hasn't registered on this
+                // worker yet lands — hls.js's own 10s default manifest
+                // timeout is shorter than that, so it could time out and go
+                // fatal before that wait ever gets a chance to resolve.
+                manifestLoadingTimeOut:  20000,
+                manifestLoadingMaxRetry: 3
             });
             // Diagnostic-only, no behavior change: the last incident (a
             // fresh upload → immediately redirected to watch it → never
@@ -156,7 +165,27 @@ Q.exports(function (Q, _) {
                 }
                 fatalRecoveries++;
                 if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                    hls.startLoad();
+                    // startLoad() only resumes fragment loading against a
+                    // manifest/levels structure hls.js has already parsed —
+                    // it's a no-op when the fatal error happened on the very
+                    // FIRST manifest fetch (manifestLoadError/manifestLoadTimeOut/
+                    // manifestParsingError), since there's nothing yet for it to
+                    // resume. Confirmed live: master.m3u8 404'd because the
+                    // session hadn't registered on this SW instance yet (a
+                    // brand-new/second-account viewer), our own session
+                    // recovery re-registered and re-delivered every segment
+                    // moments later, but hls.js never tried master.m3u8 again
+                    // — because startLoad() had nothing to do — so a spinner
+                    // that could have resolved just sat there forever. A
+                    // manifest-phase failure needs the manifest re-fetched
+                    // from scratch, not fragment loading resumed.
+                    if (data.details === 'manifestLoadError'
+                    || data.details === 'manifestLoadTimeOut'
+                    || data.details === 'manifestParsingError') {
+                        hls.loadSource(hlsUrl);
+                    } else {
+                        hls.startLoad();
+                    }
                 } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
                     hls.recoverMediaError();
                 } else if (data.details === 'internalException') {
