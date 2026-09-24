@@ -265,6 +265,22 @@ Q.exports(function (Q, _) {
                                         // Upload grants are empty — server allows anonymous
                                         // uploads (rootCid not yet known at grant time).
                                         // Ownership is proved by the binding proof in the manifest.
+                                        //
+                                        // The data and index tracks upload in parallel below, but
+                                        // each is its own sequential batch loop inside Jets.put —
+                                        // Promise.all rejecting the moment ONE of them fails doesn't
+                                        // stop the other's loop from continuing on its own. Confirmed
+                                        // live: the (single-chunk) index track had zero Drops accept
+                                        // it and rejected immediately, while the 69-chunk data track
+                                        // — completely unaware — kept uploading and advancing the
+                                        // progress bar most of the way to completion, well after
+                                        // "Upload failed" had already been shown. putAborted is
+                                        // shared between them: the moment either one rejects, the
+                                        // other's next batch (checked via Jets.put's isAborted
+                                        // option) stops instead of running to completion.
+                                        var putAborted = false;
+                                        function _markPutAborted(err) { putAborted = true; throw err; }
+
                                         var putPromises = [
                                             Q.Safecloud.Jets.put({
                                                 chunks: encChunks.map(function (c) {
@@ -285,8 +301,9 @@ Q.exports(function (Q, _) {
                                             }, {
                                                 authorizations: options.authorizations,
                                                 payments:       options.payments,
-                                                onProgress:     options.onProgress
-                                            })
+                                                onProgress:     options.onProgress,
+                                                isAborted:      function () { return putAborted; }
+                                            }).catch(_markPutAborted)
                                         ];
 
                                         if (indexFork) {
@@ -304,8 +321,9 @@ Q.exports(function (Q, _) {
                                                 grants:  []
                                             }, {
                                                 authorizations: options.authorizations,
-                                                payments:       options.payments
-                                            }));
+                                                payments:       options.payments,
+                                                isAborted:      function () { return putAborted; }
+                                            }).catch(_markPutAborted));
                                         }
 
                                         return Promise.all(putPromises).then(function () {

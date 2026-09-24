@@ -8,3 +8,10 @@
     margin: 0 auto;
     padding: 32px 20px 64px;
 }
+#Safecloud_drop_page .Safecloud_drop_resync_btn.Q_button {
+    margin-top: 10px;
+}
+#Safecloud_drop_page .Safecloud_drop_resync_status {
+    margin-top: 5px;
+}
+ 

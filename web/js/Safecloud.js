@@ -573,6 +573,17 @@ Q.Safecloud.Drops = Q.Method.define({
     announce: new Q.Method(),
 
     /**
+     * If cold (the Jet just told us it has no coverage record for this
+     * Drop), re-send the full inventory of everything already stored so
+     * the Jet's routing table is repopulated — otherwise content stored
+     * before a Jet restart stays permanently unroutable. No-op if not cold.
+     * @method reannounceIfCold
+     * @param {Boolean} cold
+     * @return {Promise<void>}
+     */
+    reannounceIfCold: new Q.Method(),
+
+    /**
      * Claim accumulated Safebux payment tokens on-chain.
      * @method claimPayments
      * @param {Object}   [options]  { direct: Boolean, force: Boolean }

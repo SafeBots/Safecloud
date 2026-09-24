@@ -1,8 +1,12 @@
 /**
  * Q.Safecloud.Drops.getStats — return live Drop performance statistics.
  *
- * All values are derived from in-memory state accumulated since the last
- * page load. Call periodically (e.g. every second) from a dashboard.
+ * servedBytes/servedChunks/safebuxEarned/challenges are pure in-memory
+ * counters, reset each page load. storedBytes/storedChunks are rehydrated
+ * from IndexedDB's 'lru' store during init() (see Drops/init.js), so they
+ * reflect real current storage even right after a reconnect — not just
+ * chunks stored during the current page session. Call periodically
+ * (e.g. every second) from a dashboard.
  *
  * @method getStats
  * @return {Object} {

@@ -3,6 +3,7 @@
  *
  * Sequence:
  *   1. _.openDB() — open IndexedDB, create stores if needed
+ *   1b. Rehydrate usedBytes/storedChunks from the 'lru' store
  *   2. Read latest log entry to rehydrate Prolly root
  *   3. Detect wipe (sessionStorage hint vs empty log)
  *   4. Check delegation claim — run Q.Crypto.delegate ceremony if expired/missing
@@ -23,6 +24,25 @@ Q.exports(function (Q, _) {
         var SESSION_KEY = 'Q.Safecloud.Drops.lastRoot';
 
         var _promise = _.openDB().then(function (db) {
+
+            // Rehydrate storage stats from IndexedDB — usedBytes/storedChunks
+            // are otherwise pure in-memory counters (see getStats.js's own
+            // doc comment: "derived from in-memory state accumulated since
+            // the last page load"), only ever incremented by put.js/reset.js.
+            // Without this, a reload+reconnect always shows "Stored 0.000 MB"
+            // even though the chunks are still physically sitting in
+            // IndexedDB and still being served to viewers — confirmed live:
+            // the dashboard read 0 right after reconnecting while the
+            // activity feed kept showing real GETs succeeding against
+            // chunks stored in an earlier session. The 'lru' store (not
+            // 'chunks') is the cheap source for this: one row per stored
+            // chunk with just {cid, size, lastAccessed} — no ciphertext to
+            // read through, unlike 'chunks'.
+            return _rehydrateStorageStats(db).then(function () {
+                return db;
+            });
+
+        }).then(function (db) {
 
             // Step 2: read latest log entry
             return new Promise(function (resolve, reject) {
@@ -79,10 +99,10 @@ Q.exports(function (Q, _) {
                                 // Send reset announce before anything else
                                 _._state.pendingDiff = null;
                                 return Q.Safecloud.Drops.announce('reset').then(function () {
-                                    return _finishInit(db, cold);
+                                    return Q.Safecloud.Drops.reannounceIfCold(cold);
                                 });
                             }
-                            return _finishInit(db, cold);
+                            return Q.Safecloud.Drops.reannounceIfCold(cold);
                         });
                     });
                 });
@@ -98,35 +118,26 @@ Q.exports(function (Q, _) {
     // ── Helpers ───────────────────────────────────────────────────────────
 
     /**
-     * Finish init: if cold, send a full re-announce of everything already
-     * stored, so the Jet's _cidCoverage map (which only ever learns about a
-     * CID from an announce's diff — nothing walks the Prolly tree to
-     * reconstruct it, and onDropAnnounce no-ops entirely when diff is
-     * null/empty) gets repopulated after a Jet restart. Without this, any
-     * content this Drop already stored before the restart becomes
-     * permanently unroutable via GET ("No Drops available") even though the
-     * chunks are still sitting right here in IndexedDB — nothing short of a
-     * brand new PUT would ever tell the Jet about them again.
+     * Rehydrate _._state.usedBytes/storedChunks from the 'lru' store —
+     * one lightweight {cid, size, lastAccessed} row per chunk actually
+     * present in IndexedDB right now, so the dashboard reflects real
+     * storage from the moment init() resolves, not just chunks put()
+     * during the current page session.
      */
-    function _finishInit(db, cold) {
-        if (!cold) { return Promise.resolve(); }
+    function _rehydrateStorageStats(db) {
         return new Promise(function (resolve, reject) {
-            var tx  = db.transaction(_.STORES.lru, 'readonly');
-            var req = tx.objectStore(_.STORES.lru).getAllKeys();
+            var tx    = db.transaction(_.STORES.lru, 'readonly');
+            var req   = tx.objectStore(_.STORES.lru).getAll();
             req.onsuccess = function (e) { resolve(e.target.result || []); };
             req.onerror   = function (e) { reject(e.target.error); };
-        }).then(function (cids) {
-            if (cids.length) {
-                _._state.pendingDiff = cids.map(function (cid) {
-                    return { cid: cid, added: true };
-                });
-            }
-            // Q.Safecloud.Drops.announce() handles signing, logging and sending.
-            return Q.Safecloud.Drops.announce('cold');
-        }).catch(function (err) {
-            console.warn('Safecloud/Drops/init: cold re-announce FAILED — '
-                + 'previously stored content may be unroutable until the next put(): '
-                + (err && err.stack || err));
+        }).then(function (rows) {
+            var bytes = 0;
+            rows.forEach(function (r) { bytes += r.size || 0; });
+            _._state.usedBytes    = bytes;
+            _._state.storedChunks = rows.length;
+        }).catch(function () {
+            // Best-effort — leave counters at their in-memory defaults
+            // (0) rather than fail init() over a stats-only read.
         });
     }
 

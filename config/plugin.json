@@ -10,6 +10,9 @@
                     "Streams": "1.0"
                 }
             }
+        },
+        "handlersBeforeEvent": {
+            "Q/responseExtras": ["Safecloud/before/Q_responseExtras"]
         }
     },
     "Safecloud": {

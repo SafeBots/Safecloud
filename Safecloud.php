@@ -29,14 +29,4 @@ class Safecloud
 
         self::$loaded = true;
     }
-
-    /**
-     * Called before every request.
-     * Adds the Safecloud browser plugin JS to every page automatically.
-     */
-    static function Q_responseExtras()
-    {
-        Q_Response::addScript('{{Safecloud}}/js/Safecloud.js', 'head');
-        Q_Response::addStylesheet('{{Safecloud}}/css/Safecloud.css');
-    }
 }
