@@ -1,8 +1,13 @@
 /**
  * Q.Safecloud.Client._ensureServiceWorker — register and wait for the HLS SW.
  *
- * Registers {{Safecloud}}/js/Safecloud/sw.js with scope '/'.
- * Requires the SW file to be served with: Service-Worker-Allowed: /
+ * Registers /SafecloudServiceWorker.js with scope '/'.
+ * The Safecloud plugin installer symlinks this file from
+ * APP_WEB_DIR/SafecloudServiceWorker.js → Q/plugins/Safecloud/js/Safecloud/sw.js
+ * so the script's natural max scope is '/' without needing a
+ * Service-Worker-Allowed header. This is required because pages outside the
+ * plugin path (e.g. /clip/...) use the Safecloud/video tool, which needs the
+ * SW to intercept their fetches for decrypted HLS segments.
  *
  * Idempotent — caches the promise; repeat calls resolve immediately.
  */
@@ -21,7 +26,7 @@ Q.exports(function (Q, _) {
             return _promise;
         }
 
-        var swUrl = Q.url('{{Safecloud}}/js/Safecloud/sw.js');
+        var swUrl = Q.url('SafecloudServiceWorker.js');
 
         // Forward the SW's own diagnostic messages (sw.js's _notifyClients)
         // into this page's console — a service worker's console is a
