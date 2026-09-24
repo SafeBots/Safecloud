@@ -43,10 +43,28 @@
  *   Q.Safecloud.Client.createShareLink(manifest, rootKey, callback)
  *   Returns: { url, embedCode, split: false }
  *
+ * Teaser mode (time-limited preview):
+ *   Q.Safecloud.Client.createShareLink(manifest, rootKey, {
+ *       teaser: 15              // first 15 seconds
+ *       teaser: [10.5, 25.0]    // seconds 10.5 through 25.0
+ *   }, callback)
+ *   Returns: { url, embedCode, teaser: true, teaserRange: [from, to] }
+ *
+ *   The URL carries a grant-based capability instead of the rootKey.
+ *   The viewer can only decrypt chunks within the granted time range;
+ *   the service worker rejects segments outside it ("No grant covers
+ *   segment N"), and the player/embed catches the error to trigger a
+ *   payment or upgrade dialog.
+ *
+ *   Also grants the index track (codec, initSegment, chapter timestamps)
+ *   so the player can build the HLS playlist and show total duration.
+ *
  * @method createShareLink
  * @param {Object}   manifest  Content manifest from Client.store()
  * @param {String}   rootKey   Base64-encoded root key
  * @param {Object}   [options]
+ * @param {Number|Array} [options.teaser]  Seconds of preview: a number
+ *     (from start) or [fromSec, toSec] with float precision
  * @param {Function} [callback] fn(err, result)
  */
 Q.exports(function (Q, _) {
@@ -115,6 +133,17 @@ Q.exports(function (Q, _) {
         // other way to find the Jet) where to send HTTP chunk-fetch requests.
         var jetQuery = '&jet=' + encodeURIComponent(
             options.jetUrl || Q.Safecloud.Jets.url || Q.nodeUrl());
+
+        // ── Teaser mode (time-limited grant) ─────────────────────────────────
+        if (options.teaser) {
+            var tRange = Array.isArray(options.teaser)
+                ? options.teaser
+                : [0, options.teaser];
+            return _buildTeaserLink(
+                manifest, rootKey, tRange[0], tRange[1], rootCid,
+                baseUrl, embedBase, jetQuery, options, callback
+            );
+        }
 
         // ── Classic mode (backward compatible) ────────────────────────────────
         if (!options.split) {
@@ -243,4 +272,123 @@ Q.exports(function (Q, _) {
         }
         return _promise;
     };
+
+    // ── Teaser link builder ──────────────────────────────────────────────────
+    //
+    // Produces a share URL whose fragment carries a grant-based capability
+    // (not the rootKey) covering only chunks within [fromSec, toSec),
+    // plus the index track (so the player knows codec, initSegment,
+    // total duration, chapter timestamps).
+    //
+    // The capability format matches what sw.js's resolveLeafKey already
+    // consumes: { grants: [...], indexGrant: {...} } — no rootKey field.
+    // Chunks outside the granted range fail with "No grant covers segment N".
+
+    function _buildTeaserLink(manifest, rootKey, fromSec, toSec, rootCid,
+                              baseUrl, embedBase, jetQuery, options, callback) {
+
+        var chunkDuration = manifest.chunkDuration || 6;
+        var chunkStart = Math.floor(fromSec / chunkDuration);
+        var chunkEnd   = Math.min(
+            Math.ceil(toSec / chunkDuration),
+            manifest.chunkCount
+        );
+
+        // Compute the minimal set of subtree link paths covering [chunkStart, chunkEnd)
+        var linkPaths = _teaserPathsCovering(chunkStart, chunkEnd, manifest);
+
+        // Grant both the data range and the index track in parallel
+        var dataGrantP = Q.Safecloud.Client.grant(manifest, rootKey, {
+            linkPaths: linkPaths,
+            readLevel: 'content'
+        });
+        var indexGrantP = Q.Safecloud.Client.grant(manifest, rootKey, {
+            indexOnly: true,
+            readLevel: 'content'
+        });
+
+        var _p = Promise.all([dataGrantP, indexGrantP])
+            .then(function (results) {
+                var dataResult  = results[0];
+                var indexResult = results[1];
+
+                // Build a capability the SW can consume directly
+                var capability = {
+                    grants:      dataResult.grants,
+                    indexGrant:  indexResult.indexGrant,
+                    teaserRange: [fromSec, toSec]
+                };
+
+                // Fragment: cap=<b64url capability JSON> + m=<b64url manifest>
+                var frag = 'cap=' + _.jsonToB64url(capability)
+                         + '&m='  + _.jsonToB64url(manifest);
+
+                var url = baseUrl + '?rootCid='
+                        + encodeURIComponent(rootCid) + '#' + frag;
+
+                var result = {
+                    url:          url,
+                    teaser:       true,
+                    teaserRange:  [fromSec, toSec],
+                    teaserChunks: [chunkStart, chunkEnd],
+                    capability:   capability
+                };
+
+                if (options.embed) {
+                    var eUrl = embedBase + '?rootCid='
+                        + encodeURIComponent(rootCid) + jetQuery + '#' + frag;
+                    result.embedUrl  = eUrl;
+                    result.embedCode = '<iframe src="' + eUrl + '"\n'
+                        + '        allow="autoplay; encrypted-media; '
+                        + 'publickey-credentials-get *"\n'
+                        + '        width="640" height="360" frameborder="0"></iframe>';
+                }
+
+                return result;
+            });
+
+        if (callback) {
+            _p.then(function (r) { callback(null, r); })
+              .catch(function (e) { callback(e); });
+        }
+        return _p;
+    }
+
+    /**
+     * Minimal subtree paths covering [chunkStart, chunkEnd).
+     * Same algorithm as grant.js's _pathsCoveringRange, inlined here
+     * to avoid a circular dependency (grant.js is the caller in the
+     * multi-version case; here we call grant.js with pre-computed paths).
+     */
+    function _teaserPathsCovering(chunkStart, chunkEnd, manifest) {
+        if (chunkStart <= 0 && chunkEnd >= manifest.chunkCount) {
+            return [['track', 'data']];
+        }
+        var treeN     = manifest.treeN     || 2;
+        var treeDepth = manifest.treeDepth || 1;
+        var paths     = [];
+
+        function collect(path, nodeStart, nodeSize, depth) {
+            var nodeEnd = nodeStart + nodeSize;
+            if (nodeEnd <= chunkStart || nodeStart >= chunkEnd) { return; }
+            if (nodeStart >= chunkStart && nodeEnd <= chunkEnd) {
+                paths.push(path.slice());
+                return;
+            }
+            if (depth >= treeDepth) {
+                paths.push(path.slice());
+                return;
+            }
+            var childSize = nodeSize / treeN;
+            for (var i = 0; i < treeN; i++) {
+                path.push(String(i));
+                collect(path, nodeStart + i * childSize, childSize, depth + 1);
+                path.pop();
+            }
+        }
+
+        var totalLeaves = Math.pow(treeN, treeDepth);
+        collect(['track', 'data'], 0, totalLeaves, 0);
+        return paths.length > 0 ? paths : [['track', 'data']];
+    }
 });

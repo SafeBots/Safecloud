@@ -45,6 +45,8 @@
     var splitMask   = frag.sm || null;
     var manifestB64 = frag.m || null;
     var manifest    = manifestB64 ? _b64urlToJSON(manifestB64) : null;
+    var capB64      = frag.cap || null;
+    var teaserCap   = capB64 ? _b64urlToJSON(capB64) : null;
 
     // DOM
     var video   = document.getElementById('video');
@@ -221,6 +223,12 @@
                 } else {
                     setStatus('No content specified.', true);
                 }
+                return;
+            }
+
+            // Teaser: grant-based capability in fragment (no rootKey)
+            if (teaserCap && manifest) {
+                startPlayback(manifest, teaserCap);
                 return;
             }
 
