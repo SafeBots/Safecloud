@@ -69,6 +69,29 @@ Q.exports(function (Q, _) {
                         publicKey:   _._state.dropInfo.publicKey,
                         storage:     _._state.dropInfo.storage
                         // prollyRoot and bloomFilter fetched fresh by dropRegister
+                    }).then(function (ack) {
+                        // The ack's used to be discarded entirely here, so a
+                        // Jet restart (which wipes its in-memory routing
+                        // table — see Drops/reannounceIfCold.js) while this
+                        // tab stayed open and quietly auto-reconnected left
+                        // this Drop's already-stored content permanently
+                        // unroutable: identity got re-registered, but ack.cold
+                        // — the Jet's own signal that it has no coverage
+                        // record for this Drop — was never even looked at, so
+                        // the one thing that actually repairs that (a full
+                        // content re-announce) never ran. Only an explicit
+                        // Drops.init() call happened to check this; a Drop
+                        // tab that merely stayed open across the restart did
+                        // not. Confirmed live: "No Drops available" persisted
+                        // even after the user tried reconnecting via
+                        // /safecloud/drop, because that page hides its
+                        // Connect button once it sees a Drop is already
+                        // registered in memory — this automatic path is the
+                        // only chance to self-heal in that situation.
+                        var cold = !!(ack && ack.cold);
+                        if (Q.Safecloud.Drops && Q.Safecloud.Drops.reannounceIfCold) {
+                            Q.Safecloud.Drops.reannounceIfCold(cold).catch(function () {});
+                        }
                     }).catch(function () {});
                 }
 

@@ -99,10 +99,10 @@ Q.exports(function (Q, _) {
                                 // Send reset announce before anything else
                                 _._state.pendingDiff = null;
                                 return Q.Safecloud.Drops.announce('reset').then(function () {
-                                    return _finishInit(db, cold);
+                                    return Q.Safecloud.Drops.reannounceIfCold(cold);
                                 });
                             }
-                            return _finishInit(db, cold);
+                            return Q.Safecloud.Drops.reannounceIfCold(cold);
                         });
                     });
                 });
@@ -116,39 +116,6 @@ Q.exports(function (Q, _) {
     };
 
     // ── Helpers ───────────────────────────────────────────────────────────
-
-    /**
-     * Finish init: if cold, send a full re-announce of everything already
-     * stored, so the Jet's _cidCoverage map (which only ever learns about a
-     * CID from an announce's diff — nothing walks the Prolly tree to
-     * reconstruct it, and onDropAnnounce no-ops entirely when diff is
-     * null/empty) gets repopulated after a Jet restart. Without this, any
-     * content this Drop already stored before the restart becomes
-     * permanently unroutable via GET ("No Drops available") even though the
-     * chunks are still sitting right here in IndexedDB — nothing short of a
-     * brand new PUT would ever tell the Jet about them again.
-     */
-    function _finishInit(db, cold) {
-        if (!cold) { return Promise.resolve(); }
-        return new Promise(function (resolve, reject) {
-            var tx  = db.transaction(_.STORES.lru, 'readonly');
-            var req = tx.objectStore(_.STORES.lru).getAllKeys();
-            req.onsuccess = function (e) { resolve(e.target.result || []); };
-            req.onerror   = function (e) { reject(e.target.error); };
-        }).then(function (cids) {
-            if (cids.length) {
-                _._state.pendingDiff = cids.map(function (cid) {
-                    return { cid: cid, added: true };
-                });
-            }
-            // Q.Safecloud.Drops.announce() handles signing, logging and sending.
-            return Q.Safecloud.Drops.announce('cold');
-        }).catch(function (err) {
-            console.warn('Safecloud/Drops/init: cold re-announce FAILED — '
-                + 'previously stored content may be unroutable until the next put(): '
-                + (err && err.stack || err));
-        });
-    }
 
     /**
      * Rehydrate _._state.usedBytes/storedChunks from the 'lru' store —

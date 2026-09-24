@@ -28,6 +28,9 @@ Q.Tool.define('Safecloud/drop', function (options) {
         JetUrlPlaceholder: 'Jet server URL',
         ConnectButton:     'Connect to Safecloud',
         ClaimButton:       'Claim Safebux',
+        ResyncButton:      'Resync with Jet',
+        Resyncing:         'Resyncing…',
+        Resynced:          'Resynced',
         EvmAddress:        'EVM Address',
         DropId:            'Drop ID',
         Stored:            'Stored',
@@ -91,6 +94,10 @@ Q.Tool.define('Safecloud/drop', function (options) {
 
         $te.on(Q.Pointer.fastclick, '.Safecloud_drop_claim_btn', function () {
             tool.doClaim();
+        });
+
+        $te.on(Q.Pointer.fastclick, '.Safecloud_drop_resync_btn', function () {
+            tool.doResync();
         });
     },
 
@@ -239,6 +246,40 @@ Q.Tool.define('Safecloud/drop', function (options) {
         });
     },
 
+    /**
+     * Manually forces a full re-announce of everything this Drop has
+     * stored, so the Jet's (in-memory, restart-wiped) routing table learns
+     * about it again. Normally this happens on its own — either via
+     * Drops.init()'s own cold-check, or automatically after a socket
+     * reconnect (see Jets/connect.js) — but this page only ever shows the
+     * Connect screen (the one thing that runs Drops.init()) before a Drop
+     * is registered, and hides it forever afterward regardless of whether
+     * the Jet's copy of the routing table is actually still in sync. This
+     * button exists for exactly that gap: a user who restarts the Jet
+     * server, sees "No Drops available" on playback, and has no other way
+     * to force a resync without a hard reload of this specific tab.
+     * @method doResync
+     */
+    doResync: function () {
+        var tool = this;
+        var $btn = $(tool.element).find('.Safecloud_drop_resync_btn');
+        var $st  = $(tool.element).find('.Safecloud_drop_resync_status');
+
+        if (!Q.Safecloud || !Q.Safecloud.Drops || !Q.Safecloud.Drops.reannounceIfCold) {
+            return;
+        }
+        $btn.prop('disabled', true).addClass('Q_working');
+        $st.text(Q.getObject('drop.Resyncing', tool.text) || 'Resyncing…').removeClass('error ok');
+        Q.Safecloud.Drops.reannounceIfCold(true).then(function () {
+            $btn.prop('disabled', false).removeClass('Q_working');
+            $st.text(Q.getObject('drop.Resynced', tool.text) || 'Resynced').addClass('ok');
+        }).catch(function (err) {
+            $btn.prop('disabled', false).removeClass('Q_working');
+            $st.text((err && err.message) || String(err)).addClass('error');
+            Q.handle(tool.state.onError, tool, [err]);
+        });
+    },
+
     Q: {
         beforeRemove: function () {
             if (this._pollInterval) {
@@ -302,6 +343,10 @@ Q.Template.set('Safecloud/drop',
         '<button class="Safecloud_drop_claim_btn Q_button" disabled>' +
             '{{text.drop.ClaimButton}}' +
         '</button>' +
+        '<button class="Safecloud_drop_resync_btn Q_button">' +
+            '{{text.drop.ResyncButton}}' +
+        '</button>' +
+        '<div class="Safecloud_drop_resync_status"></div>' +
         '<div class="Safecloud_drop_activity_wrap">' +
             '<div class="Safecloud_drop_activity_title">{{text.drop.Activity}}</div>' +
             '<ul class="Safecloud_drop_activity"></ul>' +
