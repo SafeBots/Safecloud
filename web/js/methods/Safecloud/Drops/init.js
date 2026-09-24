@@ -249,37 +249,33 @@ Q.exports(function (Q, _) {
 
             // Try to load credential ID from IndexedDB.
             // If IDB is wiped, credential ID is gone too — correct: start fresh.
-            // On a new device without iCloud sync, IDB is empty → new identity.
+            // On a new device, IDB is empty → new identity (per-device).
             return _idbGetDelegation(db).then(function (storedCredId) {
                 if (storedCredId) {
                     // Known credential — authenticate silently
                     return _webAuthnGet(storedCredId, PRF_LABEL);
                 }
-                // No stored credential ID — could be a new device where an
-                // iCloud/Google-synced passkey already exists.
-                // Try a discoverable credential get first (no allowCredentials filter):
-                // if a synced credential exists, the OS will surface it without
-                // creating a duplicate.
-                return _webAuthnGetDiscoverable(PRF_LABEL)
-                    .then(function (result) {
-                        if (result && result.prfOutput) {
-                            // Found a synced credential — cache its ID locally
-                            return _idbPutDelegation(db, result.credentialId)
-                                .then(function () { return result; });
+                // No stored credential — register a new one.
+                // Each device gets its own credential (and therefore its own
+                // Drop identity) via a random device nonce mixed into user.id.
+                // Same device + same IDB → same nonce → same credential.
+                // Different device → different nonce → independent Drop node.
+                return _idbGetDeviceNonce(db).then(function (nonce) {
+                    return _webAuthnCreate(PRF_LABEL, nonce).then(function (result) {
+                        if (!result.prfOutput && result.credentialId) {
+                            // Some browsers (older Chrome) return null PRF on
+                            // create() but support it on get(). Try once with
+                            // the freshly registered credential before giving up.
+                            return _webAuthnGet(result.credentialId, PRF_LABEL)
+                                .then(function (getResult) {
+                                    return _idbPutDelegation(db, getResult.credentialId)
+                                        .then(function () { return getResult; });
+                                });
                         }
-                        // No existing credential — register a fresh one
-                        return _webAuthnCreate(PRF_LABEL).then(function (result) {
-                            return _idbPutDelegation(db, result.credentialId)
-                                .then(function () { return result; });
-                        });
-                    })
-                    .catch(function () {
-                        // Discoverable get cancelled/failed — register fresh
-                        return _webAuthnCreate(PRF_LABEL).then(function (result) {
-                            return _idbPutDelegation(db, result.credentialId)
-                                .then(function () { return result; });
-                        });
+                        return _idbPutDelegation(db, result.credentialId)
+                            .then(function () { return result; });
                     });
+                });
             });
         })
         .then(function (result) {
@@ -304,28 +300,34 @@ Q.exports(function (Q, _) {
      * Register a new WebAuthn platform credential with PRF extension enabled.
      * Called once per device. Stores credential in OS keychain / Secure Enclave.
      *
+     * @param  {Uint8Array} prfLabel     PRF eval label
+     * @param  {Uint8Array} deviceNonce  16-byte random nonce unique to this IDB
      * @return {Promise<{ credentialId: Uint8Array, prfOutput: Uint8Array }>}
      */
-    function _webAuthnCreate(prfLabel) {
+    function _webAuthnCreate(prfLabel, deviceNonce) {
         var challenge = new Uint8Array(32);
         crypto.getRandomValues(challenge);
 
-        // Derive a stable user ID from the app origin so the same credential
-        // is re-used across reinstalls on the same device where possible.
-        // Stable user.id derived from app + logged-in user if available.
-        // This is the key to cross-device deduplication: if the same user.id
-        // credential already exists in iCloud Keychain / Google Password Manager
-        // on a new device, the authenticator returns the existing credential
-        // rather than creating a new one — so PRF output stays the same.
+        // Build a per-device user.id so each device registers its own
+        // credential and therefore its own Drop identity.
+        //
+        // The device nonce is a random 16-byte value persisted in IndexedDB.
+        // Same device + same IDB → same nonce → authenticator updates the
+        // existing credential (no duplicate). Different device or wiped IDB
+        // → different nonce → new credential → independent Drop node.
+        //
+        // This is intentionally NOT cross-device: a Drop is a storage node
+        // bound to a particular browser on a particular machine. Synced
+        // passkeys (iCloud Keychain / Google Password Manager) would give
+        // the same PRF output on every device, collapsing distinct Drops
+        // into one identity — wrong model for independent storage nodes.
         var userHandle = ((Q.info && Q.info.app) || location.hostname);
-        // Q.Users.loggedInUser is a property (a Q.Users.User instance, or
-        // null/undefined when signed out) — not a method.
         var loggedInId = (Q.Users && Q.Users.loggedInUser)
             ? Q.Users.loggedInUser.id : null;
         if (loggedInId) { userHandle += ':' + loggedInId; }
-        userHandle += ':safecloud-drop';
+        userHandle += ':safecloud-drop:' + Q.Data.toBase64(deviceNonce);
 
-        // Hash to exactly 32 bytes (IDB user.id max is 64 bytes, but 32 is clean)
+        // Hash to exactly 32 bytes
         var userIdPromise = crypto.subtle.digest(
             'SHA-256', new TextEncoder().encode(userHandle)
         ).then(function (h) { return new Uint8Array(h); });
@@ -400,42 +402,6 @@ Q.exports(function (Q, _) {
                 prfOutput:    prfOut ? new Uint8Array(prfOut) : null
             };
         });
-    }
-
-    /**
-     * Attempt a discoverable credential get — no allowCredentials filter.
-     * Used on a new device to find any synced credential (iCloud / Google PM)
-     * without knowing its credential ID in advance.
-     *
-     * The OS shows a credential picker if multiple passkeys exist for this rpId.
-     * Returns null rather than throwing if no credential is found.
-     *
-     * @param  {Uint8Array} prfLabel
-     * @return {Promise<{ credentialId, prfOutput }|null>}
-     */
-    function _webAuthnGetDiscoverable(prfLabel) {
-        var challenge = new Uint8Array(32);
-        crypto.getRandomValues(challenge);
-
-        return navigator.credentials.get({
-            publicKey: {
-                challenge:        challenge,
-                rpId:             location.hostname,
-                // No allowCredentials → discoverable / resident key lookup
-                userVerification: 'preferred',
-                extensions: {
-                    prf: { eval: { first: prfLabel } }
-                }
-            }
-        }).then(function (assertion) {
-            if (!assertion) { return null; }
-            var ext    = assertion.getClientExtensionResults();
-            var prfOut = ext && ext.prf && ext.prf.results && ext.prf.results.first;
-            return {
-                credentialId: new Uint8Array(assertion.rawId),
-                prfOutput:    prfOut ? new Uint8Array(prfOut) : null
-            };
-        }).catch(function () { return null; });
     }
 
     /**
@@ -550,6 +516,54 @@ Q.exports(function (Q, _) {
                 req.onsuccess = function () { resolve(); };
                 req.onerror   = function () { resolve(); };
             } catch(e) { resolve(); }
+        });
+    }
+
+    // ── Device nonce for per-device credential isolation ──────────────────
+    // A 16-byte random value persisted in the 'meta' store. Mixed into
+    // user.id during _webAuthnCreate so each device (each IDB instance)
+    // gets its own credential and therefore its own Drop identity.
+    // If IDB is wiped, the nonce is gone → new credential → new identity
+    // (correct: the old chunks are gone too, so a fresh Drop is right).
+
+    function _idbGetDeviceNonce(db) {
+        var NONCE_KEY = 'device-nonce';
+        return new Promise(function (resolve) {
+            try {
+                var tx  = db.transaction(_.STORES.meta, 'readonly');
+                var req = tx.objectStore(_.STORES.meta).get(NONCE_KEY);
+                req.onsuccess = function (e) {
+                    var row = e.target.result;
+                    if (row && row.value) {
+                        resolve(new Uint8Array(row.value));
+                    } else {
+                        // No nonce yet — generate and persist
+                        _idbPutDeviceNonce(db).then(resolve);
+                    }
+                };
+                req.onerror = function () {
+                    _idbPutDeviceNonce(db).then(resolve);
+                };
+            } catch(e) {
+                _idbPutDeviceNonce(db).then(resolve);
+            }
+        });
+    }
+
+    function _idbPutDeviceNonce(db) {
+        var NONCE_KEY = 'device-nonce';
+        var nonce = new Uint8Array(16);
+        crypto.getRandomValues(nonce);
+        return new Promise(function (resolve) {
+            try {
+                var tx  = db.transaction(_.STORES.meta, 'readwrite');
+                var req = tx.objectStore(_.STORES.meta).put({
+                    key:   NONCE_KEY,
+                    value: Array.from(nonce)
+                });
+                req.onsuccess = function () { resolve(nonce); };
+                req.onerror   = function () { resolve(nonce); };
+            } catch(e) { resolve(nonce); }
         });
     }
 
