@@ -17,7 +17,10 @@ function Safecloud_demo_response($params)
     Q_Response::addStylesheet('{{Safecloud}}/css/Safecloud.css');
     Q_Response::addStylesheet('{{Safecloud}}/css/pages/demo.css');
 
-    $jetUrl  = Q_Config::get('Safecloud', 'jetUrl', Q_Request::baseUrl());
+    // Falls back to Qbix's own node server (see
+    // Media/dropVideo/response.php's identical fallback for why).
+    $jetUrl  = Q_Config::get('Safecloud', 'jetUrl',
+        Q_Config::get('Q', 'node', 'url', Q_Request::baseUrl()));
     $rootCid = Q::ifset($_GET, 'rootCid', null);
 
     Q_Response::setScriptData('Q.plugins.Safecloud.demo.jetUrl',  $jetUrl);
