@@ -87,7 +87,7 @@ First packaged release.
   button; payer strip via new `Jets.getCloudStats`; first gesture
   initialises Drop + payer identities.
 
-## 1.0.0-beta.3 — 2026-07-07
+## 1.0.0 — 2026-07-07
 
 ### On-chain format corrected against OpenClaiming.sol (source review)
 - **EIP-712 domain fixed everywhere**: name is `OpenClaiming.payments`

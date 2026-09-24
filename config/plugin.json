@@ -2,7 +2,7 @@
     "Q": {
         "pluginInfo": {
             "Safecloud": {
-                "version": "1.0.0-beta.3",
+                "version": "1.0.0",
                 "compatible": "1.0",
                 "requires": {
                     "Q": "1.0",

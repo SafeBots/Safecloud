@@ -1,6 +1,6 @@
 {
   "name": "safecloud",
-  "version": "1.0.0-beta.3",
+  "version": "1.0.0",
   "description": "Safecloud Jet server — distributed encrypted storage network",
   "main": "classes/Safecloud.js",
   "dependencies": {
