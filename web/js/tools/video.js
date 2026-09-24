@@ -143,6 +143,32 @@ Q.Tool.define('Safecloud/video', function (options) {
             $te.find('.Safecloud_video_wrap').show();
             Q.handle(state.onLoad, tool, [handle]);
 
+            // Q's multi-column UI (Q/columns push()) keeps a previous
+            // column's DOM and tools alive when a new column is pushed
+            // alongside it, rather than destroying them — so navigating
+            // from one Safecloud clip to another left the FIRST clip's
+            // video tool (and its _prefetchLoop) fully alive and still
+            // fetching in the background. Confirmed live: two different
+            // videoIds streaming concurrently, both hammering the shared
+            // Q.Safecloud.Jets connection until requests started timing
+            // out for both, killing playback on both. _prefetchLoop's own
+            // tick() already skips fetching further segments whenever the
+            // video element is paused (see its videoElement.paused check)
+            // — pausing playback the moment this tool's element scrolls or
+            // gets covered out of view is enough to make that existing
+            // guard kick in, so a background/covered column stops
+            // competing for bandwidth entirely instead of needing its own
+            // separate stop/resume plumbing.
+            if ('IntersectionObserver' in window) {
+                tool._visibilityObserver = new IntersectionObserver(function (entries) {
+                    var entry = entries[entries.length - 1];
+                    if (!entry.isIntersecting && !videoEl.paused) {
+                        videoEl.pause();
+                    }
+                }, { threshold: 0 });
+                tool._visibilityObserver.observe(tool.element);
+            }
+
             // Media/clip.js's watchClip()/joinClip() (credit-earning watch
             // timer + joining the episode's Media/channel/* stream) rely on
             // onPlaying/onPlay firing the same way Q/video's do — this tool
@@ -174,6 +200,27 @@ Q.Tool.define('Safecloud/video', function (options) {
             });
             videoEl.addEventListener('waiting', function () {
                 tool._clearPlayInterval();
+            });
+
+            // Nothing wired the native <video controls> scrub bar (or any
+            // other direct currentTime jump) to handle.seek() before this —
+            // confirmed live: clicking the timeline ahead of what's been
+            // prefetched left _prefetchLoop to notice the jump only
+            // passively, on its own next ~1s tick (via its "current >
+            // frontier" catch-up), which just abandons everything between
+            // the old and new position rather than fetching it, AND never
+            // tells the service worker to reset/prune its segment cache
+            // (that's what the explicit 'seek' postMessage is for) — so
+            // hls.js's own request for a segment in that abandoned gap
+            // 503'd with nothing ever going to arrive for it. 'seeking'
+            // fires for both a user drag and a programmatic currentTime
+            // set, so this covers handle.seek() callers too (calling
+            // seek() twice for the same jump is harmless — it's cheap and
+            // idempotent).
+            videoEl.addEventListener('seeking', function () {
+                if (tool._handle && tool._handle.seek) {
+                    tool._handle.seek(videoEl.currentTime);
+                }
             });
 
             // The reported "player appears, loader just spins, no video
@@ -234,6 +281,7 @@ Q.Tool.define('Safecloud/video', function (options) {
         beforeRemove: function () {
             this._clearPlayInterval();
             clearTimeout(this._startStallTimer);
+            if (this._visibilityObserver) { this._visibilityObserver.disconnect(); }
             if (this._handle) { try { this._handle.stop(); } catch(e) {} }
         }
     }

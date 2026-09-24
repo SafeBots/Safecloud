@@ -207,6 +207,33 @@ function _notifyClients(message) {
     } catch (e) { /* best-effort */ }
 }
 
+// hls.js issues its manifest fetch the instant the page assigns the fake
+// HLS URL as the <video> src, over the same event-loop tick as (or even
+// before) the page's own 'Q.Safecloud.Client.register' postMessage actually
+// gets processed by this worker — the same class of race already found and
+// fixed for segments (see SEGMENT_WAIT_MS above), just one level up. A
+// brand-new browser profile hitting content for the first time (fresh SW
+// instance, nothing in memory, nothing in IndexedDB yet either) is the
+// worst case: confirmed live, master.m3u8 got sessionFrom:"none" and an
+// immediate 404 — which hls.js treated as an unrecoverable manifestLoadError
+// with no retry at all — moments before the register message actually
+// arrived. Give a session that hasn't registered YET a brief window to show
+// up before truly giving up, same as segments already do.
+var SESSION_WAIT_MS = 5000;
+var SESSION_POLL_MS = 100;
+
+function _waitForSession(videoId, timeoutMs) {
+    var start = Date.now();
+    return new Promise(function (resolve) {
+        (function check() {
+            var session = sessions[videoId];
+            if (session) { return resolve(session); }
+            if (Date.now() - start >= timeoutMs) { return resolve(null); }
+            setTimeout(check, SESSION_POLL_MS);
+        })();
+    });
+}
+
 function handleSafecloudRequest(request, url) {
     var parts   = url.pathname.replace(/^\//, '').split('/');
     var videoId = parts[0];
@@ -220,14 +247,23 @@ function handleSafecloudRequest(request, url) {
 
     // SW may have restarted since register — restore from IndexedDB
     return _idbGetSession(videoId).then(function (restored) {
-        if (!restored) {
-            _notifyClients({ event: 'fetch', videoId: videoId, path: rest, sessionFrom: 'none' });
-            return new Response('Safecloud session not found', { status: 404 });
+        if (restored) {
+            sessions[videoId] = restored;
+            if (!segments[videoId]) { segments[videoId] = {}; }
+            _notifyClients({ event: 'fetch', videoId: videoId, path: rest, sessionFrom: 'indexedDB' });
+            return _routeSafecloud(request, videoId, rest, restored);
         }
-        sessions[videoId] = restored;
-        if (!segments[videoId]) { segments[videoId] = {}; }
-        _notifyClients({ event: 'fetch', videoId: videoId, path: rest, sessionFrom: 'indexedDB' });
-        return _routeSafecloud(request, videoId, rest, restored);
+        // Neither memory nor IndexedDB has it — could be a genuinely
+        // missing session, or just the register race described above.
+        // Poll briefly for it to land before giving up for real.
+        return _waitForSession(videoId, SESSION_WAIT_MS).then(function (delayed) {
+            if (!delayed) {
+                _notifyClients({ event: 'fetch', videoId: videoId, path: rest, sessionFrom: 'none' });
+                return new Response('Safecloud session not found', { status: 404 });
+            }
+            _notifyClients({ event: 'fetch', videoId: videoId, path: rest, sessionFrom: 'memory (delayed register)' });
+            return _routeSafecloud(request, videoId, rest, delayed);
+        });
     });
 }
 
@@ -389,7 +425,18 @@ function serveInitSegment(videoId, version, session) {
 // exception it triggers) for the common case entirely, while still falling
 // back to a 503 (letting hls.js's normal retry take over) if truly nothing
 // arrives in time.
-var SEGMENT_WAIT_MS  = 5000;
+//
+// 5000ms turned out to be tuned to the ~300-400ms round-trip seen testing
+// with the uploader's own account. A different (paying, non-owner) viewer
+// hitting the same content from a separate browser/account showed
+// avgLatencyMs in the 3500-4600ms range instead — confirmed live: segments
+// arrive out of order (concurrent per-segment Jet requests don't resolve
+// FIFO), and hls.js requested seg1 while it was still in flight; the SW
+// gave up and 503'd right as it was arriving, and hls.js's fatal-error path
+// never recovered from there. 15000ms gives comfortable margin over that
+// observed worst case while still being a bounded safety net, not an
+// unbounded hang, for a genuinely missing segment.
+var SEGMENT_WAIT_MS  = 15000;
 var SEGMENT_POLL_MS  = 150;
 
 function _waitForSegment(videoId, version, segIndex, timeoutMs) {

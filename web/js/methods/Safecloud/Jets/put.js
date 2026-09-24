@@ -30,6 +30,11 @@
  *   options.streamName     String
  *   options.onProgress     fn(stored, total) — called after each batch, not just at the end
  *   options.batchBytes     Number — override the per-emit byte budget (default 6MB of plaintext)
+ *   options.isAborted      fn() => Boolean — checked before each batch; when store.js uploads
+ *     several tracks in parallel (data + index) via Promise.all and one of them fails outright,
+ *     nothing else stops the others' sequential batch loops on its own — confirmed live: the tiny
+ *     index track had zero Drops accept it while the 69-chunk data track kept right on going,
+ *     progress bar and all, well after the overall upload had already been reported as failed.
  */
 Q.exports(function (Q, _) {
     // Kept well under the Jet's 50MB maxHttpBufferSize even after base64 +
@@ -134,7 +139,12 @@ Q.exports(function (Q, _) {
         // every batch in parallel would just reassemble the same memory/
         // buffer spike this refactor exists to avoid.
         var _promise = batches.reduce(function (p, batchChunks) {
-            return p.then(function () { return putBatch(batchChunks); });
+            return p.then(function () {
+                if (options.isAborted && options.isAborted()) {
+                    throw new Error('Q.Safecloud.Jets.put: aborted (a sibling track failed)');
+                }
+                return putBatch(batchChunks);
+            });
         }, Promise.resolve()).then(function () {
             // Check that at least one Drop confirmed each chunk — if every chunk
             // has stored:false, reject so the caller knows the upload failed
