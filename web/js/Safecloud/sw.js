@@ -481,7 +481,26 @@ function serveSegment(request, videoId, version, segIndex, session) {
                     });
                 })
                 .catch(function (err) {
-                    return new Response('Decryption failed: ' + err.message, { status: 500 });
+                    // Teaser playback (a grant-based capability covering only
+                    // a time range, not the full rootKey — see
+                    // Client/createShareLink.js's teaser mode) hits this the
+                    // instant playback reaches an ungranted segment. Answer
+                    // with 403 (not 500) specifically for that case so the
+                    // page can tell "you've reached the end of what you're
+                    // allowed to watch" apart from a real decryption failure
+                    // — Client/stream.js's hls.js error handler checks for
+                    // this exact status to stop retrying and fire
+                    // onTeaserEnd instead of treating it as a transient error.
+                    var noGrant = /^No grant covers segment/.test(err.message);
+                    if (noGrant) {
+                        _notifyClients({
+                            event: 'noGrantForSegment', videoId: videoId,
+                            version: version, segIndex: segIndex
+                        });
+                    }
+                    return new Response('Decryption failed: ' + err.message, {
+                        status: noGrant ? 403 : 500
+                    });
                 });
         });
 }

@@ -20,6 +20,10 @@
  *   @param {Number}  [options.at]          Start position in seconds.
  *   @param {Q.Event} [options.onLoad]      Fired when player is ready.
  *   @param {Q.Event} [options.onError]     Fired on error.
+ *   @param {Q.Event} [options.onTeaserEnd] Fired when playback reaches the end
+ *     of a teaser (grant-limited) capability's granted range — video is
+ *     paused automatically just before this fires. See Client/stream.js's
+ *     hls.js error handler (checks for the SW's 403 "no grant" response).
  */
 Q.Tool.define('Safecloud/video', function (options) {
     var tool  = this;
@@ -54,6 +58,7 @@ Q.Tool.define('Safecloud/video', function (options) {
     onPlay:     new Q.Event(),
     onPlaying:  new Q.Event(),
     onStall:    new Q.Event(),
+    onTeaserEnd: new Q.Event(),
     onError:    new Q.Event(function (err) {
         console.warn('Safecloud/video error:', err);
     })
@@ -136,7 +141,11 @@ Q.Tool.define('Safecloud/video', function (options) {
 
         Q.Safecloud.Client.stream(manifest, capability, {
             at:           state.at || 0,
-            videoElement: videoEl
+            videoElement: videoEl,
+            onTeaserEnd: function () {
+                videoEl.pause();
+                Q.handle(state.onTeaserEnd, tool);
+            }
         }).then(function (handle) {
             tool._handle = handle;
             tool.setStatus('', '');
@@ -251,7 +260,26 @@ Q.Tool.define('Safecloud/video', function (options) {
                 tool._clearPlayInterval();
             });
 
-            videoEl.play().catch(function () {});
+            // Browsers (Chrome especially) block unmuted autoplay without
+            // an established Media Engagement Index for this origin — a
+            // fresh/incognito profile always fails this, silently rejecting
+            // play() and leaving the element paused forever. Since nothing
+            // caught that rejection before, videoElement.paused just stayed
+            // true — and _prefetchLoop's own tick() deliberately defers
+            // fetching entirely while paused (unless prefetchWhenPaused),
+            // so NO chunk ever got fetched at all: confirmed live via
+            // Q.Safecloud.Jets.connectionStats() showing only the one
+            // index-track request, zero for any data segment. Autoplay
+            // muted is allowed everywhere; retry that way rather than
+            // leaving the viewer stuck on an endless spinner with no
+            // indication anything needs a click.
+            videoEl.play().catch(function () {
+                videoEl.muted = true;
+                return videoEl.play();
+            }).catch(function (err) {
+                console.warn('Safecloud/video: autoplay (even muted) was blocked — '
+                    + 'playback will need an explicit tap/click on the controls.', err);
+            });
         }).catch(function (err) {
             tool.setStatus(
                 (Q.getObject('video.Error', tool.text) || 'Error') +

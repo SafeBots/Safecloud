@@ -53,7 +53,7 @@ Q.exports(function (Q, _) {
     // truly-broken stream doesn't retry forever.
     var MAX_FATAL_RECOVERIES = 3;
 
-    function _attachHls(video, hlsUrl, videoId) {
+    function _attachHls(video, hlsUrl, videoId, options) {
         var nativeHls = video.canPlayType('application/vnd.apple.mpegurl');
         // Was never declared anywhere — every read/increment below silently
         // operated on an implicit global that started at undefined, so
@@ -134,6 +134,20 @@ Q.exports(function (Q, _) {
             });
             hls.on(Hls.Events.ERROR, function (event, data) {
                 if (!data) { return; }
+
+                // Teaser playback ran past its granted range — sw.js's
+                // decryptSegment answers with 403 specifically for this
+                // (see its own comment), never for a transient failure, so
+                // there's nothing to retry: stop immediately instead of
+                // burning through fragLoadingMaxRetry attempts against a
+                // permanently-denied segment, and let the embedder (e.g.
+                // Media/clip.js) show a sign-in prompt.
+                if (data.response && data.response.code === 403) {
+                    hls.stopLoad();
+                    if (options && options.onTeaserEnd) { options.onTeaserEnd(); }
+                    return;
+                }
+
                 if (!data.fatal) {
                     // Non-fatal errors (e.g. a 503 while the SW is still
                     // waiting for _prefetchLoop to post a segment) are
@@ -317,8 +331,16 @@ Q.exports(function (Q, _) {
         var hydratedVersions = results[1];
         if (index) { activeManifest = Q.extend({}, activeManifest, { _index: index }); }
 
-        return Q.Safecloud.Client._ensureServiceWorker().then(function () {
-            var sw = navigator.serviceWorker.controller;
+        return Q.Safecloud.Client._ensureServiceWorker().then(function (ready) {
+            // ready === true means OUR sw.js specifically controls the page
+            // — not just that *some* service worker does. Q.js's own core
+            // SW (Q-ServiceWorker, registered app-wide at the same scope
+            // '/') can easily be the one actually in control instead,
+            // especially on a fresh/incognito load — proceeding anyway in
+            // that case sends hls.js's manifest fetch to a worker that has
+            // no idea what safecloud-hls.local means, and it falls through
+            // to the real network (confirmed live: net::ERR_NAME_NOT_RESOLVED).
+            var sw = ready && navigator.serviceWorker.controller;
             if (!sw) {
                 // SW didn't take control — fall back to blob path
                 Q.log('Q.Safecloud.Client.stream: SW not controlling page, falling back', 'Safecloud');
@@ -360,7 +382,7 @@ Q.exports(function (Q, _) {
             // safecloud adapter) attach the URL through its own player —
             // videojs VHS must handle the m3u8 on browsers without native HLS.
             var attachPromise = (options.videoElement && options.setSrc !== false)
-                ? _attachHls(options.videoElement, fakeUrl, videoId)
+                ? _attachHls(options.videoElement, fakeUrl, videoId, options)
                 : Promise.resolve();
 
             // _prefetchLoop figures out which segment playback currently
@@ -414,9 +436,14 @@ Q.exports(function (Q, _) {
                     // cooldown avoids re-registering on every single fetch
                     // in a burst of them.
                     var _lastRecovery = 0;
+                    var _swUrl = Q.url('SafecloudServiceWorker.js');
                     function _recoverSession() {
+                        // Must be OUR sw.js controlling, not Q's own core SW
+                        // (same scope '/' — see _ensureServiceWorker.js) —
+                        // otherwise this posts the register message to a
+                        // worker that will just ignore it.
                         var sw = navigator.serviceWorker.controller;
-                        if (!sw) { return; }
+                        if (!sw || sw.scriptURL !== _swUrl) { return; }
                         var now = Date.now();
                         if (now - _lastRecovery < 2000) { return; }
                         _lastRecovery = now;
