@@ -25,11 +25,22 @@ Q.exports(function (Q, _) {
     return function Q_Safecloud_Drops_reannounceIfCold(cold) {
         if (!cold) { return Promise.resolve(); }
         return _.openDB().then(function (db) {
-            return new Promise(function (resolve, reject) {
-                var tx  = db.transaction(_.STORES.lru, 'readonly');
-                var req = tx.objectStore(_.STORES.lru).getAllKeys();
-                req.onsuccess = function (e) { resolve(e.target.result || []); };
-                req.onerror   = function (e) { reject(e.target.error); };
+            // Re-derive usedBytes/storedChunks from IndexedDB's actual
+            // current contents before announcing — otherwise this reports
+            // whatever usedBytes already happened to be sitting in memory,
+            // which nothing keeps in sync with storage cleared externally
+            // (e.g. via devtools) rather than through this Drop's own
+            // delete path. Confirmed live: clearing IndexedDB then
+            // clicking "Resync" without a full reload still announced the
+            // stale (pre-clear) usedBytes to the Jet, which kept routing
+            // PUTs away from this Drop as though it were still full.
+            return _.rehydrateStorageStats(db).then(function () {
+                return new Promise(function (resolve, reject) {
+                    var tx  = db.transaction(_.STORES.lru, 'readonly');
+                    var req = tx.objectStore(_.STORES.lru).getAllKeys();
+                    req.onsuccess = function (e) { resolve(e.target.result || []); };
+                    req.onerror   = function (e) { reject(e.target.error); };
+                });
             });
         }).then(function (cids) {
             if (cids.length) {

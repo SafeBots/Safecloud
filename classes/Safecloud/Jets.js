@@ -310,6 +310,12 @@ var _listenResult = null;
 
 var GRACE_MS_DEFAULT          = 60000;
 var BALANCE_CACHE_TTL_DEFAULT = 3600000;
+// Kept tight — this is also the default for latency-sensitive calls like
+// GET, where a slow Drop should fail over to another one quickly rather
+// than stall playback. PUT uses its own, much more generous budget below
+// (PUT_TIMEOUT_BASE_MS), since it isn't latency-sensitive the same way
+// and a spurious timeout there just means silently discarding a chunk the
+// Drop may well still be in the middle of successfully storing.
 var CALL_DROP_TIMEOUT_DEFAULT = 10000;
 // Drops/put.js writes chunks to IndexedDB sequentially ("to keep quota
 // accounting consistent"), so a batch of N chunks genuinely takes longer
@@ -318,7 +324,18 @@ var CALL_DROP_TIMEOUT_DEFAULT = 10000;
 // callDrop to reject as "timeout" a moment before the Drop's own success
 // announce arrived, so the Cloud saw "no Drops stored any chunks" even
 // though the Drop had genuinely stored everything.
-var PUT_TIMEOUT_PER_CHUNK_MS  = 150;
+//
+// That first fix (this same per-chunk scaling, previously piggybacking on
+// CALL_DROP_TIMEOUT_DEFAULT as its base) still wasn't generous enough —
+// confirmed live: even a 19-chunk RETRY batch timed out at the 10s base,
+// let alone the original 124-chunk batch at the old 150ms/chunk slope.
+// The Drop can genuinely be slower than either constant assumed (a
+// heavily loaded machine, larger chunks, first-run IndexedDB overhead,
+// etc.) — PUT_TIMEOUT_BASE_MS is now its own constant, well above
+// CALL_DROP_TIMEOUT_DEFAULT, specifically so raising it doesn't also
+// loosen the GET path's failover latency.
+var PUT_TIMEOUT_BASE_MS       = 30000;
+var PUT_TIMEOUT_PER_CHUNK_MS  = 300;
 var REPLICATION_DEFAULT       = 2;
 var PER_CHUNK_WEI_DEFAULT     = '1000';
 
@@ -2191,7 +2208,7 @@ function _handleSubtreePut(client, userId, payload, ack) {
                         return ack && ack({ error: { code: 'ServiceUnavailable', message: 'No Drops available' } });
                     }
                     var putTimeoutMs = Math.max(
-                        CALL_DROP_TIMEOUT_DEFAULT,
+                        PUT_TIMEOUT_BASE_MS,
                         chunks.length * PUT_TIMEOUT_PER_CHUNK_MS
                     );
                     var putPromises = drops.map(function (drop) {

@@ -68,6 +68,17 @@ Q.exports(function (Q, _) {
                 throw new Error('HLS playback not supported in this browser');
             }
             var hls = new Hls({
+                // A shared clip's own range doesn't necessarily start at 0
+                // (e.g. seconds 5-15 of the episode) — hls.js's own
+                // startPosition is what actually makes playback open right
+                // there instead of at the beginning of whichever chunk
+                // happens to contain it (the grant/prefetch loop can only
+                // fetch whole chunks, so the chunk covering [5,15) may
+                // itself start well before 5s — confirmed live: without
+                // this, a clip's page always started playing from 0
+                // regardless of options.at, since nothing here was reading
+                // it at all).
+                startPosition: (options && options.at) || -1,
                 // The service worker answers a not-yet-delivered segment
                 // with a bare 503 (sw.js's serveSegment) rather than holding
                 // the fetch open until _prefetchLoop posts it — so hls.js's

@@ -47,6 +47,13 @@ Q.Tool.define('Safecloud/video', function (options) {
     capability: null,
     jetUrl:     null,
     at:         0,
+    // Pause and fire onTeaserEnd once currentTime reaches this — a
+    // grant's own coverage is chunk-rounded (Client/grant.js widens
+    // [clipStart, clipEnd) out to whole chunk boundaries), so relying on
+    // the SW/prefetch loop simply running out of granted chunks lets
+    // playback run a couple of seconds past the intended cutoff. Only
+    // meaningful together with a grant-limited (not rootKey) capability.
+    stopAt:     null,
     // Seconds between onPlaying firings while playing — same option name/
     // meaning as Q/video's state.positionUpdatePeriod, since Media/clip.js's
     // watchClip() reads it directly off whichever video tool is playing.
@@ -139,13 +146,38 @@ Q.Tool.define('Safecloud/video', function (options) {
         var videoEl = $te.find('.Safecloud_video_el')[0];
         if (!videoEl) { return; }
 
+        // Shared by two independent triggers below: the grant-boundary
+        // detectors inside Q.Safecloud.Client.stream() itself (a real
+        // "no grant past here" rejection), and the state.stopAt
+        // 'timeupdate' watchdog just below (currentTime reaching the
+        // range's end on the nose, regardless of how far the underlying
+        // grant's own chunk-rounded coverage actually extends). Guarded
+        // so reaching both around the same moment doesn't pause twice or
+        // fire state.onTeaserEnd twice.
+        var teaserEndFired = false;
+        function _fireTeaserEnd() {
+            // tool._removed (set in the Q.beforeRemove hook below) guards
+            // against a STALE tool instance from a column that's since been
+            // replaced/closed still firing this — confirmed live: Q/columns
+            // doesn't necessarily tear down a replaced column's tools
+            // synchronously (or at all, in a push-alongside layout), and
+            // videoEl.pause() below don't retroactively stop a 'timeupdate'
+            // that's already in flight from before this tool was torn down
+            // — a shared clip's Safecloud/video tool kept running in the
+            // background after the viewer navigated to the full episode in
+            // its place, and once its stopAt boundary was reached, popped
+            // the "end of clip" dialog on top of the now-unrelated full-
+            // episode page.
+            if (teaserEndFired || tool._removed) { return; }
+            teaserEndFired = true;
+            videoEl.pause();
+            Q.handle(state.onTeaserEnd, tool);
+        }
+
         Q.Safecloud.Client.stream(manifest, capability, {
             at:           state.at || 0,
             videoElement: videoEl,
-            onTeaserEnd: function () {
-                videoEl.pause();
-                Q.handle(state.onTeaserEnd, tool);
-            }
+            onTeaserEnd: _fireTeaserEnd
         }).then(function (handle) {
             tool._handle = handle;
             tool.setStatus('', '');
@@ -200,6 +232,12 @@ Q.Tool.define('Safecloud/video', function (options) {
                 Q.handle(state.onPlay, tool);
             });
             videoEl.addEventListener('playing', function () {
+                // Clears whatever the start-stall watchdog above showed if
+                // this fires later than startStallMs (e.g. the Drop
+                // reconnected on its own after the "isn't starting" message
+                // was already shown) — otherwise that error text would sit
+                // there indefinitely even once playback genuinely recovers.
+                if (!tool._everPlayed) { tool.setStatus('', ''); }
                 tool._everPlayed = true;
                 clearTimeout(tool._startStallTimer);
                 tool._clearPlayInterval();
@@ -232,6 +270,14 @@ Q.Tool.define('Safecloud/video', function (options) {
                 }
             });
 
+            if (state.stopAt) {
+                videoEl.addEventListener('timeupdate', function () {
+                    if (videoEl.currentTime >= state.stopAt) {
+                        _fireTeaserEnd();
+                    }
+                });
+            }
+
             // The reported "player appears, loader just spins, no video
             // loads" case: 'playing' never fires at all — 'waiting' does
             // (or nothing does, if the video can't even get that far), so
@@ -245,16 +291,32 @@ Q.Tool.define('Safecloud/video', function (options) {
             // after the fact.
             tool._startStallTimer = setTimeout(function () {
                 if (tool._everPlayed) { return; }
+                var diagnostics = {
+                    readyState:     videoEl.readyState,
+                    networkState:   videoEl.networkState,
+                    documentHidden: (typeof document !== 'undefined') && document.hidden,
+                    prefetch:       handle.stats ? handle.stats() : null
+                };
                 console.warn('Safecloud/video: playback never started within '
                     + (state.startStallMs / 1000) + 's of calling play() — '
                     + 'likely the Drop storing this content is slow or unreachable. '
-                    + JSON.stringify({
-                        readyState:     videoEl.readyState,
-                        networkState:   videoEl.networkState,
-                        documentHidden: (typeof document !== 'undefined') && document.hidden,
-                        prefetch:       handle.stats ? handle.stats() : null
-                    }));
-                Q.handle(state.onStall, tool, [{ phase: 'start' }]);
+                    + JSON.stringify(diagnostics));
+                // Until now this only logged to console — clearing the
+                // "Starting…" status as soon as Q.Safecloud.Client.stream()'s
+                // setup promise resolved (which happens immediately, well
+                // before any actual segment arrives) left NOTHING visible in
+                // the UI when the underlying fetch loop can't get any data
+                // at all (e.g. "No Drops available to serve this content" —
+                // a real, reachable failure, not a slow-but-working one):
+                // just the native <video> element's own indefinite loading
+                // spinner, with no indication anything had actually gone
+                // wrong or that it wouldn't eventually resolve on its own.
+                tool.setStatus(
+                    Q.getObject('video.StartStalled', tool.text)
+                        || 'Playback isn’t starting — this content may be temporarily unavailable.',
+                    'error'
+                );
+                Q.handle(state.onStall, tool, [{ phase: 'start', diagnostics: diagnostics }]);
             }, state.startStallMs || 10000);
             videoEl.addEventListener('pause', function () {
                 tool._clearPlayInterval();
@@ -298,6 +360,21 @@ Q.Tool.define('Safecloud/video', function (options) {
     seek:  function (t){ var v = $(this.element).find('.Safecloud_video_el')[0];
                          if (v) v.currentTime = t; },
 
+    // Mirrors Q/video's own getCurrentPosition()/getDuration() shape (in
+    // seconds) — Media/clip/preview.js's "create a clip" composer reads
+    // these off whichever player tool is currently showing (Q/video,
+    // Q/audio or this one) to default the clip range to "the next 15s from
+    // wherever the viewer currently is," without needing to special-case
+    // Safecloud playback there.
+    getCurrentPosition: function () {
+        var v = $(this.element).find('.Safecloud_video_el')[0];
+        return v ? v.currentTime : 0;
+    },
+    getDuration: function () {
+        var v = $(this.element).find('.Safecloud_video_el')[0];
+        return (v && isFinite(v.duration)) ? v.duration : 0;
+    },
+
     _clearPlayInterval: function () {
         if (this._playIntervalId) {
             clearInterval(this._playIntervalId);
@@ -307,10 +384,19 @@ Q.Tool.define('Safecloud/video', function (options) {
 
     Q: {
         beforeRemove: function () {
+            this._removed = true;
             this._clearPlayInterval();
             clearTimeout(this._startStallTimer);
             if (this._visibilityObserver) { this._visibilityObserver.disconnect(); }
             if (this._handle) { try { this._handle.stop(); } catch(e) {} }
+            // Without this, a still-playing (merely detached/covered, not
+            // actually stopped) <video> element keeps firing 'timeupdate'
+            // on itself indefinitely — see _fireTeaserEnd's own comment on
+            // what that caused live. Pausing is what actually stops those
+            // events; _removed above is the belt-and-suspenders backstop
+            // for whatever's already in flight at the moment this runs.
+            var v = $(this.element).find('.Safecloud_video_el')[0];
+            if (v) { try { v.pause(); } catch (e) {} }
         }
     }
 });

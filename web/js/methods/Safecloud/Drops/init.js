@@ -38,7 +38,7 @@ Q.exports(function (Q, _) {
             // 'chunks') is the cheap source for this: one row per stored
             // chunk with just {cid, size, lastAccessed} — no ciphertext to
             // read through, unlike 'chunks'.
-            return _rehydrateStorageStats(db).then(function () {
+            return _.rehydrateStorageStats(db).then(function () {
                 return db;
             });
 
@@ -116,30 +116,9 @@ Q.exports(function (Q, _) {
     };
 
     // ── Helpers ───────────────────────────────────────────────────────────
-
-    /**
-     * Rehydrate _._state.usedBytes/storedChunks from the 'lru' store —
-     * one lightweight {cid, size, lastAccessed} row per chunk actually
-     * present in IndexedDB right now, so the dashboard reflects real
-     * storage from the moment init() resolves, not just chunks put()
-     * during the current page session.
-     */
-    function _rehydrateStorageStats(db) {
-        return new Promise(function (resolve, reject) {
-            var tx    = db.transaction(_.STORES.lru, 'readonly');
-            var req   = tx.objectStore(_.STORES.lru).getAll();
-            req.onsuccess = function (e) { resolve(e.target.result || []); };
-            req.onerror   = function (e) { reject(e.target.error); };
-        }).then(function (rows) {
-            var bytes = 0;
-            rows.forEach(function (r) { bytes += r.size || 0; });
-            _._state.usedBytes    = bytes;
-            _._state.storedChunks = rows.length;
-        }).catch(function () {
-            // Best-effort — leave counters at their in-memory defaults
-            // (0) rather than fail init() over a stats-only read.
-        });
-    }
+    // (usedBytes/storedChunks rehydration is now shared — see
+    // Drops/_internal.js's _.rehydrateStorageStats, also used by
+    // Drops/reannounceIfCold.js's manual "Resync" path.)
 
     /**
      * Replay the full log to rebuild the in-memory Prolly store from scratch.
