@@ -287,12 +287,45 @@ Q.exports(function (Q, _) {
     function _buildTeaserLink(manifest, rootKey, fromSec, toSec, rootCid,
                               baseUrl, embedBase, jetQuery, options, callback) {
 
+        // manifest.chunkDuration never actually exists in this schema
+        // (nothing sets it), so this always fell back to a flat 6s
+        // assumption — but the real per-chunk boundaries the PLAYER
+        // actually uses at playback time (_prefetchLoop.js's own
+        // _chunkAtTime, which every fetch during streaming goes through)
+        // come from manifest._index.chapters[].pts instead, and can
+        // legitimately differ by 10%+ (e.g. ~5.3s real vs the 6s guess).
+        // For a long teaser (always [0, 15]) that drift is usually small
+        // relative to the whole granted range. For an arbitrary, possibly
+        // very short clip — especially one that starts well into the
+        // video, where the drift has had more time to accumulate — it can
+        // shift the real chunk index enough that the chunk the player
+        // actually needs at fromSec/toSec falls just outside a range
+        // computed from the naive guess, confirmed live as playback
+        // simply never starting for some (not all) clips, with the
+        // service worker reporting "segmentNotAvailable" for exactly the
+        // chunk the naive computation excluded. Use the same real,
+        // chapters-based lookup here whenever the caller has one to give
+        // us (see createShareLink's own callers, which pass it through
+        // from whichever player already decrypted the index track) so
+        // both sides agree on which chunk a given time falls in.
         var chunkDuration = manifest.chunkDuration || 6;
-        var chunkStart = Math.floor(fromSec / chunkDuration);
-        var chunkEnd   = Math.min(
-            Math.ceil(toSec / chunkDuration),
-            manifest.chunkCount
-        );
+        var chunkStart, chunkEnd;
+        var chapters = manifest && manifest._index && manifest._index.chapters;
+        if (chapters && chapters.length) {
+            chunkStart = _chunkAtTime(fromSec, chapters);
+            // +1, not the chapter index toSec itself falls in: the range
+            // is exclusive of chunkEnd, and we want to KEEP the chunk that
+            // toSec falls inside (matching the naive Math.ceil's own
+            // "cover through the chunk containing toSec" semantics), not
+            // exclude it.
+            chunkEnd = Math.min(_chunkAtTime(toSec, chapters) + 1, manifest.chunkCount);
+        } else {
+            chunkStart = Math.floor(fromSec / chunkDuration);
+            chunkEnd   = Math.min(
+                Math.ceil(toSec / chunkDuration),
+                manifest.chunkCount
+            );
+        }
 
         // Compute the minimal set of subtree link paths covering [chunkStart, chunkEnd)
         var linkPaths = _teaserPathsCovering(chunkStart, chunkEnd, manifest);
@@ -352,6 +385,23 @@ Q.exports(function (Q, _) {
               .catch(function (e) { callback(e); });
         }
         return _p;
+    }
+
+    /**
+     * Same algorithm as _prefetchLoop.js's own _chunkAtTime, inlined here
+     * (same reasoning as _teaserPathsCovering just below: avoiding a
+     * circular dependency) — the largest chapter index whose pts doesn't
+     * exceed the given time, i.e. "which chunk does this moment fall
+     * inside." chapters is manifest._index.chapters, already checked
+     * non-empty by the caller.
+     */
+    function _chunkAtTime(seconds, chapters) {
+        var lo = 0, hi = chapters.length - 1;
+        while (lo < hi) {
+            var mid = (lo + hi + 1) >> 1;
+            if (chapters[mid].pts <= seconds) { lo = mid; } else { hi = mid - 1; }
+        }
+        return lo;
     }
 
     /**

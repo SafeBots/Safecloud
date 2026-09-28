@@ -55,6 +55,18 @@ Q.exports(function (Q, _) {
         // sw.js's 'Q.Safecloud.Client.seek' handler) and a version switch is
         // an entirely different set of chunks.
         var _delivered = {};
+        // Segments permanently refused by the Jet itself (a teaser/grant
+        // boundary) — as opposed to _delivered, this is never reset on
+        // seek/setVersion within the same grant set, since a denial for a
+        // given absolute segIndex is a fact about the grant, not about
+        // caching. See the 'waiting' listener below for why this exists:
+        // _tick()'s frontier only ever advances, so a given segIndex is
+        // only ever attempted once — by the time playback genuinely
+        // reaches a denied segment, its one and only fetch attempt (and
+        // thus its one onError call) already happened, seconds earlier,
+        // while the loop was still racing ahead of the viewer. Recording
+        // the denial here is what lets a later, real stall recognize it.
+        var _denied = {};
         var _segStart  = _chunkAtTime(startAt, chunkDuration, videoManifest);
         // Next index the tick loop hasn't requested yet — see _tick() for
         // why this, not currentTime, drives the window's upper edge.
@@ -163,7 +175,27 @@ Q.exports(function (Q, _) {
             }).catch(function (err) {
                 if (/timeout/i.test(err && err.message)) { _segStats.timeouts++; }
                 else { _segStats.errors++; }
-                onError(err);
+                if (err && /No grant covers link path/.test(err.message)) {
+                    // Record permanently — see _denied's own comment above
+                    // for why this segIndex's one-and-only fetch attempt
+                    // happening now (likely well before the viewer's
+                    // buffer actually runs dry) means this is the only
+                    // chance to remember it was denied.
+                    _denied[segIndex] = true;
+                }
+                // segIndex and whether it's actually needed for CURRENT
+                // playback (as opposed to one of the prefetchAhead segments
+                // this loop deliberately requests before they're needed —
+                // see _tick()'s own comment on racing ahead of playback) are
+                // both passed through so a caller can tell a real,
+                // just-reached grant/subscription boundary (segIndex <=
+                // current) apart from hitting that same boundary purely
+                // because the loop is scouting ahead of where the viewer
+                // actually is. This distinction alone isn't sufficient to
+                // detect "teaser genuinely ended" though — see the
+                // 'waiting' listener below, which is what actually does
+                // that now.
+                onError(err, segIndex, segIndex <= _currentSegIndex());
             }).then(function () {
                 delete _inFlight[segIndex];
             });
@@ -320,6 +352,33 @@ Q.exports(function (Q, _) {
         // everything the loop still thinks is needed from here on — worst
         // case is a few redundant re-deliveries if it didn't actually
         // restart, which costs bandwidth but not correctness.
+        // Native, precise "playback has nothing left to play from here"
+        // signal — far more reliable than trying to infer the moment from
+        // fetch timing. _checkStall's own since-last-delivery heuristic
+        // fires on its own clock (stallLogMs after the LAST successful
+        // delivery, e.g. right after segments 0-2 landed within the first
+        // second or two) and can land well before the viewer's buffer
+        // actually empties, or not at all if later segments happen to
+        // succeed. The 'waiting' event, in contrast, is the browser
+        // itself reporting that currentTime has caught up to the edge of
+        // what's buffered — exactly the moment a caller needs to know
+        // about. Checking _denied at that exact moment is what finally
+        // distinguishes "stalled because this is a teaser's grant
+        // boundary" from an ordinary transient network stall, without
+        // needing to retry a fetch that's already known to be hopeless.
+        var _teaserEndFired = false;
+        function _onWaiting() {
+            if (_stopped || _teaserEndFired || !options.onTeaserEnd) { return; }
+            var seg = _currentSegIndex();
+            if (_denied[seg] || _denied[seg + 1]) {
+                _teaserEndFired = true;
+                options.onTeaserEnd();
+            }
+        }
+        if (videoElement && videoElement.addEventListener) {
+            videoElement.addEventListener('waiting', _onWaiting);
+        }
+
         var _onVisible = function () {
             if (document.visibilityState === 'visible') { _delivered = {}; }
         };
@@ -338,6 +397,9 @@ Q.exports(function (Q, _) {
                 _inFlight = {};
                 if (typeof document !== 'undefined' && document.removeEventListener) {
                     document.removeEventListener('visibilitychange', _onVisible);
+                }
+                if (videoElement && videoElement.removeEventListener) {
+                    videoElement.removeEventListener('waiting', _onWaiting);
                 }
                 var sw = navigator.serviceWorker && navigator.serviceWorker.controller;
                 if (sw) { sw.postMessage({ type: 'Q.Safecloud.Client.stop', videoId: videoId }); }

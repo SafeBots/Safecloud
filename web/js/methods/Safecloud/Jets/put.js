@@ -44,10 +44,18 @@ Q.exports(function (Q, _) {
     // Also cap chunk count per emit regardless of size, so a track made of
     // many tiny chunks doesn't turn into one giant JSON array either.
     var BATCH_CHUNKS_MAX = 128;
-    // Mirrors the Jet's own PUT_TIMEOUT_PER_CHUNK_MS scaling (classes/Safecloud/Jets.js)
-    // so a big batch isn't held to the same fixed timeout as a single chunk.
-    var BATCH_TIMEOUT_BASE_MS     = 20000;
-    var BATCH_TIMEOUT_PER_CHUNK_MS = 500;
+    // Mirrors the Jet's own PUT_TIMEOUT_BASE_MS/PUT_TIMEOUT_PER_CHUNK_MS
+    // scaling (classes/Safecloud/Jets.js) so a big batch isn't held to the
+    // same fixed timeout as a single chunk — and stays comfortably ABOVE
+    // the Jet's own PUT budget (30000 base / 300 per chunk as of this
+    // writing), not just equal to it: this is the client waiting for the
+    // JET's response, which itself is waiting on the Jet→Drop callDrop
+    // using ITS OWN timeout — if this client-side timeout were tighter
+    // than that, the browser would give up on a batch the Jet was still
+    // legitimately still waiting on, well before the Jet's own generous
+    // budget even expired.
+    var BATCH_TIMEOUT_BASE_MS     = 35000;
+    var BATCH_TIMEOUT_PER_CHUNK_MS = 600;
 
     function chunkByteSize(c) {
         if (!c) { return 0; }

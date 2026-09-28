@@ -53,7 +53,7 @@ Q.exports(function (Q, _) {
     // truly-broken stream doesn't retry forever.
     var MAX_FATAL_RECOVERIES = 3;
 
-    function _attachHls(video, hlsUrl, videoId) {
+    function _attachHls(video, hlsUrl, videoId, options) {
         var nativeHls = video.canPlayType('application/vnd.apple.mpegurl');
         // Was never declared anywhere — every read/increment below silently
         // operated on an implicit global that started at undefined, so
@@ -68,6 +68,17 @@ Q.exports(function (Q, _) {
                 throw new Error('HLS playback not supported in this browser');
             }
             var hls = new Hls({
+                // A shared clip's own range doesn't necessarily start at 0
+                // (e.g. seconds 5-15 of the episode) — hls.js's own
+                // startPosition is what actually makes playback open right
+                // there instead of at the beginning of whichever chunk
+                // happens to contain it (the grant/prefetch loop can only
+                // fetch whole chunks, so the chunk covering [5,15) may
+                // itself start well before 5s — confirmed live: without
+                // this, a clip's page always started playing from 0
+                // regardless of options.at, since nothing here was reading
+                // it at all).
+                startPosition: (options && options.at) || -1,
                 // The service worker answers a not-yet-delivered segment
                 // with a bare 503 (sw.js's serveSegment) rather than holding
                 // the fetch open until _prefetchLoop posts it — so hls.js's
@@ -134,6 +145,20 @@ Q.exports(function (Q, _) {
             });
             hls.on(Hls.Events.ERROR, function (event, data) {
                 if (!data) { return; }
+
+                // Teaser playback ran past its granted range — sw.js's
+                // decryptSegment answers with 403 specifically for this
+                // (see its own comment), never for a transient failure, so
+                // there's nothing to retry: stop immediately instead of
+                // burning through fragLoadingMaxRetry attempts against a
+                // permanently-denied segment, and let the embedder (e.g.
+                // Media/clip.js) show a sign-in prompt.
+                if (data.response && data.response.code === 403) {
+                    hls.stopLoad();
+                    if (options && options.onTeaserEnd) { options.onTeaserEnd(); }
+                    return;
+                }
+
                 if (!data.fatal) {
                     // Non-fatal errors (e.g. a 503 while the SW is still
                     // waiting for _prefetchLoop to post a segment) are
@@ -317,8 +342,16 @@ Q.exports(function (Q, _) {
         var hydratedVersions = results[1];
         if (index) { activeManifest = Q.extend({}, activeManifest, { _index: index }); }
 
-        return Q.Safecloud.Client._ensureServiceWorker().then(function () {
-            var sw = navigator.serviceWorker.controller;
+        return Q.Safecloud.Client._ensureServiceWorker().then(function (ready) {
+            // ready === true means OUR sw.js specifically controls the page
+            // — not just that *some* service worker does. Q.js's own core
+            // SW (Q-ServiceWorker, registered app-wide at the same scope
+            // '/') can easily be the one actually in control instead,
+            // especially on a fresh/incognito load — proceeding anyway in
+            // that case sends hls.js's manifest fetch to a worker that has
+            // no idea what safecloud-hls.local means, and it falls through
+            // to the real network (confirmed live: net::ERR_NAME_NOT_RESOLVED).
+            var sw = ready && navigator.serviceWorker.controller;
             if (!sw) {
                 // SW didn't take control — fall back to blob path
                 Q.log('Q.Safecloud.Client.stream: SW not controlling page, falling back', 'Safecloud');
@@ -360,7 +393,7 @@ Q.exports(function (Q, _) {
             // safecloud adapter) attach the URL through its own player —
             // videojs VHS must handle the m3u8 on browsers without native HLS.
             var attachPromise = (options.videoElement && options.setSrc !== false)
-                ? _attachHls(options.videoElement, fakeUrl, videoId)
+                ? _attachHls(options.videoElement, fakeUrl, videoId, options)
                 : Promise.resolve();
 
             // _prefetchLoop figures out which segment playback currently
@@ -391,9 +424,47 @@ Q.exports(function (Q, _) {
             // the identical bug fixed in Drops/announce.js, Client/store.js
             // and Drops/get.js), so it must be awaited rather than used
             // synchronously here.
+            // Teaser (grant-based, not rootKey) playback hits its boundary
+            // here, not in the service worker: the Jet itself refuses to
+            // hand over ciphertext for a data-track chunk outside the
+            // grant's range — confirmed live as "_prefetchLoop: segment
+            // fetch failed — No grant covers link path [...]" — so the SW
+            // never even gets a chunk to (correctly) reject with its own
+            // 403 (see sw.js's decryptSegment). Detecting THIS moment
+            // itself (an onError call for a denied segment) is not enough
+            // to know the teaser has ended, though: _tick() races its
+            // fetch window ahead of the viewer, so the one-and-only fetch
+            // attempt for the boundary segment (each segIndex is only ever
+            // tried once — see _tick()'s monotonically advancing
+            // _frontier) happens seconds before the viewer's own buffer
+            // actually runs out — confirmed live, this produced first a
+            // false-positive (dialog appearing almost immediately) and
+            // then, once that was filtered by comparing against
+            // currentTime, a false-negative (dialog never appearing at
+            // all, since the one attempt for that segIndex was already
+            // spent and current playback time can never "catch up" to a
+            // segIndex whose absence is exactly what's preventing
+            // currentTime from advancing past it). _prefetchLoop now
+            // resolves this itself, by remembering which segments were
+            // denied and firing options.onTeaserEnd directly from a
+            // videoElement 'waiting' listener — the browser's own,
+            // authoritative "ran out of buffered data right here" signal.
+            // Nothing else needs doing on this end beyond passing
+            // onTeaserEnd through (already covered by the Q.extend below)
+            // and logging any OTHER kind of fetch failure.
+            var prefetchOptions = Q.extend({}, options, {
+                onError: function (err, segIndex, isCurrentlyNeeded) {
+                    var isGrantBoundary = err && /No grant covers link path/.test(err.message);
+                    if (!isGrantBoundary) {
+                        console.warn('Q.Safecloud.Client._prefetchLoop: segment fetch failed — '
+                            + (err && err.message || err));
+                    }
+                }
+            });
+
             return attachPromise.then(function () {
                 return Promise.resolve(
-                    Q.Safecloud.Client._prefetchLoop(videoId, prefetchManifest, capability, options)
+                    Q.Safecloud.Client._prefetchLoop(videoId, prefetchManifest, capability, prefetchOptions)
                 ).then(function (loop) {
                     // A service worker's in-memory session for this videoId
                     // can go missing for reasons the page can't reliably
@@ -414,9 +485,14 @@ Q.exports(function (Q, _) {
                     // cooldown avoids re-registering on every single fetch
                     // in a burst of them.
                     var _lastRecovery = 0;
+                    var _swUrl = Q.url('SafecloudServiceWorker.js');
                     function _recoverSession() {
+                        // Must be OUR sw.js controlling, not Q's own core SW
+                        // (same scope '/' — see _ensureServiceWorker.js) —
+                        // otherwise this posts the register message to a
+                        // worker that will just ignore it.
                         var sw = navigator.serviceWorker.controller;
-                        if (!sw) { return; }
+                        if (!sw || sw.scriptURL !== _swUrl) { return; }
                         var now = Date.now();
                         if (now - _lastRecovery < 2000) { return; }
                         _lastRecovery = now;

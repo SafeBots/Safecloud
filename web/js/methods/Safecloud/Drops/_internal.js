@@ -92,6 +92,42 @@ Q.exports(function () {
     // in-memory node store instead of duplicating this lazy-init logic.
     _.getProllyStore = _getProllyStore;
 
+    /**
+     * Rehydrate _._state.usedBytes/storedChunks from the 'lru' store —
+     * one lightweight {cid, size, lastAccessed} row per chunk actually
+     * present in IndexedDB right now. usedBytes/storedChunks are otherwise
+     * pure in-memory counters, only ever incremented/decremented by
+     * put.js/reset.js — nothing else keeps them in sync with IndexedDB's
+     * actual contents.
+     *
+     * Shared by Drops.init() (a real page reload) and
+     * Drops/reannounceIfCold.js's manual "Resync" button (specifically
+     * meant as an alternative to a reload — see its own doc comment).
+     * Confirmed live: clearing IndexedDB via devtools, then clicking
+     * Resync without reloading the tab, still re-announced the OLD
+     * (pre-clear) usedBytes figure to the Jet — nothing had recomputed it
+     * — so the Jet kept routing PUTs away from this Drop as if it were
+     * still full, even though it was now completely empty. Resync calling
+     * this too is what actually makes it a working substitute for a
+     * reload, matching what it already claims to do.
+     */
+    _.rehydrateStorageStats = function (db) {
+        return new Promise(function (resolve, reject) {
+            var tx    = db.transaction(_.STORES.lru, 'readonly');
+            var req   = tx.objectStore(_.STORES.lru).getAll();
+            req.onsuccess = function (e) { resolve(e.target.result || []); };
+            req.onerror   = function (e) { reject(e.target.error); };
+        }).then(function (rows) {
+            var bytes = 0;
+            rows.forEach(function (r) { bytes += r.size || 0; });
+            _._state.usedBytes    = bytes;
+            _._state.storedChunks = rows.length;
+        }).catch(function () {
+            // Best-effort — leave counters at whatever they already were
+            // rather than fail the caller over a stats-only read.
+        });
+    };
+
     // ─────────────────────────────────────────────────────────────────────
     // 2. nowSec
     // ─────────────────────────────────────────────────────────────────────

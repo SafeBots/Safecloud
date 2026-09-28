@@ -17,6 +17,28 @@
  */
 
 Q.exports(function (Q, _) {
+    // Q.Crypto.sign()'s ES256 path returns proof.signature/proof.publicKey
+    // as raw Uint8Array — fine as long as a grant only ever travels as a
+    // live in-memory object (e.g. straight into Jets.get()), but a grant
+    // that has to survive JSON.stringify() (this codebase's own
+    // createShareLink.js teaser mode does exactly that, to post it to the
+    // server for storage) silently mangles a Uint8Array into a plain
+    // object with numeric-string keys ("0","1",...) — JSON has no typed-
+    // array notation, so JSON.stringify just serializes it like any other
+    // object. That object is byte-for-byte unrecoverable as-is server
+    // side (confirmed live: "Q.Crypto: expected Buffer or Uint8Array, got
+    // object"). Base64-encoding here — same treatment already given to
+    // `secret` a few lines below — keeps every grant this module returns
+    // safe to pass through JSON at any point in its life, not just the
+    // ones a given caller happens to serialize today.
+    function _proofForTransport(proof) {
+        if (!proof) { return proof; }
+        return Q.extend({}, proof, {
+            signature: Q.Data.toBase64(proof.signature),
+            publicKey: Q.Data.toBase64(proof.publicKey)
+        });
+    }
+
     return function Q_Safecloud_Client_grant(manifest, rootKey, options, callback) {
         if (typeof options === 'function') { callback = options; options = {}; }
         options = options || {};
@@ -82,7 +104,7 @@ Q.exports(function (Q, _) {
                             link:         linkPath,
                             secret:       Q.Data.toBase64(encDel.secret),
                             statement:    accessDel.statement,
-                            proof:        accessDel.proof,
+                            proof:        _proofForTransport(accessDel.proof),
                             // Convenience fields for consumers
                             start:        range.start,
                             end:          range.end
@@ -138,7 +160,7 @@ Q.exports(function (Q, _) {
                     link:      linkPath,
                     secret:    Q.Data.toBase64(encDel.secret),
                     statement: accessDel.statement,
-                    proof:     accessDel.proof
+                    proof:     _proofForTransport(accessDel.proof)
                 },
                 manifest: manifest
             };
