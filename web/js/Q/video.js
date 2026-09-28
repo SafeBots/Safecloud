@@ -5,11 +5,23 @@
  */
 
 /**
+ * Shared, module-level state for lazily loading the Facebook SDK.
+ * Several Q/video tools can be on a page at once, so the SDK must be
+ * requested exactly once and every waiting tool notified when it is ready.
+ * @private
+ */
+var _fbSDK = {
+	ready: false,
+	loading: false,
+	waiting: []
+};
+
+/**
  * DROP-IN REPLACEMENT for Q/video.js — adds the 'safecloud' adapter.
  *
  * Everything from the original tool is preserved (youtube, vimeo, twitch,
- * muse, odysee, mp4/webm/ogg adapters, clips mode, ads, metrics, floating).
- * Additions are fenced with SAFECLOUD markers:
+ * muse, odysee, facebook, mp4/webm/ogg adapters, clips mode, ads, metrics,
+ * floating). Additions are fenced with SAFECLOUD markers:
  *
  *   - adapters.safecloud — plays encrypted Safecloud content end to end:
  *       manifest+capability (from state, or IndexedDB via
@@ -25,6 +37,8 @@
  * This file defines BOTH "Q/video" (drop-in) and "Safecloud/video" (alias,
  * safe to use without remapping the core tool).
  *
+ * Video player tool, that can play videos hosted by
+ * youtube, vimeo, muse, twitch, odysee, facebook and other backends
  * @class Q video
  * @constructor
  * @param {Object} [options] Override various options for this tool
@@ -46,6 +60,7 @@
  *  @param {object} [options.metrics] Whether to send metrics about playback
  *  @param {string} [options.image] URL of image which will show as illustration before play.
  *  @param {object} [options.clips] Contains options for "clips" mode.
+ *  @param {object} [options.facebook] Options for the facebook adapter
  *  @param {Integer} [options.positionUpdatePeriod=1]
  *  @param {boolean} [options.autoplay=false]
  *  @param {boolean} [options.loop=false]
@@ -165,6 +180,272 @@ var _videoConstructor = function (options) {
 		}
 	};
 
+	/**
+	 * Facebook adapter.
+	 *
+	 * Facebook does NOT expose a documented postMessage protocol for
+	 * plugins/video.php — the iframe ignores messages it doesn't recognize.
+	 * The only supported way to drive the player is the Embedded Video Player
+	 * API, which arrives through the JS SDK: you render a .fb-video div, call
+	 * FB.XFBML.parse() on it, and receive the player instance in the
+	 * 'xfbml.ready' event. So the SDK is loaded lazily here — only once a
+	 * facebook URL is actually encountered.
+	 *
+	 * The instance Facebook hands back has its own vocabulary
+	 * (getCurrentPosition/seek/mute/getDuration), so it is wrapped in a shim
+	 * that speaks the same dialect as the videojs player the rest of this tool
+	 * expects: currentTime(), muted(), waiting(), duration(), dispose().
+	 */
+	tool.adapters.facebook = {
+		init: function () {
+			var throttle = state.throttle;
+			var fbOptions = state.facebook;
+
+			$toolElement.addClass("Q_video_facebook");
+
+			// Facebook requires a numeric width of at least 220, and explicitly
+			// warns against resizing the plugin with CSS, so measure instead.
+			var width = Math.max(220, Math.floor(
+				fbOptions.width || tool.element.offsetWidth || 500
+			));
+
+			var containerId = tool.prefix + "fb_video";
+
+			$("<div>", {
+				"id": containerId,
+				"class": "fb-video",
+				"data-href": state.url,
+				"data-width": width,
+				"data-allowfullscreen": fbOptions.allowfullscreen ? "true" : "false",
+				"data-autoplay": state.autoplay ? "true" : "false",
+				"data-show-text": fbOptions.showText ? "true" : "false",
+				"data-show-captions": fbOptions.showCaptions ? "true" : "false",
+				"data-lazy": fbOptions.lazy ? "true" : "false"
+			}).appendTo(tool.element);
+
+			$("<div class='Q_video_close'>").appendTo(tool.element);
+
+			// ---- the shim -------------------------------------------------
+			// fbp is null until 'xfbml.ready' fires, so anything called before
+			// then is queued and flushed on arrival.
+			var fbp = null;
+			var queued = [];
+			var subscriptions = [];
+			var seekTargetMs = null;   // latched seek target, see currentTime()
+			var seekLatchedAt = 0;
+
+			function whenReady(fn) {
+				fbp ? fn(fbp) : queued.push(fn);
+			}
+
+			function safePosition() {
+				try {
+					return fbp ? (fbp.getCurrentPosition() || 0) : 0;
+				} catch (e) {
+					return 0;
+				}
+			}
+
+			var player = {
+				/**
+				 * The raw Facebook instance, in case you need something
+				 * this shim doesn't cover.
+				 */
+				facebook: null,
+				play: function () {
+					whenReady(function (p) { p.play(); });
+				},
+				pause: function () {
+					whenReady(function (p) { p.pause(); });
+				},
+				/**
+				 * Get position in seconds, or seek if given a value.
+				 *
+				 * Facebook seeks are asynchronous and never land on an exact
+				 * millisecond, but setCurrentPosition() polls for exact
+				 * equality before it un-mutes. So after a seek we report the
+				 * requested position back until Facebook confirms it landed
+				 * nearby (or a timeout expires), which lets that poll converge
+				 * instead of spinning for its full 10 seconds.
+				 *
+				 * The +0.5 is deliberate: getCurrentPosition() does
+				 * Math.floor(seconds * 1000), and floating point would
+				 * otherwise round 12.345 * 1000 down to 12344.
+				 */
+				currentTime: function (seconds) {
+					if (seconds === undefined) {
+						if (seekTargetMs !== null) {
+							var pos = safePosition();
+							var landed = Math.abs(pos * 1000 - seekTargetMs) < 500;
+							var expired = Date.now() - seekLatchedAt > fbOptions.seekTimeout;
+							if (landed || expired) {
+								var target = seekTargetMs;
+								seekTargetMs = null;
+								return landed ? (target + 0.5) / 1000 : pos;
+							}
+							return (seekTargetMs + 0.5) / 1000;
+						}
+						return safePosition();
+					}
+					seekTargetMs = Math.floor(seconds * 1000);
+					seekLatchedAt = Date.now();
+					whenReady(function (p) { p.seek(seconds); });
+					return seconds;
+				},
+				duration: function () {
+					try {
+						return fbp ? (fbp.getDuration() || 0) : 0;
+					} catch (e) {
+						return 0;
+					}
+				},
+				muted: function (value) {
+					if (value === undefined) {
+						try {
+							return fbp ? !!fbp.isMuted() : !!state.muted;
+						} catch (e) {
+							return !!state.muted;
+						}
+					}
+					whenReady(function (p) { value ? p.mute() : p.unmute(); });
+					return value;
+				},
+				volume: function (value) {
+					if (value === undefined) {
+						try {
+							return fbp ? fbp.getVolume() : 1;
+						} catch (e) {
+							return 1;
+						}
+					}
+					whenReady(function (p) { p.setVolume(value); });
+					return value;
+				},
+				/**
+				 * Facebook only honors autoplay at embed time, via
+				 * data-autoplay, so this is a no-op kept for interface parity
+				 * with the videojs player.
+				 */
+				autoplay: function (value) {
+					if (value !== undefined) {
+						state.autoplay = value;
+					}
+					return state.autoplay;
+				},
+				/**
+				 * Swapping the source means re-rendering the plugin, since
+				 * data-href is read once at parse time.
+				 */
+				src: function (url) {
+					if (!url || url === state.url) {
+						return state.url;
+					}
+					state.url = url;
+					player.dispose();
+					$toolElement.empty();
+					tool.adapters.facebook.init();
+					return url;
+				},
+				/**
+				 * Show/hide the loading spinner, same contract as the
+				 * twitch adapter's waiting().
+				 */
+				waiting: function (status) {
+					if (status || status === undefined) {
+						if (!$(".Q_video_spinner", tool.element).length) {
+							$('<div class="Q_video_spinner">').appendTo(tool.element);
+						}
+					} else {
+						$(".Q_video_spinner", tool.element).remove();
+					}
+				},
+				dispose: function () {
+					Q.each(subscriptions, function () {
+						try { this.token.release(this.event); } catch (e) {}
+					});
+					subscriptions = [];
+					queued = [];
+					fbp = null;
+					player.facebook = null;
+					tool.unsubscribeFacebookReady();
+				}
+			};
+
+			state.player = player;
+
+			// ---- load the SDK and render ----------------------------------
+			tool.loadFacebookSDK(function (err) {
+				if (err) {
+					return console.warn("Q/video/facebook: " + err.message);
+				}
+
+				tool.subscribeFacebookReady(containerId, function (instance) {
+					fbp = instance;
+					player.facebook = instance;
+
+					// flush anything called before the player existed
+					Q.each(queued, function () { this(fbp); });
+					queued = [];
+
+					function on(event, handler) {
+						try {
+							subscriptions.push({
+								event: event,
+								token: fbp.subscribe(event, handler)
+							});
+						} catch (e) {}
+					}
+
+					var onPlay = Q.throttle(function () {
+						state.currentPosition = tool.getCurrentPosition();
+						hidePlayOverlays();
+						player.waiting(false);
+						Q.handle(state.onPlay, tool, [state.currentPosition]);
+					}, throttle);
+
+					var onPause = Q.throttle(function () {
+						Q.handle(state.onPause, tool, [tool.getCurrentPosition()]);
+					}, throttle);
+
+					var onEnded = Q.throttle(function () {
+						Q.handle(state.onEnded, tool, [tool.getCurrentPosition()]);
+					}, throttle);
+
+					on('startedPlaying', onPlay);
+					on('paused', onPause);
+					on('finishedPlaying', onEnded);
+					on('startedBuffering', function () { player.waiting(true); });
+					on('finishedBuffering', function () { player.waiting(false); });
+					on('error', function (e) {
+						player.waiting(false);
+						console.warn("Q/video/facebook: player error", e);
+					});
+
+					// Facebook has no loadedmetadata equivalent, so wait for a
+					// duration to appear before declaring the player loaded.
+					// Give up after a while and fire anyway — a live video
+					// may legitimately never report one.
+					var waited = 0;
+					var durationId = setInterval(function () {
+						waited += 250;
+						if (player.duration() > 0 || waited >= fbOptions.durationTimeout) {
+							clearInterval(durationId);
+							state.duration = player.duration();
+							Q.handle(state.onLoad, tool);
+						}
+					}, 250);
+					state.facebookDurationIntervalId = durationId;
+				});
+
+				try {
+					FB.XFBML.parse(tool.element);
+				} catch (e) {
+					console.warn("Q/video/facebook: FB.XFBML.parse failed", e);
+				}
+			});
+		}
+	};
+
 	tool.adapters.muse = {
 		init: function () {
 			Q.addScript("https://muse.ai/static/js/embed-player.min.js", function () {
@@ -197,9 +478,9 @@ var _videoConstructor = function (options) {
 				var custom = {};
 				custom.video = match[1];
 				if (customPlayButton) {
-			
+
 					custom.css = '.video-container{min-width:0; min-height:0;} .player-cover-play{background-image: url('
-					+ Q.url(customPlayButton) 
+					+ Q.url(customPlayButton)
 					+ ');top: 50%;left: 50%;transform: translate(-50%, -50%);}';
 				}
 				var options = Q.extend({}, defaults, custom, state.muse);
@@ -549,6 +830,18 @@ var _videoDefaults = {
 		//autoplay: true,
 		//volume: 100 // Set volume to a value between 0 and 100.
 	},
+	facebook: {
+		appId: null,         // falls back to Users plugin config for the current app
+		version: 'v19.0',    // any recent Graph API version works
+		locale: 'en_US',     // change to localize the player chrome, e.g. he_IL
+		width: null,         // null measures the tool element; minimum is 220
+		allowfullscreen: true,
+		showText: false,     // include the post text alongside the video
+		showCaptions: false,
+		lazy: false,         // browser-native lazy loading of the iframe
+		seekTimeout: 5000,   // ms to keep reporting a requested seek position
+		durationTimeout: 10000 // ms to wait for a duration before firing onLoad
+	},
 	ads: [],
 	floating: {
 		evenIfPaused: false
@@ -704,6 +997,118 @@ var _videoDefaults = {
 
 var _videoMethods = {
 	/**
+	 * Load the Facebook SDK for JavaScript, once per page.
+	 *
+	 * If some other part of the app (e.g. the Users plugin) has already
+	 * brought FB in, this reuses it rather than loading a second copy.
+	 * Note that connect.facebook.net must be allowed by your
+	 * Content-Security-Policy script-src-elem for this to run.
+	 *
+	 * @method loadFacebookSDK
+	 * @param {function} callback receives (err)
+	 */
+	loadFacebookSDK: function (callback) {
+		var tool = this;
+		var fbOptions = this.state.facebook;
+
+		if (_fbSDK.ready || (window.FB && FB.XFBML && FB.Event)) {
+			_fbSDK.ready = true;
+			return Q.handle(callback, tool, [null]);
+		}
+
+		_fbSDK.waiting.push({ tool: tool, callback: callback });
+
+		if (_fbSDK.loading) {
+			return;
+		}
+		_fbSDK.loading = true;
+
+		if (!document.getElementById('fb-root')) {
+			var root = document.createElement('div');
+			root.id = 'fb-root';
+			document.body.appendChild(root);
+		}
+
+		function _flush(err) {
+			_fbSDK.loading = false;
+			_fbSDK.ready = !err;
+			var waiting = _fbSDK.waiting;
+			_fbSDK.waiting = [];
+			Q.each(waiting, function () {
+				Q.handle(this.callback, this.tool, [err]);
+			});
+		}
+
+		var previousAsyncInit = window.fbAsyncInit;
+		window.fbAsyncInit = function () {
+			var params = {
+				xfbml: false, // each tool parses its own element
+				version: fbOptions.version
+			};
+			var appId = fbOptions.appId || Q.getObject(
+				["Users", "apps", "facebook", Q.info.app, "appId"], Q.plugins
+			);
+			if (appId) {
+				params.appId = appId;
+			}
+			try {
+				FB.init(params);
+			} catch (e) {
+				// FB.init may already have been called elsewhere; harmless
+			}
+			Q.handle(previousAsyncInit);
+			_flush(null);
+		};
+
+		Q.addScript(
+			"https://connect.facebook.net/" + fbOptions.locale + "/sdk.js",
+			null,
+			{
+				onError: function () {
+					_flush(new Error("could not load the Facebook SDK"));
+				}
+			}
+		);
+	},
+	/**
+	 * Listen for this tool's embedded video player becoming available.
+	 * The 'xfbml.ready' event is global, so filter on the container id.
+	 *
+	 * @method subscribeFacebookReady
+	 * @param {string} containerId id of the .fb-video element
+	 * @param {function} callback receives the Facebook player instance
+	 */
+	subscribeFacebookReady: function (containerId, callback) {
+		var tool = this;
+
+		tool.unsubscribeFacebookReady();
+
+		tool.facebookReadyHandler = function (msg) {
+			if (msg.type !== 'video' || msg.id !== containerId) {
+				return;
+			}
+			Q.handle(callback, tool, [msg.instance]);
+		};
+
+		try {
+			FB.Event.subscribe('xfbml.ready', tool.facebookReadyHandler);
+		} catch (e) {
+			console.warn("Q/video/facebook: could not subscribe to xfbml.ready", e);
+		}
+	},
+	/**
+	 * @method unsubscribeFacebookReady
+	 */
+	unsubscribeFacebookReady: function () {
+		if (!this.facebookReadyHandler) {
+			return;
+		}
+		try {
+			FB.Event.unsubscribe('xfbml.ready', this.facebookReadyHandler);
+		} catch (e) {}
+		this.facebookReadyHandler = null;
+	},
+	/**
 	 * Change current player source.
 	 * @method changeSource
 	 * @param {object} source Object with properties: url, duration, offset, ...
@@ -781,7 +1186,7 @@ var _videoMethods = {
 		if (state.clipStart && currentPosition < state.clipStart) {
 			tool.setCurrentPosition(state.clipStart);
 		}
-		// clipStart handler
+		// clipEnd handler
 		if (state.clipEnd && currentPosition > state.clipEnd) {
 			tool.pause();
 			tool.setCurrentPosition(state.clipEnd);
@@ -795,7 +1200,13 @@ var _videoMethods = {
 		var tool = this;
 
 		var adapterName = tool.adapterNameFromUrl();
-		adapterName && tool.adapters[adapterName].init();
+		if (!adapterName) {
+			return;
+		}
+		if (!tool.adapters[adapterName]) {
+			return console.warn(tool.id + ": no adapter named " + adapterName);
+		}
+		tool.adapters[adapterName].init();
 	},
 	/**
 	 *
@@ -914,6 +1325,34 @@ var _videoMethods = {
 					Q.handle(state.onCanPlay, tool);
 				});
 
+				// Clip-range progress bar: when clipStart is set
+				// (outside of clips mode), adjust the play-progress
+				// bar so it only highlights from clipStart to the
+				// current position, not from 0.
+				if (state.clipStart && !Q.getObject("clips.handler", state)) {
+					player.on("timeupdate", function () {
+						// run after videojs's own progress-bar update
+						requestAnimationFrame(function () {
+							var duration = player.duration();
+							if (!duration) return;
+							var clipStartSec = (parseInt(state.clipStart) || 0) / 1000;
+							var clipEndSec = state.clipEnd
+								? (parseInt(state.clipEnd) || 0) / 1000
+								: duration;
+							var currentTime = player.currentTime();
+							var startPct = (clipStartSec / duration) * 100;
+							var widthPct = Math.max(0,
+								((Math.min(currentTime, clipEndSec) - clipStartSec) / duration) * 100
+							);
+							var playProgress = playerElement.querySelector('.vjs-play-progress');
+							if (playProgress) {
+								playProgress.style.left = startPct + '%';
+								playProgress.style.width = widthPct + '%';
+							}
+						});
+					});
+				}
+
 				// apply clips mode if clips.handler defined
 				if (Q.getObject("clips.handler", state)) {
 					// set initial clips.offset when first clip loaded
@@ -1024,7 +1463,6 @@ var _videoMethods = {
 	 * @method play
 	 */
 	play: function () {
-        console.log('play start')
 		var tool = this;
 		var state = this.state;
 		state.player && state.player.play();
@@ -1058,8 +1496,6 @@ var _videoMethods = {
 		if (exists) {
 			return;
 		}
-
-		console.log(clip.url);
 
 		var start = clip.offset;
 		var end = start + clip.duration;
@@ -1167,6 +1603,11 @@ var _videoMethods = {
 			return;
 		}
 
+		// markers are a videojs plugin, so they can't drive an iframe player
+		if (tool.adapterNameFromUrl() === 'facebook') {
+			return console.warn(tool.id + ": advertising markers are not supported by the facebook adapter");
+		}
+
 		Q.addStylesheet("{{Q}}/css/videojs.markers.min.css");
 		Q.addScript("{{Q}}/js/videojs/plugins/videojs-markers.js", function () {
 			var markers = [];
@@ -1270,13 +1711,12 @@ var _videoMethods = {
 	 * @param {boolean} [pause=false] whether to pause video after position changed
 	 */
 	setCurrentPosition: Q.debounce(function (position, silent, pause) {
-        console.log('setCurrentPosition start', position)
 		var tool = this;
 		var state = this.state;
 		var player = state.player;
 		var currentPosition = tool.getCurrentPosition();
 
-		if (currentPosition === position) {
+		if (!player || currentPosition === position) {
 			return;
 		}
 
@@ -1285,37 +1725,29 @@ var _videoMethods = {
 			player.waiting(true);
 		}
 
-            console.log('setCurrentPosition 1')
 		// convert to seconds
 		player.currentTime(position > 0 ? position/1000 : 0);
 
-            console.log('setCurrentPosition 3')
 		// this event need to show videojs control bar
 		player.hasStarted && player.hasStarted(true);
 
 		if (silent || pause) {
-            console.log('setCurrentPosition 4')
-
 			// wait for start position
 			var counter = 0;
 			var intervalId = setInterval(function() {
 				var currentPosition = tool.getCurrentPosition();
 
-            console.log('setCurrentPosition 5')
 				if (currentPosition === position || counter > 20) {
 					if (silent) {
 						player.muted(!!state.videojsOptions.muted);
 						player.waiting(false);
 					}
 
-            console.log('setCurrentPosition 6')
 					if (pause) {
 						player.pause();
 
-            console.log('setCurrentPosition 7')
 						// this event need to set status paused, because for some reason it stay in status vjs-playing
 						if (player.trigger) {
-            console.log('setCurrentPosition 8')
 							player.trigger('pause');
 							player.removeClass('vjs-playing');
 						}
@@ -1342,7 +1774,7 @@ var _videoMethods = {
 	 */
 	adapterNameFromUrl: function (url) {
 		var state = this.state;
-		
+
 		url = url || state.url;
 
 		// SAFECLOUD: explicit config or safecloud: scheme routes here,
@@ -1380,6 +1812,10 @@ var _videoMethods = {
 			return 'odysee';
 		} else if (host.indexOf("muse.ai") >= 0) {
 			return 'muse';
+		} else if (host.indexOf("facebook.com") >= 0
+		|| host.indexOf("fb.watch") >= 0
+		|| host.indexOf("fb.me") >= 0) {
+			return 'facebook';
 		}
 
 		return 'mp4';
@@ -1439,6 +1875,11 @@ var _videoMethods = {
 		beforeRemove: function () {
 			this.clearPlayInterval();
 
+			if (this.state.facebookDurationIntervalId) {
+				clearInterval(this.state.facebookDurationIntervalId);
+				this.state.facebookDurationIntervalId = null;
+			}
+
 			this.pause();
 
 			// SAFECLOUD: stop the prefetch loop and release the SW session
@@ -1451,6 +1892,8 @@ var _videoMethods = {
 			if (Q.getObject("player.dispose", this.state)) {
 				this.state.player.dispose();
 			}
+
+			this.unsubscribeFacebookReady();
 
 			if (this.metrics) {
 				this.metrics.stop();
@@ -1487,7 +1930,7 @@ Q.Template.set("Q/video/clips/control",
 	'</div>'
 );
 
-Q.Template.set("Q/video/twitch/overplay", 
+Q.Template.set("Q/video/twitch/overplay",
 	'<div class="Q_video_overlay_play" style="background-image: url({{poster}})"><img src="{{src}}" /></div>'
 );
 
