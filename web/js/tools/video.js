@@ -360,15 +360,19 @@ Q.Tool.define('Safecloud/video', function (options) {
     seek:  function (t){ var v = $(this.element).find('.Safecloud_video_el')[0];
                          if (v) v.currentTime = t; },
 
-    // Mirrors Q/video's own getCurrentPosition()/getDuration() shape (in
-    // seconds) — Media/clip/preview.js's "create a clip" composer reads
-    // these off whichever player tool is currently showing (Q/video,
-    // Q/audio or this one) to default the clip range to "the next 15s from
-    // wherever the viewer currently is," without needing to special-case
-    // Safecloud playback there.
+    // Milliseconds — matches Q/video's own getCurrentPosition() exactly
+    // (Math.floor(currentTime * 1000)), NOT videoEl.currentTime's native
+    // seconds. Media/clip/preview.js's "create a clip" composer feeds this
+    // straight into Q.displayDuration() and Q/clip's setPosition(), both
+    // of which — like Q/video's callers throughout this codebase — assume
+    // milliseconds; confirmed live: returning seconds here made every
+    // clip-boundary time display as "00:00" regardless of the real
+    // position (Q.displayDuration divides by 1000 internally, so a ~65s
+    // position read as 0.065s and floored to zero), even though the
+    // underlying Q_clip_position value it was computed from was correct.
     getCurrentPosition: function () {
         var v = $(this.element).find('.Safecloud_video_el')[0];
-        return v ? v.currentTime : 0;
+        return v ? Math.floor(v.currentTime * 1000) : 0;
     },
     getDuration: function () {
         var v = $(this.element).find('.Safecloud_video_el')[0];
