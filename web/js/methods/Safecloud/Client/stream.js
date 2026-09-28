@@ -62,6 +62,10 @@ Q.exports(function (Q, _) {
         // retry forever" cap documented below had never actually been
         // enforced.
         var fatalRecoveries = 0;
+        // Bounded retry before trusting a 403 as a genuine teaser/grant-
+        // boundary hit — see the comment at the 403 handler below for why.
+        var teaserEnd403Retries = 0;
+        var MAX_TEASER_END_403_RETRIES = 1;
         return _ensureHls().then(function (Hls) {
             if (!Hls.isSupported()) {
                 if (nativeHls) { video.src = hlsUrl; return; }
@@ -148,12 +152,32 @@ Q.exports(function (Q, _) {
 
                 // Teaser playback ran past its granted range — sw.js's
                 // decryptSegment answers with 403 specifically for this
-                // (see its own comment), never for a transient failure, so
-                // there's nothing to retry: stop immediately instead of
-                // burning through fragLoadingMaxRetry attempts against a
-                // permanently-denied segment, and let the embedder (e.g.
-                // Media/clip.js) show a sign-in prompt.
+                // (see its own comment). BUT sw.js distinguishes "genuinely
+                // past the grant" from "any other decrypt failure" only by
+                // pattern-matching an error message ('No grant covers
+                // segment...'), and the session/grant sw.js checks against
+                // can itself still be mid-registration (postMessage from the
+                // page, or an IndexedDB-restored session on a fresh SW
+                // instance) — sw.js's own SESSION_WAIT_MS comment documents
+                // "a brand-new browser profile hitting content for the first
+                // time" (i.e. incognito, every single visit) as its worst
+                // case. Confirmed live: an incognito viewer sometimes got the
+                // "Watch full video" dialog immediately, before any real
+                // playback — a 403 fired for that transient registration
+                // race, not a real boundary hit. Retry once after a short
+                // delay before trusting it: a genuine boundary hit fails the
+                // exact same way on retry (it's a permanent, deterministic
+                // fact about the grant), while a registration race has
+                // almost always resolved within a few hundred ms.
                 if (data.response && data.response.code === 403) {
+                    if (teaserEnd403Retries < MAX_TEASER_END_403_RETRIES) {
+                        teaserEnd403Retries++;
+                        hls.stopLoad();
+                        setTimeout(function () {
+                            hls.startLoad();
+                        }, 500);
+                        return;
+                    }
                     hls.stopLoad();
                     if (options && options.onTeaserEnd) { options.onTeaserEnd(); }
                     return;

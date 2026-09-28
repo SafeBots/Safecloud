@@ -67,6 +67,13 @@ Q.exports(function (Q, _) {
         // while the loop was still racing ahead of the viewer. Recording
         // the denial here is what lets a later, real stall recognize it.
         var _denied = {};
+        // How many times a 'No grant covers link path' rejection for a given
+        // segIndex has been retried before being trusted as a permanent
+        // denial — see the catch handler below for why a single retry
+        // guards against a transient registration race being mistaken for
+        // a genuine grant/teaser boundary.
+        var _deniedRetries = {};
+        var MAX_DENIED_RETRIES = 1;
         var _segStart  = _chunkAtTime(startAt, chunkDuration, videoManifest);
         // Next index the tick loop hasn't requested yet — see _tick() for
         // why this, not currentTime, drives the window's upper edge.
@@ -176,11 +183,37 @@ Q.exports(function (Q, _) {
                 if (/timeout/i.test(err && err.message)) { _segStats.timeouts++; }
                 else { _segStats.errors++; }
                 if (err && /No grant covers link path/.test(err.message)) {
+                    // The Jet only sees this exact rejection for a
+                    // genuinely-out-of-range request BY CONVENTION — it's a
+                    // free-text reason string, not a structural guarantee,
+                    // and it fires identically if _grants was momentarily
+                    // incomplete/still-registering when this fetch went out
+                    // (e.g. a fresh/incognito load with nothing warmed up
+                    // yet). Retry once, after a short delay, before trusting
+                    // it: a real boundary rejects the same way every time
+                    // (a permanent fact about the grant), while a
+                    // registration race has almost always resolved within a
+                    // few hundred ms. Confirmed live: an incognito viewer
+                    // sometimes got the "Watch full video" dialog
+                    // immediately, before any real playback, from exactly
+                    // this segIndex-0 rejection.
+                    var retries = _deniedRetries[segIndex] || 0;
+                    if (retries < MAX_DENIED_RETRIES) {
+                        _deniedRetries[segIndex] = retries + 1;
+                        setTimeout(function () {
+                            if (!_stopped) { _fetchSeg(segIndex); }
+                        }, 500);
+                        // Don't fall through to onError/_denied for this
+                        // attempt — the retry above (once the trailing
+                        // .then() below clears _inFlight) is what actually
+                        // resolves it.
+                        return;
+                    }
                     // Record permanently — see _denied's own comment above
-                    // for why this segIndex's one-and-only fetch attempt
-                    // happening now (likely well before the viewer's
-                    // buffer actually runs dry) means this is the only
-                    // chance to remember it was denied.
+                    // for why this segIndex's one-and-only real fetch
+                    // attempt happening now (likely well before the
+                    // viewer's buffer actually runs dry) means this is the
+                    // only chance to remember it was denied.
                     _denied[segIndex] = true;
                 }
                 // segIndex and whether it's actually needed for CURRENT
