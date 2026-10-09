@@ -18,6 +18,13 @@
  *   @param {Object}  [options.capability]  { rootKey } or { grants }
  *   @param {String}  [options.jetUrl]      Jet server URL.
  *   @param {Number}  [options.at]          Start position in seconds.
+ *   @param {String}  [options.path]        Force 'sw' | 'mse' | 'blob' |
+ *     'auto' for THIS player instance, overriding both auto-detection and
+ *     Q.Safecloud.Client.streamPath's global override — for testing a
+ *     specific path on a specific page (e.g. pass this through Media/clip's
+ *     own state.qVideoOptions) without affecting any other player on the
+ *     same page. Passed straight through to Q.Safecloud.Client.stream() —
+ *     see its own doc comment for the global/localStorage alternative.
  *   @param {Q.Event} [options.onLoad]      Fired when player is ready.
  *   @param {Q.Event} [options.onError]     Fired on error.
  *   @param {Q.Event} [options.onTeaserEnd] Fired when playback reaches the end
@@ -47,6 +54,9 @@ Q.Tool.define('Safecloud/video', function (options) {
     capability: null,
     jetUrl:     null,
     at:         0,
+    // 'sw' | 'mse' | 'blob' | 'auto' (default) — see the constructor's own
+    // doc comment above.
+    path:       null,
     // Pause and fire onTeaserEnd once currentTime reaches this — a
     // grant's own coverage is chunk-rounded (Client/grant.js widens
     // [clipStart, clipEnd) out to whole chunk boundaries), so relying on
@@ -176,6 +186,7 @@ Q.Tool.define('Safecloud/video', function (options) {
 
         Q.Safecloud.Client.stream(manifest, capability, {
             at:           state.at || 0,
+            path:         state.path || undefined,
             videoElement: videoEl,
             onTeaserEnd: _fireTeaserEnd
         }).then(function (handle) {

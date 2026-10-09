@@ -371,6 +371,31 @@ Q.Safecloud.Client.defaultChunkSize = 256 * 1024;
 /** Manifest format version. @property {Number} */
 Q.Safecloud.Client.manifestVersion = 1;
 
+/**
+ * Forces which path Q.Safecloud.Client.stream() uses — 'sw' | 'mse' | 'blob'
+ * | 'auto' — for testing each one in isolation. Setting it directly from the
+ * console (Q.Safecloud.Client.streamPath = 'mse') only works if nothing
+ * autoplays before you get to type it in — most viewer pages start
+ * streaming immediately on load, so there's no window to set it in time.
+ * Seeded from localStorage instead, which IS read before any of that runs
+ * (this file loads in <head>, ahead of any video tool activating):
+ *   localStorage.setItem('Q.Safecloud.Client.streamPath', 'mse');
+ *   location.reload();
+ * Reassigning the property directly still works too, for a page where you
+ * control the timing yourself (e.g. before calling .tool('Safecloud/video')).
+ * 'auto' (the default) defers to stream.js's own capability detection.
+ * @property {String}
+ */
+Q.Safecloud.Client.streamPath = (function () {
+    try {
+        var stored = localStorage.getItem('Q.Safecloud.Client.streamPath');
+        if (stored === 'sw' || stored === 'mse' || stored === 'blob' || stored === 'auto') {
+            return stored;
+        }
+    } catch (e) {}
+    return 'auto';
+})();
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Q.Safecloud.Jets  — browser socket client for the Jet server
