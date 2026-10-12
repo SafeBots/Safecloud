@@ -108,6 +108,9 @@ Q.exports(function (Q, _) {
             ));
         }
 
+        console.info('Q.Safecloud.Client.streamMSE: streaming via "mse" using '
+            + (isManaged ? 'ManagedMediaSource' : 'MediaSource'));
+
         // ── State ─────────────────────────────────────────────────────────────
 
         var ms           = new MSClass();

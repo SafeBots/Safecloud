@@ -299,6 +299,10 @@ Q.exports(function (Q, _) {
             path = _choosePath(videoManifest);
         }
 
+        console.info('Q.Safecloud.Client.stream: attempting path "' + path + '"'
+            + (requested && requested !== path ? ' (requested "' + requested + '")' : '')
+            + (requested === 'auto' || !requested ? ' (auto-detected)' : ''));
+
         if (path === 'mse') {
             return Q.Safecloud.Client.streamMSE(videoManifest, capability, options);
         }
@@ -431,6 +435,7 @@ Q.exports(function (Q, _) {
                 }
                 return _streamBlob(videoManifest, capability, options);
             }
+            console.info('Q.Safecloud.Client.stream: service worker is controlling the page — streaming via "sw"');
             // Without "version" set explicitly here, sw.js's register handler
             // defaults session.activeVersion to '' (msg.version || ''), while
             // _prefetchLoop (below) independently derives this exact same
@@ -613,6 +618,9 @@ Q.exports(function (Q, _) {
 
     function _streamBlob(videoManifest, capability, options) {
         var videoEl = options.videoElement;
+
+        console.info('Q.Safecloud.Client.stream: streaming via "blob" '
+            + '(full decrypt into memory before playback starts)');
 
         return Q.Safecloud.Client.fetch(videoManifest, capability, options)
             .then(function (blob) {
