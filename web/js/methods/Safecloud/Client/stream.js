@@ -7,13 +7,29 @@
  *            Service worker intercepts safecloud-hls.local, decrypts per-request.
  *            Best: true streaming, CDN-cacheable encrypted bytes, minimal memory.
  *
- *   'mse'  — iOS Safari 16.4+, or any browser with MediaSource + fMP4 support
+ *   'mse'  — any browser with MediaSource + fMP4 support, AND iOS/iPadOS
+ *            Safari via WebKit's restricted ManagedMediaSource (iOS never
+ *            exposes plain MediaSource at all — see streamMSE.js's own
+ *            top comment for the real version boundary; this file's
+ *            capability check covers both transparently)
+ *            (also used as the runtime fallback for 'sw' when the service
+ *            worker doesn't end up controlling the page — see _streamSW)
  *            _prefetchLoop decrypts eagerly, SourceBuffer receives plaintext.
  *            Requires manifest.initSegment + manifest.chunks[].pts
  *
- *   'blob' — fallback: iOS < 16.4, short clips, or when MSE is unavailable
- *            Full decrypt upfront via Client.fetch(), play as Blob URL.
- *            Not true streaming — entire file must be decrypted into memory.
+ *   'blob' — last resort: when neither SW nor MSE (plain or managed) is
+ *            usable — ancient browsers, embedded WebViews, etc. Full
+ *            decrypt upfront via Client.fetch(), play as Blob URL. Not
+ *            true streaming — entire file must be decrypted into memory
+ *            before playback can start.
+ *
+ * Which path gets used is normally decided automatically (see _choosePath),
+ * but can be forced — for testing each path in isolation — two ways:
+ *   - per call: options.path = 'sw' | 'mse' | 'blob' | 'auto'
+ *   - globally, from the console (no code changes needed):
+ *       Q.Safecloud.Client.streamPath = 'sw' | 'mse' | 'blob' | 'auto';
+ * 'auto' (the default either way) means "use _choosePath()'s own
+ * capability detection," exactly like leaving the option unset.
  *
  * Returns a Promise<handle> where handle = { url, currentTime, seek, setVersion, pause, stop }
  */
@@ -271,7 +287,21 @@ Q.exports(function (Q, _) {
     return function Q_Safecloud_Client_stream(videoManifest, capability, options) {
         options = options || {};
 
-        var path = options.path || _choosePath(videoManifest);
+        var requested = options.path || Q.Safecloud.Client.streamPath;
+        var path;
+        if (!requested || requested === 'auto') {
+            path = _choosePath(videoManifest);
+        } else if (requested === 'sw' || requested === 'mse' || requested === 'blob') {
+            path = requested;
+        } else {
+            console.warn('Q.Safecloud.Client.stream: unknown path "' + requested
+                + '" — expected sw|mse|blob|auto, falling back to auto');
+            path = _choosePath(videoManifest);
+        }
+
+        console.info('Q.Safecloud.Client.stream: attempting path "' + path + '"'
+            + (requested && requested !== path ? ' (requested "' + requested + '")' : '')
+            + (requested === 'auto' || !requested ? ' (auto-detected)' : ''));
 
         if (path === 'mse') {
             return Q.Safecloud.Client.streamMSE(videoManifest, capability, options);
@@ -299,19 +329,27 @@ Q.exports(function (Q, _) {
         if ('serviceWorker' in navigator && !_isIOS() && hasIndexTrack) {
             return 'sw';
         }
-        // MSE: needs MediaSource + fMP4 support + initSegment in manifest
-        var activeManifest = (videoManifest.versions && videoManifest.versions[0])
-            ? videoManifest.versions[0].manifest
-            : videoManifest;
-        // MSE path needs MediaSource support.
-        // We check for MediaSource + index track (which carries initSegment).
-        // If no index track, fall back to blob (can't stream without initSegment).
-        var hasIdx = activeManifest.tracks && activeManifest.tracks.indexOf('index') >= 0;
-        var probeMime = 'video/mp4; codecs="avc1.42e01e,mp4a.40.2"';
-        if ('MediaSource' in window && hasIdx && MediaSource.isTypeSupported(probeMime)) {
+        if (_canUseMSE(videoManifest)) {
             return 'mse';
         }
         return 'blob';
+    }
+
+    // Shared by _choosePath above and _streamSW's runtime fallback below —
+    // MSE path needs MediaSource (or, on iOS/iPadOS Safari — which never
+    // exposes plain MediaSource — its restricted ManagedMediaSource
+    // variant; streamMSE.js picks whichever of the two actually exists)
+    // support + an index track in the manifest (which carries initSegment);
+    // without an index track there's nothing to stream against, so blob is
+    // the only option left either way.
+    function _canUseMSE(videoManifest) {
+        var activeManifest = (videoManifest.versions && videoManifest.versions[0])
+            ? videoManifest.versions[0].manifest
+            : videoManifest;
+        var hasIdx = activeManifest.tracks && activeManifest.tracks.indexOf('index') >= 0;
+        var probeMime = 'video/mp4; codecs="avc1.42e01e,mp4a.40.2"';
+        var MSClass = window.MediaSource || window.ManagedMediaSource;
+        return !!(MSClass && hasIdx && MSClass.isTypeSupported(probeMime));
     }
 
     function _isIOS() {
@@ -377,10 +415,27 @@ Q.exports(function (Q, _) {
             // to the real network (confirmed live: net::ERR_NAME_NOT_RESOLVED).
             var sw = ready && navigator.serviceWorker.controller;
             if (!sw) {
-                // SW didn't take control — fall back to blob path
-                Q.log('Q.Safecloud.Client.stream: SW not controlling page, falling back', 'Safecloud');
+                // SW didn't take control — a hard reload deterministically
+                // never lets a service worker control the page for that
+                // load (documented browser behavior, not a flaky race), so
+                // this path is hit on EVERY hard reload, not just rare ones.
+                // Blob used to be the only fallback here regardless of
+                // browser capability — meaning a desktop Chrome tab, which
+                // supports MediaSource + fMP4 just fine, was forced through
+                // "decrypt the entire file into memory before playback can
+                // start" purely because this one function never checked for
+                // MSE before giving up on streaming entirely. Prefer MSE
+                // (still real, progressive streaming) whenever it's usable;
+                // blob is now only reached when MSE itself genuinely isn't.
+                var fallbackPath = _canUseMSE(videoManifest) ? 'mse' : 'blob';
+                Q.log('Q.Safecloud.Client.stream: SW not controlling page, falling back to '
+                    + fallbackPath, 'Safecloud');
+                if (fallbackPath === 'mse') {
+                    return Q.Safecloud.Client.streamMSE(videoManifest, capability, options);
+                }
                 return _streamBlob(videoManifest, capability, options);
             }
+            console.info('Q.Safecloud.Client.stream: service worker is controlling the page — streaming via "sw"');
             // Without "version" set explicitly here, sw.js's register handler
             // defaults session.activeVersion to '' (msg.version || ''), while
             // _prefetchLoop (below) independently derives this exact same
@@ -563,6 +618,9 @@ Q.exports(function (Q, _) {
 
     function _streamBlob(videoManifest, capability, options) {
         var videoEl = options.videoElement;
+
+        console.info('Q.Safecloud.Client.stream: streaming via "blob" '
+            + '(full decrypt into memory before playback starts)');
 
         return Q.Safecloud.Client.fetch(videoManifest, capability, options)
             .then(function (blob) {
