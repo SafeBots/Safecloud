@@ -14,6 +14,12 @@
  *   Q.Safecloud.Jets._evmProvider(chainId)    — lazy ethers provider
  *   Q.Safecloud.Jets._reconcileDropInventory  — Prolly tree reconciliation
  *   Q.Safecloud.Jets._attachBloomFilter       — deserialise + cache Bloom filter
+ *   Q.Safecloud.Jets.WasmRunner               — WASM execution engine
+ *   Q.Safecloud.Jets.WasmRunner.execute(opts) — run a handler, return envelope+receipt
+ *   Q.Safecloud.Jets.WasmRunner.executeByRoute(appCid,method,path,opts) — route-based
+ *   Q.Safecloud.Jets.WasmRunner.executeByName(appCid,name,opts)  — named handler
+ *   Q.Safecloud.Jets.WasmRunner.loadManifest(appCid) — fetch+cache app manifest
+ *   Q.Safecloud.Jets.WasmRunner.walkChain(appCid,limit) — walk receipt chain
  *
  * Internal state (module-private):
  *   Q.Safecloud.Drops            — dropId → drop record
@@ -72,9 +78,10 @@ try {
         + '  (ethers is required even in signature-only mode for wallet generation and token signing)'
     );
 }
-var _bounded  = require('./Jets/_bounded.js');
-var crypto    = require('crypto');
-var express   = require('express');
+var _bounded    = require('./Jets/_bounded.js');
+var WasmRunner  = require('./Jets/WasmRunner');
+var crypto      = require('crypto');
+var express     = require('express');
 
 // Server-side Safe layer helpers (same plugin, sibling files)
 var Safecloud_Client = require('./Client');
@@ -1598,6 +1605,27 @@ Safecloud_Jets.listen = function (options) {
             });
         });
 
+        // ── SafecloudApp: execute handler by name ──────────────────────────
+        // e.g. on_key_request for pay-per-view, subscription, DMCA-aware
+        on('Safecloud/app/execute', function (payload, ack) {
+            _handleAppExecute(client, userId, payload, ack);
+        });
+
+        // ── SafecloudApp: execute handler by route (dynamic sites) ───────
+        on('Safecloud/app/route', function (payload, ack) {
+            _handleAppRoute(client, userId, payload, ack);
+        });
+
+        // ── SafecloudApp: register an app manifest ───────────────────────
+        on('Safecloud/app/register', function (payload, ack) {
+            _handleAppRegister(client, userId, payload, ack);
+        });
+
+        // ── SafecloudApp: query receipt chain ────────────────────────────
+        on('Safecloud/app/chain', function (payload, ack) {
+            _handleAppChain(client, payload, ack);
+        });
+
         // ── Transport disconnect ──────────────────────────────────────────────
         client.on('disconnect', function (reason) {
             Q.log('Safecloud client disconnected: ' + client.id
@@ -1651,6 +1679,23 @@ Safecloud_Jets.listen = function (options) {
 
     // ── 6. Router + JetSwarm ─────────────────────────────────────────────────
     _initSwarm(options);
+
+    // ── 7. WASM execution engine ─────────────────────────────────────────────
+    var _jetKeypair = Q.Config.get(['Safecloud', 'jet', 'keypair'], null);
+    WasmRunner.init({
+        Q:          Q,
+        Jets:       Safecloud_Jets,
+        Client:     Safecloud_Client,
+        jetId:      Q.Config.get(['Safecloud', 'jet', 'address'], 'jet-' + crypto.randomBytes(8).toString('hex')),
+        fuelLimit:  Q.Config.get(['Safecloud', 'wasm', 'fuelLimit'],   10000000),
+        memoryLimit: Q.Config.get(['Safecloud', 'wasm', 'memoryLimit'], 16 * 1024 * 1024),
+        signFn: _jetKeypair ? function (buf) {
+            var sign = crypto.createSign('SHA256');
+            sign.update(buf);
+            return sign.sign(_jetKeypair, 'hex');
+        } : null
+    });
+    Q.log('Q.Safecloud.Jets: WasmRunner initialized', 'Safecloud');
 
     _listenResult = { internal: server, socket: socket };
     return _listenResult;
@@ -2656,6 +2701,17 @@ function _registerHttpRoutes(app) {
     // Jet-to-Jet relay
     app.get('/Safecloud/cloud/relay/:rootCid', function (req, res) {
         _handleHttpRelayGet(req, res);
+    });
+
+    // ── SafecloudApp: dynamic site HTTP routes ───────────────────────────
+    // An operator maps a domain to a SafecloudApp CID via config:
+    //   Safecloud.apps.{hostname} = "bafy...appCid"
+    // The Jet routes all requests for that hostname to the app's handler.
+    app.all('/Safecloud/app/:appCid/*', function (req, res) {
+        _handleHttpAppRoute(req, res);
+    });
+    app.all('/Safecloud/app/:appCid', function (req, res) {
+        _handleHttpAppRoute(req, res);
     });
 }
 
@@ -3669,6 +3725,277 @@ function _payCreatorRoyalty(revenue, chunkCount, perChunkWei, jetEVM, safebuxAdd
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// SafecloudApp socket handlers (private — called from listen())
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Handle Safecloud/app/execute: execute a named handler from a SafecloudApp.
+ *
+ * Payload: { appCid, handler, claim?, params?, body? }
+ * Response: SafecloudEnvelope
+ *
+ * @private
+ */
+function _handleAppExecute(client, userId, payload, ack) {
+    if (!ack) { return; }
+    if (!payload || !payload.appCid || !payload.handler) {
+        return ack({ error: { code: 'BadRequest', message: 'appCid and handler required' } });
+    }
+
+    var appCid  = String(payload.appCid);
+    var handler = String(payload.handler);
+    var claim   = payload.claim || null;
+    var params  = payload.params || {};
+    var body    = payload.body ? Buffer.from(payload.body, 'base64') : Buffer.alloc(0);
+
+    WasmRunner.executeByName(appCid, handler, {
+        claim:  claim,
+        params: params,
+        body:   body
+    }).then(function (result) {
+        ack(null, result.envelope);
+        Safecloud_Jets.emit('appExecute', {
+            appCid: appCid, handler: handler,
+            receiptCid: result.receiptCid,
+            fuelConsumed: result.receipt.fuelConsumed
+        });
+    }).catch(function (err) {
+        Q.log('Q.Safecloud.Jets._handleAppExecute: ' + err, 'Safecloud');
+        ack({ error: { code: 'ExecutionError', message: String(err.message || err) } });
+    });
+}
+
+/**
+ * Handle Safecloud/app/route: execute a handler by HTTP method + path.
+ *
+ * Payload: { appCid, method, path, claim?, params?, body? }
+ * Response: SafecloudEnvelope
+ *
+ * @private
+ */
+function _handleAppRoute(client, userId, payload, ack) {
+    if (!ack) { return; }
+    if (!payload || !payload.appCid || !payload.method || !payload.path) {
+        return ack({ error: { code: 'BadRequest', message: 'appCid, method, and path required' } });
+    }
+
+    var appCid = String(payload.appCid);
+    var method = String(payload.method).toUpperCase();
+    var path   = String(payload.path);
+    var claim  = payload.claim || null;
+    var params = payload.params || {};
+    var body   = payload.body ? Buffer.from(payload.body, 'base64') : Buffer.alloc(0);
+
+    WasmRunner.executeByRoute(appCid, method, path, {
+        claim:  claim,
+        params: params,
+        body:   body
+    }).then(function (result) {
+        ack(null, result.envelope);
+        Safecloud_Jets.emit('appRoute', {
+            appCid: appCid, method: method, path: path,
+            receiptCid: result.receiptCid,
+            fuelConsumed: result.receipt.fuelConsumed
+        });
+    }).catch(function (err) {
+        Q.log('Q.Safecloud.Jets._handleAppRoute: ' + err, 'Safecloud');
+        ack({ error: { code: 'ExecutionError', message: String(err.message || err) } });
+    });
+}
+
+/**
+ * Handle Safecloud/app/register: cache an app manifest on this Jet.
+ *
+ * Payload: { appCid }
+ * This triggers pre-fetching the manifest and compiling its handlers,
+ * so the first real request doesn't pay cold-start latency.
+ *
+ * @private
+ */
+function _handleAppRegister(client, userId, payload, ack) {
+    if (!ack) { return; }
+    if (!payload || !payload.appCid) {
+        return ack({ error: { code: 'BadRequest', message: 'appCid required' } });
+    }
+
+    var appCid = String(payload.appCid);
+
+    WasmRunner.loadManifest(appCid).then(function (manifest) {
+        // Pre-compile all handler WASM modules
+        var handlerCids = [];
+        var seen = {};
+        Object.keys(manifest.handlers).forEach(function (route) {
+            var cid = manifest.handlers[route];
+            if (!seen[cid]) {
+                handlerCids.push(cid);
+                seen[cid] = true;
+            }
+        });
+
+        Q.log('Q.Safecloud.Jets: registered app ' + appCid
+            + ' with ' + handlerCids.length + ' handler(s)', 'Safecloud');
+
+        ack(null, {
+            registered: true,
+            appCid: appCid,
+            handlers: handlerCids.length,
+            name: manifest.name || null
+        });
+
+        Safecloud_Jets.emit('appRegister', { appCid: appCid, manifest: manifest });
+    }).catch(function (err) {
+        Q.log('Q.Safecloud.Jets._handleAppRegister: ' + err, 'Safecloud');
+        ack({ error: { code: 'RegistrationError', message: String(err.message || err) } });
+    });
+}
+
+/**
+ * Handle Safecloud/app/chain: query the receipt chain for an app.
+ *
+ * Payload: { appCid, limit?, receiptCid? }
+ * Response: { head, receipts }
+ *
+ * @private
+ */
+function _handleAppChain(client, payload, ack) {
+    if (!ack) { return; }
+    if (!payload || !payload.appCid) {
+        return ack({ error: { code: 'BadRequest', message: 'appCid required' } });
+    }
+
+    var appCid = String(payload.appCid);
+    var limit  = Math.min(Math.max(parseInt(payload.limit, 10) || 100, 1), 1000);
+
+    if (payload.receiptCid) {
+        // Fetch a specific receipt
+        var receipt = WasmRunner.getReceipt(appCid, String(payload.receiptCid));
+        if (!receipt) {
+            return ack({ error: { code: 'NotFound', message: 'Receipt not found' } });
+        }
+        return ack(null, { receipts: [receipt] });
+    }
+
+    var receipts = WasmRunner.walkChain(appCid, limit);
+    ack(null, {
+        head: WasmRunner.getChainHead(appCid),
+        count: receipts.length,
+        receipts: receipts
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SafecloudApp HTTP handler (dynamic sites)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Handle HTTP requests for SafecloudApp dynamic sites.
+ *
+ * Route: /Safecloud/app/:appCid/*
+ *
+ * The Jet routes the request to the appropriate WASM handler based on
+ * the app manifest's route table. The response is an HTML page, JSON,
+ * or whatever the handler produces.
+ *
+ * @private
+ */
+function _handleHttpAppRoute(req, res) {
+    var appCid  = req.params.appCid;
+    var method  = req.method;
+    // Extract the path after /Safecloud/app/:appCid
+    var reqPath = '/' + (req.params[0] || '');
+
+    // Extract OCP claim from Authorization header if present
+    var claim = null;
+    var authHeader = req.headers['authorization'];
+    if (authHeader && authHeader.indexOf('Bearer ') === 0) {
+        try {
+            claim = JSON.parse(Buffer.from(authHeader.slice(7), 'base64').toString('utf8'));
+        } catch (e) {
+            // Invalid claim — proceed without auth
+        }
+    }
+
+    // Build params from query string
+    var params = {};
+    Object.keys(req.query || {}).forEach(function (k) {
+        params[k] = String(req.query[k]);
+    });
+
+    // Collect body for POST/PUT
+    var bodyChunks = [];
+    req.on('data', function (chunk) { bodyChunks.push(chunk); });
+    req.on('end', function () {
+        var body = bodyChunks.length ? Buffer.concat(bodyChunks) : Buffer.alloc(0);
+
+        WasmRunner.executeByRoute(appCid, method, reqPath, {
+            claim:  claim,
+            params: params,
+            body:   body
+        }).then(function (result) {
+            var envelope = result.envelope;
+
+            // Set response headers from envelope
+            if (envelope.headers) {
+                Object.keys(envelope.headers).forEach(function (k) {
+                    res.setHeader(k, envelope.headers[k]);
+                });
+            }
+
+            // Set the proof header so clients can verify
+            res.setHeader('X-Safecloud-Proof', Buffer.from(
+                JSON.stringify(envelope.proof)).toString('base64'));
+
+            // Content-type from the envelope type
+            var contentType = envelope.type || 'application/octet-stream';
+            if (contentType === 'text/html' || contentType === 'application/json') {
+                res.setHeader('Content-Type', contentType + '; charset=utf-8');
+            } else {
+                res.setHeader('Content-Type', contentType);
+            }
+
+            // Send payload
+            var payload = envelope.payload;
+            if (typeof payload === 'string') {
+                res.status(200).send(payload);
+            } else if (Buffer.isBuffer(payload)) {
+                res.status(200).send(payload);
+            } else {
+                res.status(200).json(payload);
+            }
+
+            Safecloud_Jets.emit('appRoute', {
+                appCid: appCid, method: method, path: reqPath,
+                receiptCid: result.receiptCid,
+                fuelConsumed: result.receipt.fuelConsumed,
+                http: true
+            });
+        }).catch(function (err) {
+            Q.log('Q.Safecloud.Jets._handleHttpAppRoute: ' + err, 'Safecloud');
+            var status = 500;
+            if (err.message && err.message.indexOf('No handler') === 0) {
+                status = 404;
+            }
+            res.status(status).json({
+                error: { code: 'ExecutionError', message: String(err.message || err) }
+            });
+        });
+    });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Public WasmRunner access
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The WASM execution engine.
+ * Exposed so external code can call Safecloud_Jets.WasmRunner directly.
+ *
+ * @property WasmRunner
+ * @type {Object}
+ */
+Safecloud_Jets.WasmRunner = WasmRunner;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Q.Safecloud.Jets events (mirrors Users pattern)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -3735,4 +4062,22 @@ function _payCreatorRoyalty(revenue, chunkCount, perChunkWei, jetEVM, safebuxAdd
  * @event dropSlash
  * @param {Object} drop
  * @param {Object} payload  { reason }
+ */
+
+/**
+ * Emitted after a SafecloudApp handler is executed by name.
+ * @event appExecute
+ * @param {Object} info  { appCid, handler, receiptCid, fuelConsumed }
+ */
+
+/**
+ * Emitted after a SafecloudApp handler is executed by route.
+ * @event appRoute
+ * @param {Object} info  { appCid, method, path, receiptCid, fuelConsumed, http? }
+ */
+
+/**
+ * Emitted after a SafecloudApp manifest is registered/cached.
+ * @event appRegister
+ * @param {Object} info  { appCid, manifest }
  */

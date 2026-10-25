@@ -18,20 +18,14 @@
  *   @param {Object}  [options.capability]  { rootKey } or { grants }
  *   @param {Object}  [options.metrics]     {publisherId, streamName} — if
  *     set, tracks watched second-ranges via Q.Streams.Metrics the same way
- *     Q/video does (see its own doc comment), POSTed periodically to
- *     Streams/metrics. Was missing entirely until this was added — a
- *     Safecloud-sourced episode (the only source type Fans uses) left
- *     streams_metrics completely empty regardless of how much it was
- *     watched, which "most viewed videos" depends on.
- *   @param {String}  [options.jetUrl]      Jet server URL.
- *   @param {Number}  [options.at]          Start position in seconds.
+ *     Q/video does, POSTed periodically to Streams/metrics. A Safecloud-
+ *     sourced episode without this leaves streams_metrics empty regardless
+ *     of how much it was watched, which "most viewed videos" depends on.
  *   @param {String}  [options.path]        Force 'sw' | 'mse' | 'blob' |
  *     'auto' for THIS player instance, overriding both auto-detection and
- *     Q.Safecloud.Client.streamPath's global override — for testing a
- *     specific path on a specific page (e.g. pass this through Media/clip's
- *     own state.qVideoOptions) without affecting any other player on the
- *     same page. Passed straight through to Q.Safecloud.Client.stream() —
- *     see its own doc comment for the global/localStorage alternative.
+ *     Q.Safecloud.Client.streamPath's global override.
+ *   @param {String}  [options.jetUrl]      Jet server URL.
+ *   @param {Number}  [options.at]          Start position in seconds.
  *   @param {Q.Event} [options.onLoad]      Fired when player is ready.
  *   @param {Q.Event} [options.onError]     Fired on error.
  *   @param {Q.Event} [options.onTeaserEnd] Fired when playback reaches the end
@@ -68,8 +62,7 @@ Q.Tool.define('Safecloud/video', function (options) {
     metrics:    null,
     jetUrl:     null,
     at:         0,
-    // 'sw' | 'mse' | 'blob' | 'auto' (default) — see the constructor's own
-    // doc comment above.
+    // 'sw' | 'mse' | 'blob' | 'auto' (default) — see the constructor's doc comment.
     path:       null,
     // Pause and fire onTeaserEnd once currentTime reaches this — a
     // grant's own coverage is chunk-rounded (Client/grant.js widens
@@ -88,9 +81,8 @@ Q.Tool.define('Safecloud/video', function (options) {
     onLoad:     new Q.Event(),
     onPlay:     new Q.Event(),
     onPlaying:  new Q.Event(function () {
-        // Same spot Q/video.js's own default onPlaying handler does this —
-        // see this tool's own metrics doc comment above for why it's here
-        // at all.
+        // Mirrors Q/video.js's own default onPlaying handler — tracks
+        // watched second-ranges for streams_metrics ("most viewed videos").
         if (this.metrics) {
             this.metrics.add(this.getCurrentPosition() / 1000);
         }

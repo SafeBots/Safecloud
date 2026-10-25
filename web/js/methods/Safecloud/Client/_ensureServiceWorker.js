@@ -116,8 +116,7 @@ Q.exports(function (Q, _) {
                     // controller — at that point there's no more install/
                     // activate latency left to wait out, only a control-
                     // transfer (clients.claim()) that either lands within a
-                    // moment or, per Client/stream.js's own SW-fallback
-                    // comment, never lands at all for this page load (a hard
+                    // moment or never lands at all for this page load (a hard
                     // reload bypasses SW control for its entire lifetime,
                     // not just briefly — confirmed via web.dev's service
                     // worker lifecycle docs). Waiting the full 8s there only
