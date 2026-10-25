@@ -1,8 +1,8 @@
 # Safecloud — Content Flagging and Reputation
 
-This document specifies how Safecloud provides responsible content scanning without breaking end-to-end encryption. The design uses client-side classifiers injected by Jets, proof-of-scan requirements for message relay, passive scanning of stored content, and a reputation system that limits the distribution of flagged material.
+This document specifies how Safecloud provides responsible content scanning without breaking end-to-end encryption. The design covers two layers: the storage/distribution layer (client-side classifiers injected by Jets, proof-of-scan requirements for content relay, passive scanning of stored content, and a reputation system that limits distribution of flagged material) and the E2E chat layer (client-side scanning of message plaintext, per-message key escrow under threshold ElGamal, and proof-of-escrow requirements for media messages).
 
-Read `Protocol.md` and `Trading.md` before this document. The flagging layer does not modify the encryption or routing protocol. It adds a pre-encryption scanning step on the client (Drop) and a reputation signal that affects content distribution across the network.
+Read `Protocol.md`, `Trading.md`, and `EpochProtocol.md` before this document. The flagging layer does not modify the encryption or routing protocol. For the storage/distribution layer, it adds a pre-encryption scanning step on the client (Drop) and a reputation signal that affects content distribution across the network. For E2E chat, it adds client-side scanning, per-message key escrow under threshold encryption, and proof-of-escrow enforcement at the Jet (see also `Ecosystem.md` §Content safety in E2E chat and `Apps.md` §Rooms and E2E encrypted chat).
 
 **Notation:** Drop = storage/messaging client. Jet = routing node. Classifier = AI model or hash-matching function distributed by Jets to Drops. Flag = a classifier's assertion that content matches known-bad material. Reputation = a per-pubkey score that determines content distribution priority.
 
@@ -43,6 +43,16 @@ Read `Protocol.md` and `Trading.md` before this document. The flagging layer doe
   - [The lever problem](#the-lever-problem)
   - [Why this lever is weak](#why-this-lever-is-weak)
   - [Classifier CID pinned per release](#classifier-cid-pinned-per-release)
+- [E2E chat content safety](#e2e-chat-content-safety)
+  - [Why chat is different](#why-chat-is-different)
+  - [Client-side scanning for chat](#client-side-scanning-for-chat)
+  - [Per-message key escrow](#per-message-key-escrow)
+  - [Threshold ElGamal decryption](#threshold-elgamal-decryption)
+  - [Proof of escrow for media](#proof-of-escrow-for-media)
+  - [Garbage escrow detection](#garbage-escrow-detection)
+  - [Consent and opt-in structure](#consent-and-opt-in-structure)
+  - [Honest gaps](#honest-gaps)
+  - [Interaction with the reputation system](#interaction-with-the-reputation-system)
 - [Attack vectors](#attack-vectors)
 - [Legal interaction with Trading.md](#legal-interaction-with-tradingmd)
 
@@ -472,6 +482,116 @@ The tradeoff is that legitimate classifier updates (new NCMEC hashes, improved C
 
 ---
 
+## E2E chat content safety
+
+The sections above describe flagging for content that passes through Jets during distribution — file uploads, video streams, static content stored on Drops. Jets can require proof-of-scan because they route the content and can enforce policy at the relay point.
+
+Chat messages are different. The Jet routes ciphertext without decrypting it. The flagging infrastructure described above — passive storage scanning, corroboration, jury verification — does not apply to chat, because no Drop stores the plaintext and no Jet can inspect it. A separate mechanism is needed for E2E encrypted conversations, as specified in Ecosystem.md and implemented by the room handlers in Apps.md.
+
+### Why chat is different
+
+In the storage/distribution layer, content passes through multiple nodes. Any Drop storing a copy can scan it. Multiple independent Drops can corroborate a flag. The jury can re-scan and verify. This redundancy is the foundation of the reputation system's accuracy.
+
+In E2E chat, the only nodes that see plaintext are the sender's client and the recipients' clients. The Jet sees only ciphertext. There are no independent Drops scanning the same plaintext. There is no jury that can re-verify a flag by running the classifier independently, because no jury member has the plaintext.
+
+This means the chat content safety system cannot rely on the same corroboration and jury mechanisms. It uses a different approach: client-side scanning combined with per-message key escrow under threshold encryption.
+
+### Client-side scanning for chat
+
+The standard Safecloud client runs the same classifier infrastructure (PDQ, NSFW, text classifiers) on chat messages. The scan runs at two points:
+
+1. **Before encryption on the sender's device.** The classifier processes the plaintext message or media before the client encrypts it with the per-message key `K_msg` derived from the epoch's forward and backward chains (see EpochProtocol.md).
+
+2. **After decryption on the recipient's device.** The classifier processes the decrypted content. This catches content that evaded the sender's scan (if the sender used a modified client) and provides a second independent classification.
+
+The classifier models are the same ones described in the [Classifier models](#classifier-models) section — PDQ hash matching, NSFWjs for images, text toxicity classifiers. The client fetches them by CID the same way a Drop does.
+
+A modified client can skip the scan entirely. The system handles this through the escrow mechanism rather than trying to enforce scanning on uncontrolled client software.
+
+### Per-message key escrow
+
+When the client-side classifier flags a message, the client escrows the per-message key `K_msg` for that specific message under a threshold public key `PK_threshold`. The escrow ciphertext is:
+
+```
+Enc(PK_threshold, K_msg)
+```
+
+The escrow is granular: only the flagged message's key is escrowed, not the conversation key, not the epoch's forward or backward chain seeds, not any other message's key. Even if the threshold group later decrypts the escrow, they learn the content of one message. The rest of the conversation remains encrypted.
+
+This is the connection to the epoch protocol: each message has its own key `K_msg = HKDF(F_k || B_k, context_id, info)` derived from the current position in the bidirectional hash chains. Escrowing `K_msg` does not reveal `F_k` or `B_k` — it is a one-way derivation. The threshold group cannot reverse the HKDF to recover chain values and decrypt other messages.
+
+### Threshold ElGamal decryption
+
+The public key `PK_threshold` is produced by distributed key generation (DKG) across n parties. No single party holds the full private key. Decrypting an escrowed `K_msg` requires at least k of the n parties to produce partial decryptions, which are then combined to recover the key. This is standard threshold ElGamal — no TEE or Safebox is required.
+
+The threshold group's composition is a governance decision:
+
+- **Community moderator panel:** For open chat rooms, the threshold group might be elected moderators.
+- **Legal/compliance officers:** For organizational deployments, the threshold group might be a legal team.
+- **External oversight board:** For maximum independence, the threshold group might include external parties with no operational relationship to the platform.
+- **Mixed:** Any combination, with the k-of-n parameters determining how many must agree.
+
+A SafecloudApp handler manages the workflow: accepting unlock requests, routing approval requests to threshold members, combining partial decryptions, and recording every action in a SafecloudChain audit trail. Every unlock is a permanent, signed record — who requested it, who approved it, what reason was given, and when it happened.
+
+### Proof of escrow for media
+
+For media messages (images, video), the Jet enforces a structural requirement: the `send-media` room handler (see Apps.md) requires a valid escrow ciphertext alongside the message ciphertext. The handler verifies that the escrow is a well-formed ElGamal ciphertext under `PK_threshold` without knowing what key it encrypts.
+
+A sender who submits a media message without a valid escrow ciphertext has the message rejected. The Jet does not need to decrypt anything to enforce this — it checks the mathematical structure of the escrow (a valid point on the curve, correct format) without learning the escrowed value.
+
+For text messages, no escrow is required at the protocol level. Text-only messages pass through without proof of escrow. This is a deliberate trade-off: requiring escrow for every text message would add overhead and raise the stakes of threshold group governance, while the primary content safety concern (CSAM, violent imagery) is media, not text. Text toxicity is handled by the client-side classifier at send and receive time, with reporting and reputation as the enforcement mechanism rather than escrow.
+
+### Garbage escrow detection
+
+A sender using a modified client can submit a well-formed escrow ciphertext that encrypts a random value instead of the real `K_msg`. This passes the Jet's well-formedness check because the Jet verifies format, not content.
+
+The garbage escrow is detectable only when the threshold group decrypts it — triggered by a report, a flag from a recipient's post-scan classifier, or a legal process. The decrypted "key" is applied to the message ciphertext, and the result is garbage (does not parse as a valid message, does not decompress as a valid image). This is evidence of deliberate evasion.
+
+Garbage escrow detection is post-hoc, not proactive. It cannot prevent the message from being sent or read. It creates a forensic trace: the sender produced a deliberately invalid escrow, which is itself a policy violation. Combined with the report that triggered the decryption attempt, it provides evidence of intentional circumvention.
+
+A future version could use a TEE-based Safebox to verify at submission time that the escrowed value actually decrypts the message ciphertext, turning garbage escrow detection from post-hoc to real-time. This requires trusting the TEE's attestation — a trade-off that v1 avoids.
+
+### Consent and opt-in structure
+
+Users of the standard Safecloud client consent to the escrow behavior as part of using the service. The consent is recorded through consents.to — a third-party attestation service that provides timestamped, auditable consent records. The consent statement is specific: the user acknowledges that flagged messages will have their per-message key escrowed, and that a threshold group may decrypt it under a stated process.
+
+The consent is opt-in in the sense that the user chose the standard client. A user who objects to escrow can use a third-party client. That client will not scan or escrow. The consequences:
+
+- **Media messages will be rejected.** The `send-media` handler requires proof of escrow. No escrow, no media.
+- **Reputation signals apply.** If the user is reported and no escrow exists to corroborate or dismiss the report, the absence of escrow is itself a signal.
+- **Text-only participation is unrestricted.** A non-escrowing client can still send and receive text messages in rooms.
+
+This structure preserves user choice while making the platform structurally hostile to the use case the content safety system targets: distribution of harmful media in chat.
+
+### Honest gaps
+
+Two willing bad actors using modified clients can exchange harmful content without triggering any of these mechanisms. Their clients skip scanning, submit garbage escrow (or no escrow for text), and the recipients willingly decrypt without post-scan. Neither party reports the other.
+
+This is the same gap that exists in Signal, Session, Threema, and every other E2E system. No cryptographic protocol prevents two cooperating adversaries from communicating between themselves. The defense is not against willing cooperation — it is against:
+
+- **Unwitting recipients** who receive harmful content and whose client post-scans it.
+- **One-to-many distribution** where at least some recipients are honest and will trigger a report.
+- **Media distribution** where the Jet's proof-of-escrow requirement forces even modified clients to produce an escrow ciphertext (real or garbage), creating a forensic record.
+- **Platform attractiveness** — the combination of client scanning, mandatory media escrow, reputation signals, and garbage escrow detection makes the platform a worse choice for systematic distribution of harmful content than platforms with no measures at all.
+
+For a detailed analysis of the attack surface for E2E chat content safety, see Attacks.md section 11.
+
+### Interaction with the reputation system
+
+The chat content safety system feeds into the same reputation system described in [Reputation system](#reputation-system), but through different signals:
+
+| Signal | Source | Effect |
+|--------|--------|--------|
+| Recipient post-scan flag | Recipient's client-side classifier flags decrypted content | Contributes to sender's reputation score, same as a storage-layer flag |
+| User report | Recipient manually reports a message | Triggers threshold group review; confirmed reports affect sender's reputation |
+| Garbage escrow detection | Threshold decryption produces garbage | Sender's reputation takes a significant hit (evidence of deliberate evasion) |
+| Missing escrow for media | Sender's message rejected by `send-media` handler | No reputation effect (message was never delivered), but the rejection is logged |
+| Threshold unlock | k-of-n approvers decrypt an escrowed key | No direct reputation effect, but the decrypted content may reveal violations that affect reputation |
+
+The reputation effect of chat-originated flags follows the same gradient as storage-layer flags: reputation degrades gradually, distribution shrinks, and the user experiences a silent reduction in reach rather than an explicit ban. The shadowban properties described in [Shadowban gradient](#shadowban-gradient) apply equally to chat — a user whose reputation degrades sees their messages delivered more slowly, their media messages scrutinized more carefully, and their room creation requests deprioritized.
+
+---
+
 ## Attack vectors
 
 ### Classifier evasion (adversarial examples)
@@ -528,7 +648,7 @@ The tradeoff is that legitimate classifier updates (new NCMEC hashes, improved C
 
 The flagging system strengthens the legal defenses described in `Trading.md`:
 
-**Tornado Cash distinction:** The Tornado Cash developers were criticized for not implementing available compliance measures. Safecloud's reference implementation includes client-side content classifiers, proof-of-scan requirements, and a reputation system — reasonable measures that demonstrate good faith. This is the "we did something" defense that Tornado Cash lacked.
+**Tornado Cash distinction:** The Tornado Cash developers were criticized for not implementing available compliance measures. Safecloud's reference implementation includes client-side content classifiers, proof-of-scan requirements, a reputation system, and per-message key escrow with threshold decryption for chat — reasonable measures that demonstrate good faith across both the storage and chat layers. This is the "we did something" defense that Tornado Cash lacked.
 
 **Structural defense preserved:** The flagging system operates entirely client-side. The Jet never decrypts content. End-to-end encryption is intact. The structural defense ("the Jet cannot see messages") remains true. The flagging system adds a pre-encryption scanning layer, not a decryption capability.
 
