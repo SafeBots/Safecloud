@@ -1,15 +1,8 @@
 # Safecloud — Attack Surface and Security Analysis
 
-This document catalogs every attack class identified against the Safecloud
-protocol: identity attacks, storage accountability attacks, payment exploits,
-routing manipulation, CoC abuse, network-level attacks, economic game-theory
-attacks, and cryptographic edge cases. Each entry states the attacker's goal,
-the mechanism, the outcome, and the protocol's defense. Where a defense is
-incomplete or depends on an off-chain assumption, that is noted explicitly.
+This document catalogs every attack class identified against the Safecloud protocol: identity attacks, storage accountability attacks, payment exploits, routing manipulation, CoC abuse, network-level attacks, economic game-theory attacks, cryptographic edge cases, epoch protocol attacks, and E2E chat attacks. Each entry states the attacker's goal, the mechanism, the outcome, and the protocol's defense. Where a defense is incomplete or depends on an off-chain assumption, that is noted explicitly.
 
-Read `Protocol.md`, `Cloud.md`, `Jets.md`, `Drops.md`, and `Routing.md`
-before this document. This document does not restate architecture — it
-assumes familiarity and focuses on adversarial analysis.
+Read `Protocol.md`, `Cloud.md`, `Jets.md`, `Drops.md`, `Routing.md`, `EpochProtocol.md`, and `Ecosystem.md` before this document. This document does not restate architecture — it assumes familiarity and focuses on adversarial analysis.
 
 **Notation:** Mallory = attacker. Alice, Bob = honest participants.
 "Succeeds" means the attacker achieves their goal. "Fails" means the
@@ -29,7 +22,9 @@ effect. Ratings: 🔴 High risk, 🟡 Medium risk, 🟢 Low risk / resolved.
 7. [Economic and Game-Theory Attacks](#7-economic-and-game-theory-attacks)
 8. [Cryptographic Edge Cases](#8-cryptographic-edge-cases)
 9. [Trusted Environment Attacks](#9-trusted-environment-attacks)
-10. [Cross-Cutting Observations](#10-cross-cutting-observations)
+10. [Epoch Protocol Attacks](#10-epoch-protocol-attacks)
+11. [E2E Chat and Content Safety Attacks](#11-e2e-chat-and-content-safety-attacks)
+12. [Cross-Cutting Observations](#12-cross-cutting-observations)
 
 ---
 
@@ -1195,11 +1190,249 @@ practices, not Safecloud-specific.
 
 ---
 
-## 10. Cross-Cutting Observations
+## 10. Epoch Protocol Attacks
+
+The epoch protocol (bidirectional hash chains with epoch-based membership transitions) is the shared cryptographic mechanism for chat encryption, keychains, organizational roles, delegated identity, and camera footage access. Attacks against the epoch protocol affect all of these applications. See EpochProtocol.md for the full implementation reference and Ecosystem.md for the architectural overview.
 
 ---
 
-### 10.1 The protocol's fundamental security model
+### 10.1 Forward chain state compromise (within-epoch future messages) 🟡
+
+**Goal:** Mallory compromises a participant's device and extracts the current forward chain value `F_k`. She uses it to derive future message keys within the current epoch.
+
+**Mechanism:** Mallory obtains `F_k` via device compromise (malware, physical access, side-channel). She computes `F_{k+1} = SHA-256(F_k)`, `F_{k+2} = SHA-256(F_{k+1})`, etc. For each future message in this epoch, Mallory knows the forward component of the key.
+
+**Outcome:** Partial. Mallory can compute all future forward values in this epoch. However, she still needs the corresponding backward values `B_{k+1}, B_{k+2}, ...` to derive message keys. Since `B_{k+1}` cannot be computed from `B_k` (it requires reversing SHA-256), Mallory can only derive `K_msg` for position `k` — the position she already compromised. Future message keys remain safe until the next backward value is revealed (which happens one-at-a-time with each message).
+
+**Clarification:** The backward chain is what protects future messages within an epoch when the forward chain is compromised. The forward chain protects past messages. Together, compromise of position `k` reveals only `K_{msg,k}`.
+
+**Defense:** Detect the compromise and trigger an epoch transition. The new epoch's seeds are unrelated to the old chains. Periodic automatic epoch transitions (every N messages or T hours) limit the exposure window even without active detection.
+
+---
+
+### 10.2 Backward seed early reveal 🟡
+
+**Goal:** Mallory obtains the backward seed `B_0` before the epoch ends, allowing her to compute every backward chain value for the entire epoch.
+
+**Mechanism:** `B_0` is held by the epoch creator (or whichever participant is responsible for the transition). If that participant's device is compromised, `B_0` may be extractable before it is officially revealed at epoch end.
+
+**Outcome:** Partial. With `B_0`, Mallory can compute every `B_k` for the epoch. Combined with the forward chain values she accumulated as a (possibly legitimate) participant, she can derive every past and present message key for this epoch. This is a full epoch compromise.
+
+**Defense:** `B_0` should be stored in the most protected storage available on the creator's device (secure enclave, hardware-backed keystore). In SafeBox-attested environments, `B_0` is held in the enclave's memory and never written to persistent storage. The creator role can be rotated between participants across epochs to avoid concentrating this risk.
+
+**Residual risk:** If the epoch creator's device is fully compromised (attacker has root), `B_0` is extractable regardless of storage method. This is a device-compromise scenario — the protocol cannot defend against a fully compromised endpoint.
+
+---
+
+### 10.3 Epoch transition race (concurrent transitions) 🟢
+
+**Goal:** Mallory (an insider with admin rights) and Alice (a legitimate admin) both initiate epoch transitions simultaneously, hoping to create an ambiguous state where Mallory's transition — which keeps a compromised member — is accepted instead of Alice's.
+
+**Mechanism:** Mallory sends an epoch transition that keeps all current members. Alice sends an epoch transition that removes a compromised member. Both reference the same `prevEpochHash`. The question is which one wins.
+
+**Outcome:** Resolved by SafecloudDB write ordering. SafecloudChain provides a total order of operations. The first transition committed to SafecloudDB is canonical; the second is invalid (its `prevEpochHash` points to a now-superseded epoch). The losing initiator must re-derive their transition from the new current epoch.
+
+**Defense:** SafecloudChain total ordering eliminates ambiguity. There is no fork — epoch transitions are linearized. If Mallory's transition is committed first, Alice re-submits her removal in the next epoch. If Alice's is committed first, Mallory's attempt to keep the compromised member fails.
+
+---
+
+### 10.4 Epoch record forgery 🟢
+
+**Goal:** Mallory forges an epoch record that appears to be a legitimate transition, inserting herself into an epoch she was excluded from.
+
+**Mechanism:** Mallory constructs an epoch record with her public key in the member list, signs it with her own key, and attempts to write it to SafecloudDB.
+
+**Outcome:** Fails. Epoch records are hash-chained (`prevEpochHash` links each to the previous) and signed by an authorized party (a current member with transition rights). Mallory's forged record either breaks the hash chain (wrong `prevEpochHash`) or has an unauthorized signature. The SafecloudApp handler that manages epoch transitions validates both the chain linkage and the signer's authorization before accepting the record.
+
+Even if Mallory could write directly to SafecloudDB (bypassing the handler), readers who verify the epoch chain would detect the forgery: the signature does not belong to an authorized member, or the hash chain is broken.
+
+**Defense:** Hash-chained epoch records + signature verification by the managing SafecloudApp handler. The append-only chain is tamper-evident.
+
+---
+
+### 10.5 Keychain fork for identity theft 🟡
+
+**Goal:** Mallory steals Alice's signing key and creates a forked keychain — two epoch records with the same `prevEpochHash` — to act as Alice on one branch while Alice continues on the other.
+
+**Mechanism:** Mallory compromises Alice's signing key (not the cold keys, just the online signing key). She creates a new epoch record on Alice's keychain, branching from the current head, and uses this branch to sign messages and grants as Alice.
+
+**Outcome:** Detectable but not preventable. Any two participants who compare their view of Alice's keychain will discover the fork (two records with the same `prevEpochHash`). Fork detection is an inherent property of hash chains with gossip — no blockchain or Safebox is required.
+
+Once a fork is detected, Alice's keychain is invalidated from the fork point forward. Both branches are considered compromised. Alice must go through the recovery protocol (dual-threshold: M-of-N friends AND A-of-B cold keys).
+
+**Residual risk:** During the window between the fork and its detection (via gossip), Mallory can act as Alice. The window depends on how frequently participants compare keychain state. An active participant whose keychain is observed by many peers will have forks detected quickly (minutes to hours). An inactive participant's fork may go undetected longer.
+
+**Defense:** Fork detection via gossip. Recovery protocol for re-establishing identity. The cost to Mallory is high: the stolen signing key is burned once the fork is detected, and the recovery protocol requires cold keys Mallory is unlikely to have.
+
+---
+
+### 10.6 Recovery protocol abuse (friend collusion) 🟡
+
+**Goal:** M of Alice's N designated friends conspire to take over Alice's identity through the recovery protocol.
+
+**Mechanism:** M friends fabricate an SOS on Alice's keychain and provide their M attestations. If M alone were sufficient, they could complete recovery and install their own keys.
+
+**Outcome:** Fails. Recovery requires BOTH M-of-N friend attestations AND A-of-B cold personal keys. Friends alone cannot recover — they lack the cold keys. The attacker would need to simultaneously compromise M friends and obtain A cold keys (from a safe deposit box, hardware token, etc.).
+
+**Defense:** Dual-threshold recovery. Neither the social threshold (friends) nor the physical threshold (cold keys) is sufficient alone. The attack requires compromising both — a qualitatively harder task than compromising either.
+
+**Residual risk:** An attacker who compromises both thresholds (steals Alice's cold keys from a safe AND convinces M friends to attest) can take over Alice's identity. This is a combined physical + social engineering attack. The protocol cannot prevent it — it can only make it expensive by requiring both dimensions.
+
+---
+
+### 10.7 Counter-SOS race during recovery 🟡
+
+**Goal:** Mallory has Alice's stolen signing key and races to complete recovery before Alice does, by posting a competing SOS.
+
+**Mechanism:** Alice posts an SOS (using a remaining valid key). Mallory, who stole a different signing key, posts a competing SOS. The keychain now has two SOS entries from different keys.
+
+**Outcome:** Keychain freezes. When competing SOS entries are detected, the recovery protocol enters a dispute state. Resolution requires the cold keys — the assumption is that the legitimate owner has the cold keys and the attacker does not. Alice presents her A-of-B cold key signatures to prove she is the legitimate owner. Mallory cannot do the same (she stole online keys, not cold keys).
+
+**Defense:** Cold keys are the tiebreaker. The 72-hour waiting window gives Alice time to discover the competing SOS and respond with cold key signatures. The protocol favors the party who holds the cold keys, not the party who acts first.
+
+**Residual risk:** If Mallory also has cold keys (e.g., broke into Alice's safe), the protocol cannot distinguish Mallory from Alice. This is the ultimate failure mode — total physical + digital compromise. At this point, only out-of-band social resolution (Alice calls her friends, proves identity in person) can resolve the dispute.
+
+---
+
+### 10.8 Epoch skipping (client fast-forward) 🟢
+
+**Goal:** A malicious client implementation skips epoch transitions, continuing to use old epoch keys after a membership change that should have excluded it.
+
+**Mechanism:** Mallory's modified client ignores epoch transition records and continues encrypting with old epoch keys.
+
+**Outcome:** Fails at the handler level. The SafecloudApp handler that processes messages validates that the `epochIndex` in the message matches the current epoch. Messages encrypted under an old epoch's keys (with an outdated `epochIndex`) are rejected by the handler. The handler is WASM running on the Jet — Mallory's modified client cannot bypass it.
+
+Even if the handler were bypassed (impossible without compromising the Jet), recipients using the standard client would attempt to decrypt with the current epoch's keys and fail — the ciphertext is under the wrong key.
+
+**Defense:** Server-side (handler-side) epoch validation. The handler enforces that messages are encrypted under the current epoch's keys.
+
+---
+
+## 11. E2E Chat and Content Safety Attacks
+
+These attacks target the chat-specific layer: message routing, escrow mechanisms, and the interaction between E2E encryption and content moderation. The epoch protocol attacks above (section 10) also apply to chat, since chat uses the epoch protocol for key management.
+
+---
+
+### 11.1 Modified client bypasses scanning and escrow 🟡
+
+**Goal:** Mallory builds or uses a modified Safecloud chat client that skips client-side content scanning and does not escrow per-message keys.
+
+**Mechanism:** The standard client scans messages before encryption (using the same classifier infrastructure as Flagging.md) and escrows `K_msg` under `PK_threshold` when the classifier flags content. A modified client skips both steps.
+
+**Outcome:** Partial. For text messages, the modified client succeeds — there is no server-side mechanism to enforce scanning or escrow for text. This is the same gap as Signal, Session, Threema, and every other E2E chat system. For media messages, the Jet (via the `send-media` handler) requires a valid escrow ciphertext alongside the message. A client that omits the escrow cannot send media through the standard handler.
+
+**Defense:** Media escrow is enforced server-side. Text escrow is not enforceable at the protocol level — it relies on the client. Reputation signals (a user who never produces escrow for flagged content, or whose escrow always produces garbage on decryption) can be tracked over time and used for access decisions.
+
+**Honest gap:** Two cooperating users with modified clients can exchange arbitrary text content without triggering any moderation mechanism. This is a fundamental limitation of E2E encryption, shared by all E2E systems. The protocol's goal is to make the platform hostile to abuse (media escrow, reputation consequences, forensic traces), not to achieve perfect prevention.
+
+---
+
+### 11.2 Garbage escrow (fake key escrow for media) 🟡
+
+**Goal:** Mallory's modified client escrows a random value instead of the real `K_msg` for a media message, passing the well-formedness check but making the escrow useless for moderation.
+
+**Mechanism:** The `send-media` handler verifies that the escrow is a well-formed ElGamal ciphertext under `PK_threshold`. It cannot verify that the encrypted value is the real `K_msg` — doing so would require the threshold private key, which no single party holds. Mallory encrypts a random 32-byte value instead of `K_msg`. The well-formedness check passes.
+
+**Outcome:** The garbage escrow is undetectable until the threshold group attempts to decrypt it. When they do (triggered by a report or flag), the resulting value is not a valid message key — applying it to the message ciphertext produces garbage plaintext. This is detectable: valid media has structure (image headers, video containers), and garbage does not.
+
+**Defense:** Garbage escrow detection is evidence of deliberate evasion. The protocol treats it as a policy violation — stronger evidence of bad intent than the original flagged content. The user's reputation is penalized. Repeated garbage escrow from the same user can trigger escalating consequences (restricted media sending, account review).
+
+**Residual risk:** A single garbage escrow for a single image is undetectable until someone triggers threshold decryption for that specific message. If nobody ever reports the message, the garbage escrow is never discovered. The protocol does not provide proactive detection without a TEE (which SafeBox v2 could provide).
+
+---
+
+### 11.3 Threshold group collusion for surveillance 🟡
+
+**Goal:** k members of the threshold group collude to decrypt escrowed keys for messages that were not flagged and have no legitimate moderation reason.
+
+**Mechanism:** The threshold group (k-of-n) can decrypt any escrowed `K_msg` by producing partial decryptions and combining them. A colluding threshold group with k members can systematically decrypt every escrowed key in a conversation, reading flagged media messages.
+
+**Outcome:** Technically possible. The threshold group's power is cryptographically unconstrained — if k members cooperate, they can decrypt any escrow. The constraint is social and procedural, not cryptographic.
+
+**Defense:** Every threshold decryption produces a permanently signed partial-decryption record from each participating member. These records are stored in a SafecloudChain audit trail. The audit trail is immutable and reviewable. Bulk decryption, decryption without a valid report, or decryption outside stated policy produces an auditable pattern. Members who participate in unjustified decryptions can be identified and removed from the threshold group (which is an epoch transition on the threshold group's own governance chain).
+
+Rate limiting on the SafecloudApp handler that manages the decryption workflow (maximum N decryptions per time period) provides a coarse-grained defense against bulk surveillance.
+
+**Honest gap:** k colluding members who are willing to accept the audit trail consequences can decrypt any escrowed key. This is analogous to a lawful intercept capability: it exists, it is auditable, and abuse is detectable but not preventable by cryptography alone.
+
+---
+
+### 11.4 Authority coercion of threshold members 🟡
+
+**Goal:** A government or authority compels k threshold group members to decrypt escrowed keys for a specific user or conversation.
+
+**Mechanism:** Legal process (warrant, national security letter, court order) directed at k or more threshold group members.
+
+**Outcome:** The authority obtains the per-message keys for flagged media messages in the targeted conversation. They do not obtain conversation keys, epoch seeds, or the ability to decrypt unflagged messages (which are not escrowed).
+
+**Defense:** The escrow is per-message, not per-conversation. Only messages whose `K_msg` was escrowed (because the client-side classifier flagged them) are decryptable. A blanket order to "decrypt all messages" produces nothing for unflagged text messages (no escrow exists) and nothing for unflagged media (the escrow encrypted the real key only for flagged content; unflagged media uses escrow but the content is benign).
+
+Every coerced decryption produces the same audit trail as any other decryption — signed partial-decryption records from each participating member. The coercion is visible in the audit trail (a sudden spike in decryption requests for a specific user, or decryptions outside normal moderation patterns).
+
+**Comparison:** This is strictly less invasive than the status quo for centralized platforms, where the platform operator holds plaintext and can be compelled to produce everything. Here, the authority gets only escrowed keys for individually flagged messages, and the exercise is auditable.
+
+---
+
+### 11.5 Message ordering manipulation by rogue Jet 🟡
+
+**Goal:** A rogue Jet reorders, delays, or drops chat messages to disrupt a conversation or create a misleading message sequence.
+
+**Mechanism:** The Jet routes chat messages between participants. A malicious Jet can delay specific messages, deliver them out of order, or drop them entirely. Since the Jet sees only ciphertext, it cannot selectively target message content — but it can target messages from specific senders (identified by `senderPubKey`) or at specific times.
+
+**Outcome:** Partial. Message reordering is detectable because each message carries a `msgIndex` and `epochIndex`. Recipients can detect gaps (missing indices) and reordering (indices arriving out of sequence). Dropped messages create permanent gaps in the index sequence.
+
+**Defense:** Clients detect index gaps and request retransmission (from the Jet or from other participants via a different Jet). Clients can connect to multiple Jets for redundancy — if one Jet drops messages, the client receives them from another. SafecloudReceipts for the `send-message` handler record every message the Jet processed, so a Jet that accepts a message (producing a receipt) but does not deliver it is detectable by comparing the receipt chain with the messages received by participants.
+
+**Residual risk:** A Jet that refuses to accept a message (returns an error to the sender) leaves no receipt and no evidence. The sender's recourse is to use a different Jet. This is a liveness issue (temporary unavailability), not a safety issue (no message corruption or forgery).
+
+---
+
+### 11.6 Room metadata inference by Jet 🟢
+
+**Goal:** The Jet infers information about a conversation from metadata it can observe (message timing, frequency, participants, message sizes) without decrypting content.
+
+**Mechanism:** The Jet sees: who is in each room (public keys in the membership track), when messages are sent, how large each ciphertext is, which epoch is active, and when epoch transitions occur. It can infer communication patterns, active hours, group dynamics (who talks most, who was removed), and approximate message types (a 10KB ciphertext is likely an image; a 50-byte ciphertext is likely text).
+
+**Outcome:** The Jet can build a detailed metadata profile of each conversation. This is a privacy concern, not a security break — the Jet cannot read content, but metadata is itself informative.
+
+**Defense:** Metadata privacy is partially addressed by padding messages to fixed sizes (hides message type and length, at the cost of bandwidth), using multiple Jets (no single Jet sees the complete conversation metadata), and onion routing for message delivery (hides sender/recipient pairing from any single Jet). The v1 protocol does not implement these mitigations. They are noted as privacy enhancements for future versions.
+
+**Honest gap:** Metadata analysis is a well-known limitation of all E2E systems, including Signal. Complete metadata privacy requires onion routing or mixnets, which significantly increase latency and complexity. The v1 protocol accepts metadata visibility at the Jet level as a design trade-off.
+
+---
+
+### 11.7 Replay of old epoch keys after re-admission 🟢
+
+**Goal:** Bob is removed from a chat room (epoch transition excludes him). Later, Bob is re-admitted. Bob attempts to use his old epoch keys to decrypt messages sent during the epoch(s) he missed.
+
+**Mechanism:** Bob retained `F_k` and `B_k` from before his removal. He was excluded from epoch N+1. He is re-admitted in epoch N+3. He tries to use epoch N keys to read messages from epochs N+1 and N+2.
+
+**Outcome:** Fails. Epoch N+1 and N+2 used completely new seeds (`F'_0`, `B'_0`) that were never distributed to Bob. His epoch N keys cannot derive any values in later epochs — the seeds are independent random values, not derived from previous epochs. Bob can only access messages in his re-admission epoch (N+3) and forward.
+
+**Defense:** Independent random seeding per epoch. No cryptographic relationship between epochs. Re-admission is a fresh start.
+
+---
+
+### 11.8 Escrow key reuse across messages 🟢
+
+**Goal:** Mallory's modified client reuses the same escrow ciphertext for multiple media messages, escrowing one real `K_msg` and attaching the same escrow to subsequent messages with different keys.
+
+**Mechanism:** Mallory legitimately escrows `K_msg_1` for message 1. She then attaches the same escrow ciphertext to messages 2, 3, 4, etc. The `send-media` handler checks that the escrow is well-formed but (in a naive implementation) might not check that it is unique per message.
+
+**Outcome:** Depends on handler implementation. If the handler does not enforce escrow uniqueness, the attack succeeds: only message 1's key is escrowed, and messages 2–4 have dummy escrow. When the threshold group decrypts, they get `K_msg_1` for all four messages, which correctly decrypts message 1 but produces garbage for messages 2–4.
+
+**Defense:** The `send-media` handler MUST bind the escrow to the specific message. The escrow ciphertext should include the message index and epoch index in the ElGamal encryption (as associated data or in the HKDF info string). Two messages with the same escrow ciphertext are rejected. Alternatively, the handler can track escrow hashes per room and reject duplicates.
+
+**Implementation note:** The handler should store `SHA-256(escrow_ciphertext)` alongside each media message and reject any message whose escrow hash matches a previously seen one.
+
+---
+
+## 12. Cross-Cutting Observations
+
+---
+
+### 12.1 The protocol's fundamental security model
 
 The Safecloud security model rests on three independent assumptions:
 
@@ -1220,7 +1453,7 @@ The Safecloud security model rests on three independent assumptions:
 
 ---
 
-### 10.2 What the protocol handles well
+### 12.2 What the protocol handles well
 
 - **Identity theft is essentially impossible.** EIP-712 wallet signatures,
   non-extractable session keys, and Noise-encrypted peer connections combine
@@ -1246,7 +1479,7 @@ The Safecloud security model rests on three independent assumptions:
 
 ---
 
-### 10.3 What requires operational care
+### 12.3 What requires operational care
 
 | Risk | Required Action |
 |------|----------------|
@@ -1256,10 +1489,15 @@ The Safecloud security model rests on three independent assumptions:
 | LRU flood (2.1) | Rate-limit `put` per Drop; announce-before-evict |
 | BSC RPC manipulation (6.4) | Multi-provider quorum for balance checks |
 | Canonical JSON (8.5) | Single shared JCS implementation, tested edge cases |
+| Backward seed exposure (10.2) | Secure enclave storage for B_0; rotate creator role across epochs |
+| Keychain fork window (10.5) | Frequent gossip-based keychain comparison; fast recovery protocol |
+| Garbage escrow (11.2) | Bind escrow to message index; deduplicate escrow ciphertexts |
+| Threshold group governance (11.3) | Rate-limit decryptions; immutable audit trail; community oversight |
+| Escrow reuse (11.8) | Handler enforces unique escrow per media message |
 
 ---
 
-### 10.4 Attacks that are not attacks (intentional design)
+### 12.4 Attacks that are not attacks (intentional design)
 
 - **Drop strategic partial storage (storing only popular chunks):** This is
   rational market behavior. The protocol does not require Drops to store all

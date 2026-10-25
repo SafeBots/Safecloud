@@ -1,18 +1,5 @@
 /**
- * Q.Safecloud.Client.streamMSE — MSE-based streaming.
- *
- * Uses plain MediaSource where available (desktop/Android — anywhere
- * Client.stream()'s 'sw' path isn't chosen or isn't available), and
- * WebKit's restricted ManagedMediaSource on iOS/iPadOS Safari, which never
- * exposes plain MediaSource at all. Both share the same addSourceBuffer/
- * appendBuffer API; ManagedMediaSource additionally requires
- * video.disableRemotePlayback = true before sourceopen will even fire
- * (confirmed against MDN's own ManagedMediaSource example), and drives
- * buffering itself via startstreaming/endstreaming events instead of
- * leaving it entirely to this file's own prefetch window — the OS wants
- * tighter control over how much is buffered on a memory-constrained
- * device. Wired straight into _prefetchLoop's existing pause()/resume(),
- * not a separate mechanism.
+ * Q.Safecloud.Client.streamMSE — MSE-based streaming for iOS Safari 16.4+.
  *
  * Fetches the index track first to obtain video metadata, then streams
  * the data track into a MediaSource SourceBuffer.
@@ -89,41 +76,21 @@ Q.exports(function (Q, _) {
             + (audioCodec ? ',' + audioCodec : '')
             + '"';
 
-        // Plain MediaSource is preferred when it exists (unmanaged — no
-        // backpressure events, this file's own prefetch window drives
-        // buffering). iOS/iPadOS Safari never exposes window.MediaSource at
-        // all — only the restricted ManagedMediaSource — so this is the
-        // only way this path works there.
-        var MSClass   = window.MediaSource || window.ManagedMediaSource;
-        var isManaged = !window.MediaSource && !!window.ManagedMediaSource;
-
-        if (!MSClass) {
-            return Promise.reject(new Error(
-                'Q.Safecloud.Client.streamMSE: neither MediaSource nor ManagedMediaSource is available'
-            ));
-        }
-        if (!MSClass.isTypeSupported(mimeType)) {
+        if (!MediaSource.isTypeSupported(mimeType)) {
             return Promise.reject(new Error(
                 'Q.Safecloud.Client.streamMSE: codec not supported: ' + mimeType
             ));
         }
 
-        console.info('Q.Safecloud.Client.streamMSE: streaming via "mse" using '
-            + (isManaged ? 'ManagedMediaSource' : 'MediaSource'));
-
         // ── State ─────────────────────────────────────────────────────────────
 
-        var ms           = new MSClass();
+        var ms           = new MediaSource();
         var sb           = null;        // SourceBuffer, set in sourceopen
         var queue        = [];          // { index, buffer } waiting to append
         var appending    = false;
         var initDone     = false;
         var endOfStream  = false;
         var _loop        = null;
-        // Required before the blob URL is even assigned below — without it,
-        // ManagedMediaSource never fires 'sourceopen' at all on Safari (see
-        // this file's own top comment).
-        if (videoEl && isManaged) { videoEl.disableRemotePlayback = true; }
         var _blobUrl     = URL.createObjectURL(ms);
         var _seeking     = false;
         var _receivedSet = {};         // segIndex → true, tracks received chunks
@@ -146,23 +113,6 @@ Q.exports(function (Q, _) {
                     new Error('SourceBuffer error: ' + (e.message || 'unknown'))
                 );
             });
-
-            // ManagedMediaSource's own backpressure — the OS, not this
-            // file's prefetch window, decides when there's enough buffered
-            // (endstreaming) or when it's time to fetch more (startstreaming).
-            // _loop may still be null this early (it resolves async, below);
-            // harmless to miss the very first startstreaming, since
-            // _prefetchLoop already starts itself unpaused — only a missed
-            // endstreaming (pause) would matter, and by the time enough data
-            // has buffered to trigger that, _loop has long since resolved.
-            if (isManaged) {
-                ms.addEventListener('startstreaming', function () {
-                    if (_loop) { _loop.resume(); }
-                });
-                ms.addEventListener('endstreaming', function () {
-                    if (_loop) { _loop.pause(); }
-                });
-            }
 
             // Set total duration
             if (_manifest.duration) {

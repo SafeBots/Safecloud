@@ -50,7 +50,7 @@ Safecloud is several things at once. It is an encrypted storage network (Drops h
 
 This document ties those layers together. The individual pieces are documented elsewhere — Apps.md covers the WASM execution model, Protocol.md covers inter-node communication, Flagging.md covers content moderation for distributed storage, and README.md covers the storage primitives. This document is about the connections between them, and about the capabilities that emerge when those connections are drawn.
 
-The central claim is that a single cryptographic primitive — a bidirectional hash chain with epoch-based membership transitions — unifies what would otherwise be separate systems for chat encryption, key management, identity delegation, organizational access control, and privacy-preserving surveillance. This is not a coincidence of API shape. The math is the same. The protocol is the same. The code paths share `Q.Crypto.delegate`, HKDF derivation via `Q.Data.derive`, and OCP grants verified by `Client.js verifyGrant`. What differs is the scope and the parameters.
+The central claim is that a single cryptographic primitive — a bidirectional hash chain with epoch-based membership transitions — unifies what would otherwise be separate systems for chat encryption, key management, identity delegation, organizational access control, and privacy-preserving surveillance. This is not a coincidence of API shape. The math is the same. The protocol is the same. The code paths share `Q.Crypto.delegate`, HKDF derivation via `Q.Data.derive`, and OCP grants verified by `Client.js verifyGrant`. What differs is the scope and the parameters. EpochProtocol.md provides the full implementation reference — data structures, algorithms, invariants, and failure modes — for anyone implementing, auditing, or extending the epoch protocol.
 
 ---
 
@@ -389,7 +389,7 @@ A developer building on Safecloud gets:
 
 ## Attack surface summary
 
-Every system described here has known attack surfaces. They are documented in detail in Attacks.md and Flagging.md. This is a summary of the honest gaps and mitigations for the ecosystem as a whole.
+Every system described here has known attack surfaces. They are documented in detail in Attacks.md (sections 10–11 cover the epoch protocol and E2E chat specifically), EpochProtocol.md (implementation reference for the bidirectional hash-chain protocol), and Flagging.md. This is a summary of the honest gaps and mitigations for the ecosystem as a whole.
 
 | Attack | Mitigation | Honest gap |
 |---|---|---|

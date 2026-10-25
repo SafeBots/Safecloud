@@ -271,21 +271,7 @@ Q.exports(function (Q, _) {
     return function Q_Safecloud_Client_stream(videoManifest, capability, options) {
         options = options || {};
 
-        var requested = options.path || Q.Safecloud.Client.streamPath;
-        var path;
-        if (!requested || requested === 'auto') {
-            path = _choosePath(videoManifest);
-        } else if (requested === 'sw' || requested === 'mse' || requested === 'blob') {
-            path = requested;
-        } else {
-            console.warn('Q.Safecloud.Client.stream: unknown path "' + requested
-                + '" — expected sw|mse|blob|auto, falling back to auto');
-            path = _choosePath(videoManifest);
-        }
-
-        console.info('Q.Safecloud.Client.stream: attempting path "' + path + '"'
-            + (requested && requested !== path ? ' (requested "' + requested + '")' : '')
-            + (requested === 'auto' || !requested ? ' (auto-detected)' : ''));
+        var path = options.path || _choosePath(videoManifest);
 
         if (path === 'mse') {
             return Q.Safecloud.Client.streamMSE(videoManifest, capability, options);
@@ -322,11 +308,7 @@ Q.exports(function (Q, _) {
         // If no index track, fall back to blob (can't stream without initSegment).
         var hasIdx = activeManifest.tracks && activeManifest.tracks.indexOf('index') >= 0;
         var probeMime = 'video/mp4; codecs="avc1.42e01e,mp4a.40.2"';
-        // Also accept ManagedMediaSource (iOS/iPadOS Safari — plain MediaSource
-        // is never exposed there). streamMSE.js picks whichever of the two
-        // actually exists; _choosePath just needs to know MSE is viable.
-        var MSClass = window.MediaSource || window.ManagedMediaSource;
-        if (MSClass && hasIdx && MSClass.isTypeSupported(probeMime)) {
+        if ('MediaSource' in window && hasIdx && MediaSource.isTypeSupported(probeMime)) {
             return 'mse';
         }
         return 'blob';
@@ -395,27 +377,10 @@ Q.exports(function (Q, _) {
             // to the real network (confirmed live: net::ERR_NAME_NOT_RESOLVED).
             var sw = ready && navigator.serviceWorker.controller;
             if (!sw) {
-                // SW didn't take control — a hard reload deterministically
-                // never lets a service worker control the page for that
-                // load (documented browser behavior, not a flaky race), so
-                // this path is hit on EVERY hard reload, not just rare ones.
-                // Prefer MSE (still real, progressive streaming) whenever it's
-                // usable; blob is only reached when MSE genuinely isn't.
-                var MSClass = window.MediaSource || window.ManagedMediaSource;
-                var activeMs = (videoManifest.versions && videoManifest.versions[0])
-                    ? videoManifest.versions[0].manifest : videoManifest;
-                var hasIdxMs = activeMs.tracks && activeMs.tracks.indexOf('index') >= 0;
-                var probeMimeMs = 'video/mp4; codecs="avc1.42e01e,mp4a.40.2"';
-                var fallbackPath = (MSClass && hasIdxMs && MSClass.isTypeSupported(probeMimeMs))
-                    ? 'mse' : 'blob';
-                Q.log('Q.Safecloud.Client.stream: SW not controlling page, falling back to '
-                    + fallbackPath, 'Safecloud');
-                if (fallbackPath === 'mse') {
-                    return Q.Safecloud.Client.streamMSE(videoManifest, capability, options);
-                }
+                // SW didn't take control — fall back to blob path
+                Q.log('Q.Safecloud.Client.stream: SW not controlling page, falling back', 'Safecloud');
                 return _streamBlob(videoManifest, capability, options);
             }
-            console.info('Q.Safecloud.Client.stream: service worker is controlling the page — streaming via "sw"');
             // Without "version" set explicitly here, sw.js's register handler
             // defaults session.activeVersion to '' (msg.version || ''), while
             // _prefetchLoop (below) independently derives this exact same

@@ -109,25 +109,7 @@ Q.exports(function (Q, _) {
                     // covers realistic activation latency with margin, at
                     // the cost of a longer wait only in the rare case the SW
                     // truly never takes control.
-                    //
-                    // That 8000ms budget is wasted, though, whenever OUR own
-                    // sw.js has already fully installed+activated (its own
-                    // registration.active is set) and we STILL aren't its
-                    // controller — at that point there's no more install/
-                    // activate latency left to wait out, only a control-
-                    // transfer (clients.claim()) that either lands within a
-                    // moment or never lands at all for this page load (a hard
-                    // reload bypasses SW control for its entire lifetime,
-                    // not just briefly — confirmed via web.dev's service
-                    // worker lifecycle docs). Waiting the full 8s there only
-                    // delays the already-inevitable MSE/blob fallback.
-                    // Give that case a short grace period instead, and
-                    // reserve the full budget for when install/activate
-                    // (registration.installing/.waiting) is still genuinely
-                    // in flight — exactly the fast-upload scenario above.
-                    var stillInstalling = !!(registration.installing || registration.waiting);
-                    var timeoutMs = (registration.active && !stillInstalling) ? 500 : 8000;
-                    var timer = setTimeout(function () { resolve(_isOurs()); }, timeoutMs);
+                    var timer = setTimeout(function () { resolve(_isOurs()); }, 8000);
 
                     navigator.serviceWorker.addEventListener('controllerchange', function onCC() {
                         if (!_isOurs()) { return; }
