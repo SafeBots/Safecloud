@@ -82,7 +82,7 @@
 
 ## Overview
 
-Safecloud's storage layer (Drops) and coordination layer (Jets) already provide encrypted, content-addressed storage with micropayment-driven availability. This document describes how Jets become a general-purpose application platform by executing SafecloudApps — turning Safecloud from a storage network into a full compute + storage + auth stack with no traditional servers.
+Safecloud's storage layer (Drops) and coordination layer (Jets) already provide encrypted, content-addressed storage with micropayment-driven availability. This document describes how Jets become a general-purpose application platform by executing SafecloudApps — turning Safecloud from a storage network into a full compute + storage + auth stack with no traditional servers. See also [AdaptiveStreamer.md](AdaptiveStreamer.md) (adaptive drop selection, serving policy, micropayment ramping).
 
 The core insight: Jets already manage key release. A SafecloudApp generalizes "who gets keys" into "who gets what, under what rules." Key release becomes one type of response among many. The Jet becomes a programmable server. The WASM defines the rules. The rules are content-addressed, auditable, and deterministic.
 

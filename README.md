@@ -20,6 +20,7 @@ This document is an overview of the internals of the Safecloud ecosystem. It can
 - **[Apps.md](Apps.md)** — SafecloudApps: WASM execution model on Jets, triggers, outbound endpoints, rooms and E2E encrypted chat handlers.
 - **[Flagging.md](Flagging.md)** — content moderation: storage/distribution layer (reputation, corroboration, jury) and E2E chat layer (client scanning, per-message key escrow, threshold ElGamal).
 - **[Attacks.md](Attacks.md)** — threat model: 150+ attack entries across storage, compute, payments, epoch protocol, and chat. Sections 10–11 cover epoch protocol and E2E chat specifically.
+- **[AdaptiveStreamer.md](AdaptiveStreamer.md)** — adaptive drop selection for striped downloads: probe algorithm, EMA ranking, drop-side serving policy, micropayment ramping.
 - **[LLM.md](LLM.md)** — compact LLM-context primer: all APIs, architecture layers, epoch protocol, keychains, chat, content safety, organizations.
 
 ---
@@ -2142,6 +2143,40 @@ Keychains unify several things that would otherwise be separate systems:
 | Content moderation | Reputation tied to keychain identity | [Flagging.md](Flagging.md), [Attacks.md](Attacks.md) §11 |
 
 The `Q.Crypto.delegate` primitive (§5.4) is the implementation: it derives a child secret via HKDF and creates a signed OCP grant proving the parent authorized the child. Every delegation chain is verifiable by walking the keychain hash chain back to genesis. See [Ecosystem.md §How the pieces connect](Ecosystem.md#how-the-pieces-connect) for the full picture of how keychains, epochs, delegation, chat, and organizations share code paths through `Q.Crypto.delegate`, HKDF derivation, and OCP grants.
+
+---
+
+## 23. Adaptive Drop Selection for Striped Downloads
+
+When a client fetches a large file, the chunks are spread across multiple Drops. The adaptive selection algorithm picks which Drops to download from, measures their actual throughput, and culls the slow ones — producing a striped download that converges on the fastest available subset without relying on BGP, traceroute, or any network-level inspection (since Drops are browser tabs).
+
+**Full companion document:** [AdaptiveStreamer.md](AdaptiveStreamer.md) covers the algorithm in detail. The summary below captures the essentials.
+
+### 23.1 Probe and rank
+
+The download starts by requesting the first chunk from every candidate Drop simultaneously. Each response is timed; throughput = bytes / elapsed. The fastest responder's chunk enters the download pipeline immediately (no wasted work). Drops are sorted into three tiers relative to the best throughput: **Fast** (≥ 50%), **Marginal** (≥ 10%), **Slow** (< 10% or timed out). Chunks are assigned to Fast-tier Drops in proportion to their throughput. Marginal Drops are on standby for promotion; Slow Drops are removed from the candidate set.
+
+### 23.2 Continuous re-ranking
+
+Every completed chunk fetch updates the Drop's EMA throughput (`alpha = 0.3`, asymmetric — failures decay faster at `0.5×`). A Fast drop whose EMA falls below the marginal threshold is demoted; a Marginal drop that recovers is promoted. This catches a Drop whose wifi silently switches to cellular mid-download.
+
+### 23.3 Drop-side serving policy
+
+Each Drop advertises a `servingPolicy` at registration time (see `Drops/init.js`): `serveWhen` (`'wifi-only'` | `'always'` | `'plugged-only'`), `maxConcurrent`, `minBatteryPct`. The Drop monitors its own connection via the Network Information API (`navigator.connection`) and Battery API. When the connection violates the policy (e.g. wifi → cellular on a `wifi-only` Drop), the Drop sends `Safecloud/drop/pause` to its Jet; Router.js removes it from routing candidates. On recovery, `Safecloud/drop/resume` re-adds it with a reliability penalty (`RELIABILITY_RECONNECT = 0.25`).
+
+### 23.4 Micropayment ramping
+
+Payment for adaptive downloads follows a pay-after-receipt model: an unsigned intent accompanies the request; a signed watermark advance follows only after the chunk is received and Merkle-verified. Each Drop gets its own watermark channel (line 0 for Jet infrastructure, line 1+ per Drop), so a slow Drop is not subsidized by a fast one. The maximum unpaid window ramps as trust builds: 1 chunk (probe) → 3 (ramp-up) → 8 (steady) → 16 (trusted, after 100 zero-failure chunks). See [AdaptiveStreamer.md §6](AdaptiveStreamer.md#6-micropayment-ramping) for the full schedule.
+
+### 23.5 Implementation files
+
+| File | Role |
+|------|------|
+| `web/js/methods/Safecloud/Client/AdaptiveStreamer.js` | Client-side adaptive drop selector — probing, EMA ranking, tier classification, payment ramping |
+| `classes/Safecloud/Router.js` | Jet-side routing — `selectForGet` now accepts `preferDrops`; filters paused Drops; `onDropPause`/`onDropResume` lifecycle hooks |
+| `web/js/methods/Safecloud/Drops/init.js` | Drop-side — `servingPolicy` in `dropRegister`; connection/battery monitoring; pause/resume emission |
+| `web/js/methods/Safecloud/Client/fetch.js` | `adaptive: true` option delegates to AdaptiveStreamer instead of `Promise.all` |
+| `web/js/methods/Safecloud/Client/_prefetchLoop.js` | Video prefetch routes through `AdaptiveStreamer.assignDrop()` |
 
 ---
 

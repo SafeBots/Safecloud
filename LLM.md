@@ -2,7 +2,7 @@
 
 Decentralized encrypted storage, compute, and communication network. Browser clients encrypt locally, Jet servers route ciphertext and execute WASM handlers, Drop nodes (browser tabs) store chunks in IndexedDB. Plaintext never leaves the client. HLS video streaming via service worker. Micropayments via ERC-20 tokens with EIP-712 signatures. E2E encrypted chat with per-message key escrow under threshold ElGamal. Identity managed via hash-chained keychains with dual-threshold recovery.
 
-**Companion docs** — this primer covers the API surface for code generation. For deeper treatment: [README.md](README.md) (storage primitives, key hierarchy, OCP, micropayments), [Ecosystem.md](Ecosystem.md) (how all layers unify), [EpochProtocol.md](EpochProtocol.md) (bidirectional hash-chain implementation reference), [Apps.md](Apps.md) (WASM execution model, triggers, rooms), [Flagging.md](Flagging.md) (content moderation, reputation, threshold escrow), [Attacks.md](Attacks.md) (threat model, 150+ attack entries).
+**Companion docs** — this primer covers the API surface for code generation. For deeper treatment: [README.md](README.md) (storage primitives, key hierarchy, OCP, micropayments), [Ecosystem.md](Ecosystem.md) (how all layers unify), [EpochProtocol.md](EpochProtocol.md) (bidirectional hash-chain implementation reference), [Apps.md](Apps.md) (WASM execution model, triggers, rooms), [Flagging.md](Flagging.md) (content moderation, reputation, threshold escrow), [Attacks.md](Attacks.md) (threat model, 150+ attack entries), [AdaptiveStreamer.md](AdaptiveStreamer.md) (adaptive drop selection, serving policy, micropayment ramping).
 
 ## 1. Node Types
 ```
@@ -387,3 +387,26 @@ Q.Safecloud.Drops.shouldSlash(drop, failureLog);                    // → Boole
 | Skipping proof-of-escrow for media | `send-media` handler requires valid escrow ciphertext; text messages pass without |
 | Ignoring keychain fork signals | A fork means key theft or equivocation; invalidate from fork point forward |
 | Assuming single-threshold recovery | Recovery requires BOTH friend attestations AND cold keys simultaneously |
+| Paying Drops before verifying chunks | Always Merkle-verify, then sign settlement; intent token is unsigned |
+| Sharing one watermark across all Drops | Each Drop gets its own watermark channel (line 1+) so slow Drops are not subsidized |
+| Requesting chunks from a paused Drop | Check `_paused[dropId]` — a Drop that sent `Safecloud/drop/pause` must not receive requests |
+
+## 18. Adaptive Drop Selection (Striped Downloads)
+
+Large files are downloaded from multiple Drops in parallel. The client probes candidates by requesting the first chunk from all of them simultaneously, times each response, and classifies them into tiers: **Fast** (≥ 50% of best throughput), **Marginal** (≥ 10%), **Slow** (removed). Subsequent chunks go to Fast-tier Drops weighted by throughput. EMA tracking (`alpha = 0.3`, asymmetric failure decay) continuously re-ranks, catching mid-download degradation.
+
+```javascript
+// Enable adaptive selection
+var blob = await Q.Safecloud.Client.fetch(manifest, cap, { adaptive: true });
+
+// AdaptiveStreamer API (internal — used by fetch and _prefetchLoop)
+var streamer = new Q.Safecloud.Client.AdaptiveStreamer(manifest, cap, opts);
+await streamer.probe();                    // parallel first-chunk fetch
+var drop = streamer.assignDrop();          // best available Drop
+streamer.recordResult(dropId, true, bytes, elapsedMs);  // update EMA
+streamer.shouldThrottle(dropId);           // true if unpaid > maxUnpaid
+```
+
+**Drop-side serving policy** — set at `Drops.init({ servingPolicy: { serveWhen: 'wifi-only' } })`. The Drop monitors `navigator.connection` and Battery API; sends `Safecloud/drop/pause` / `resume` to the Jet when its connection state violates or re-satisfies the policy. Router.js filters paused Drops from `selectForGet`/`selectForPut`.
+
+**Micropayment ramping** — payment is split: unsigned intent on request, signed settlement after Merkle-verified receipt. Per-drop watermark channels (line 0 = Jet infra, line 1+ = per Drop). Max unpaid window: 1 (probe) → 3 (ramp-up) → 8 (steady) → 16 (trusted). See [AdaptiveStreamer.md](AdaptiveStreamer.md) for full algorithm.

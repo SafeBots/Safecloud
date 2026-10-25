@@ -2,7 +2,7 @@
 
 This document catalogs every attack class identified against the Safecloud protocol: identity attacks, storage accountability attacks, payment exploits, routing manipulation, CoC abuse, network-level attacks, economic game-theory attacks, cryptographic edge cases, epoch protocol attacks, and E2E chat attacks. Each entry states the attacker's goal, the mechanism, the outcome, and the protocol's defense. Where a defense is incomplete or depends on an off-chain assumption, that is noted explicitly.
 
-Read `Protocol.md`, `Cloud.md`, `Jets.md`, `Drops.md`, `Routing.md`, `EpochProtocol.md`, and `Ecosystem.md` before this document. This document does not restate architecture — it assumes familiarity and focuses on adversarial analysis.
+Read `Protocol.md`, `Cloud.md`, `Jets.md`, `Drops.md`, `Routing.md`, `EpochProtocol.md`, and `Ecosystem.md` before this document. This document does not restate architecture — it assumes familiarity and focuses on adversarial analysis. See also [AdaptiveStreamer.md](AdaptiveStreamer.md) (adaptive drop selection, serving policy, micropayment ramping).
 
 **Notation:** Mallory = attacker. Alice, Bob = honest participants.
 "Succeeds" means the attacker achieves their goal. "Fails" means the

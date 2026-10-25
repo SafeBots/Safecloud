@@ -28,6 +28,8 @@
  *   Router.onDropRegistered(drop, root)     → void   [lifecycle hook]
  *   Router.onDropAnnounce(drop, diff)       → void   [lifecycle hook]
  *   Router.onDropDisconnected(drop)         → void   [lifecycle hook]
+ *   Router.onDropPause(drop, reason)        → void   [lifecycle hook]
+ *   Router.onDropResume(drop, connectionInfo) → void [lifecycle hook]
  *
  * @class Q.Safecloud.Router
  * @static
@@ -116,6 +118,15 @@ var _jetProllyStore = null;
 
 /** @private String|null — second-level Prolly root */
 var _jetProllyRoot = null;
+
+/** @private dropId → { serveWhen, maxConcurrent, minBatteryPct } */
+var _servingPolicy = {};
+
+/** @private dropId → { type, effectiveType, downlink, saveData } */
+var _connectionInfo = {};
+
+/** @private dropId → Boolean — true while a Drop has sent pause and not yet resume */
+var _paused = {};
 
 /** @private peerEVM → Set<rootCid>  — topics we have subscribed to them for */
 var _subscriptions = {};
@@ -505,6 +516,52 @@ Safecloud_Router.onDropRegistered = function (drop, prollyRoot) {
     _reliabilityScore[drop.dropId] = _reliabilityScore[drop.dropId] !== undefined
         ? Math.max(0, _reliabilityScore[drop.dropId] - RELIABILITY_RECONNECT)
         : RELIABILITY_INITIAL;
+
+    // Store serving policy and connection info advertised at registration
+    if (drop.servingPolicy) {
+        _servingPolicy[drop.dropId] = drop.servingPolicy;
+    }
+    if (drop.connectionInfo) {
+        _connectionInfo[drop.dropId] = drop.connectionInfo;
+    }
+    _paused[drop.dropId] = false;
+};
+
+/**
+ * Called when a Drop sends Safecloud/drop/pause — it has decided it
+ * should stop serving (connection switched to cellular, battery low, etc.).
+ * The Drop is removed from routing candidates until it resumes.
+ *
+ * @method onDropPause
+ * @param {Object} drop
+ * @param {String} [reason]  Human-readable pause reason
+ */
+Safecloud_Router.onDropPause = function (drop, reason) {
+    _paused[drop.dropId] = true;
+    Q.log('Q.Safecloud.Router.onDropPause: ' + drop.dropId
+        + (reason ? ' — ' + reason : ''), 'Safecloud');
+};
+
+/**
+ * Called when a Drop sends Safecloud/drop/resume — it is ready to
+ * serve again. Reliability is penalised by RELIABILITY_RECONNECT
+ * so the Drop must earn its way back to the Fast tier.
+ *
+ * @method onDropResume
+ * @param {Object} drop
+ * @param {Object} [connectionInfo]  Updated connection snapshot
+ */
+Safecloud_Router.onDropResume = function (drop, connectionInfo) {
+    _paused[drop.dropId] = false;
+    // Penalise reliability so the Drop re-earns its tier
+    if (_reliabilityScore[drop.dropId] !== undefined) {
+        _reliabilityScore[drop.dropId] = Math.max(0,
+            _reliabilityScore[drop.dropId] - RELIABILITY_RECONNECT);
+    }
+    if (connectionInfo) {
+        _connectionInfo[drop.dropId] = connectionInfo;
+    }
+    Q.log('Q.Safecloud.Router.onDropResume: ' + drop.dropId, 'Safecloud');
 };
 
 /**
@@ -561,6 +618,10 @@ Safecloud_Router.onDropDisconnected = function (drop) {
             }
         }
     });
+    // Clean up per-drop state
+    delete _servingPolicy[dropId];
+    delete _connectionInfo[dropId];
+    delete _paused[dropId];
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -579,7 +640,8 @@ Safecloud_Router.onDropDisconnected = function (drop) {
  */
 Safecloud_Router.selectForGet = function (cid, options) {
     options = options || {};
-    var exclude = options.exclude || [];
+    var exclude     = options.exclude     || [];
+    var preferDrops = options.preferDrops || null;
 
     var coverage = _cidCoverage[cid];
     if (!coverage || !Object.keys(coverage).length) {
@@ -590,13 +652,29 @@ Safecloud_Router.selectForGet = function (cid, options) {
 
     var candidates = Object.keys(coverage)
         .filter(function (dropId) {
-            return exclude.indexOf(dropId) < 0 &&
-                   !_corruptActors[Q.Safecloud.Jets.drops[dropId] && Q.Safecloud.Jets.drops[dropId].evmAddress] &&
-                   Q.Safecloud.Jets.drops[dropId] &&
-                   !Q.Safecloud.Jets.drops[dropId].offlineSince;
+            if (exclude.indexOf(dropId) >= 0) { return false; }
+            if (_paused[dropId]) { return false; }
+            var drop = Q.Safecloud.Jets.drops[dropId];
+            if (!drop || drop.offlineSince) { return false; }
+            if (_corruptActors[drop.evmAddress]) { return false; }
+            return true;
         })
         .map(function (dropId) { return Q.Safecloud.Jets.drops[dropId]; })
         .filter(Boolean);
+
+    // If the client sent a preferDrops list (from AdaptiveStreamer rankings),
+    // return the first preferred Drop that is still a valid candidate.
+    // Safety filters (corrupt, offline, paused) have already been applied above.
+    if (preferDrops && preferDrops.length) {
+        for (var i = 0; i < preferDrops.length; i++) {
+            var pref = candidates.filter(function (d) {
+                return d.dropId === preferDrops[i];
+            })[0];
+            if (pref) { return Promise.resolve(pref); }
+        }
+        // None of the preferred Drops are available — fall through to
+        // weighted-random so the request is not dropped entirely.
+    }
 
     var selected = Safecloud_Router._weightedRandomSelect(candidates, 1);
     return Promise.resolve(selected[0] || null);
@@ -616,7 +694,11 @@ Safecloud_Router.selectForPut = function (cids, options) {
     var rf   = options.replicationFactor || REPLICATION_DEFAULT;
     var online = Object.keys(Q.Safecloud.Jets.drops)
         .map(function (id) { return Q.Safecloud.Jets.drops[id]; })
-        .filter(function (d) { return d && !d.offlineSince && !_corruptActors[d.evmAddress]; });
+        .filter(function (d) {
+            return d && !d.offlineSince
+                && !_corruptActors[d.evmAddress]
+                && !_paused[d.dropId];
+        });
 
     // Bloom filter pre-filter: skip Drops that already have the CID
     // PLATFORM: Q.Data.Bloom.test(filter, cid)

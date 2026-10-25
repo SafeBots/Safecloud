@@ -2,7 +2,7 @@
 
 This document specifies the bidirectional hash-chain epoch protocol that underlies chat encryption, keychains, organizational role management, delegated identity, and threshold-gated camera footage in Safecloud. Ecosystem.md describes what the epoch protocol does and why one protocol suffices for all these applications. This document describes how it works at the implementation level — the data structures, the algorithms, the invariants, and the failure modes.
 
-Read Ecosystem.md first for motivation and architecture. Read this document when you need to implement, audit, or extend the epoch protocol.
+Read Ecosystem.md first for motivation and architecture. Read this document when you need to implement, audit, or extend the epoch protocol. See also [AdaptiveStreamer.md](AdaptiveStreamer.md) (adaptive drop selection, serving policy, micropayment ramping).
 
 ---
 
