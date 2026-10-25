@@ -2,7 +2,9 @@
 
 Decentralized encrypted storage, compute, and communication network. Browser clients encrypt locally, Jet servers route ciphertext and execute WASM handlers, Drop nodes (browser tabs) store chunks in IndexedDB. Plaintext never leaves the client. HLS video streaming via service worker. Micropayments via ERC-20 tokens with EIP-712 signatures. E2E encrypted chat with per-message key escrow under threshold ElGamal. Identity managed via hash-chained keychains with dual-threshold recovery.
 
-**Companion docs** — this primer covers the API surface for code generation. For deeper treatment: [README.md](README.md) (storage primitives, key hierarchy, OCP, micropayments), [Ecosystem.md](Ecosystem.md) (how all layers unify), [EpochProtocol.md](EpochProtocol.md) (bidirectional hash-chain implementation reference), [Apps.md](Apps.md) (WASM execution model, triggers, rooms), [Flagging.md](Flagging.md) (content moderation, reputation, threshold escrow), [Attacks.md](Attacks.md) (threat model, 150+ attack entries), [AdaptiveStreamer.md](AdaptiveStreamer.md) (adaptive drop selection, serving policy, micropayment ramping).
+**Unified architecture:** Safecloud is one layer in a three-layer stack. **Safecloud = pull** (content-addressed encrypted storage, retrieval by CID). **Intercloud = push** (event propagation along rails, watchers, epoch shuffling, fork detection). **Safebox = trust** (attested TEE compute, push notification gateway, confidential workloads). Content enters Safecloud (encrypted chunks) → events propagate through Intercloud (rails) → safebots in Safeboxes process events (curation, testing, moderation) → results push to users via Safebox gateway → users pull content from Safecloud by CID, decrypt in player. See [Architecture.md](Architecture.md) for the full treatment.
+
+**Companion docs** — this primer covers the API surface for code generation. For deeper treatment: [Architecture.md](Architecture.md) (unified triangle, three-tier WASM, tree API, chat model, deployment, comparisons), [README.md](README.md) (storage primitives, key hierarchy, OCP, micropayments), [Ecosystem.md](Ecosystem.md) (how all layers unify), [EpochProtocol.md](EpochProtocol.md) (bidirectional hash-chain implementation reference), [Apps.md](Apps.md) (WASM execution model, tree API, triggers, rooms with WebRTC+onion routing, deployment), [Flagging.md](Flagging.md) (content moderation, reputation, threshold escrow), [Attacks.md](Attacks.md) (threat model, 150+ attack entries), [AdaptiveStreamer.md](AdaptiveStreamer.md) (adaptive drop selection, serving policy, micropayment ramping).
 
 ## 1. Node Types
 ```
@@ -164,13 +166,21 @@ This covers per-file storage keys. Identity keys live in keychains (§12). Chat 
 }
 
 // Host API available inside WASM handlers:
-host.db.get(track, key)          // read SafecloudDB track
-host.db.put(track, key, value)   // write SafecloudDB track
-host.db.list(track, prefix)      // scan SafecloudDB
-host.crypto.verify(sig, msg, pk) // signature verification
+host.tree.create(name)               // create a named Merkle tree
+host.tree.append(treeId, value)      // append to log; returns index + proof
+host.tree.get(treeId, index)         // read by index with proof
+host.tree.put(treeId, key, value)    // KV write with proof
+host.tree.range(treeId, opts)        // range query over keys
+host.tree.root(treeId)               // current root CID
+host.tree.checkpoint(treeId)         // flush to Drops
+host.tree.hydrate(rootCid)           // load tree from Drops
+host.db.get(track, key)              // legacy KV alias (default tree)
+host.db.put(track, key, value)       // legacy KV alias
+host.db.list(track, prefix)          // legacy KV alias
+host.crypto.verify(sig, msg, pk)     // signature verification
 host.crypto.hkdf(ikm, salt, info, len)
-host.envelope.emit(type, payload) // produce a SafecloudEnvelope
-host.net.fetch(url, options)     // outbound HTTP (registered endpoints only)
+host.envelope.emit(type, payload)    // produce a SafecloudEnvelope
+host.net.fetch(url, options)         // outbound HTTP (registered endpoints only)
 
 // SafecloudReceipt — tamper-evident execution record
 {
@@ -187,36 +197,39 @@ See [Apps.md](Apps.md) for triggers, outbound endpoints, and room handlers.
 
 ## 9. Rooms and E2E Encrypted Chat
 ```javascript
-// Room structure (SafecloudDB track)
-{
-  "roomId": "bafybeig...",
-  "appCid": "bafybeig...",       // SafecloudApp managing this room
-  "members": ["alice-fp", "bob-fp"],
-  "epoch": 7,
-  "epochChain": {
-    "forward": "sha256:...",     // F_k = H(F_{k-1})
-    "backward": "sha256:..."     // B_k = H^{n-k}(B_0)
-  }
-}
+// Room = two Merkle trees on a Jet
+// rooms/{roomId}/messages  — append-only log of encrypted blobs
+// rooms/{roomId}/state     — KV: encrypted epoch records, encrypted member list
 
-// Per-message encryption
-// K_msg = HKDF(F_k || B_k)
-// Sender encrypts locally, sends ciphertext to Jet, Jet routes to recipients
+// What the Jet sees: tree ID, blob arrival time, blob size (padded)
+// What it does NOT see: sender (onion routed), content (encrypted),
+//   membership (encrypted state), or that this is a "chat room" (all trees identical)
 
-// Room handlers in SafecloudApp:
-// "send-text"   — accepts ciphertext, routes to members
-// "send-media"  — requires valid escrow ciphertext: Enc(PK_threshold, K_msg)
-// "add-member"  — epoch transition: new forward seed, extend backward chain
-// "remove-member" — epoch transition: new epoch, old member excluded
+// Real-time: WebRTC mesh between online members
+// Persistence: 2-hop onion routing → destination Jet appends opaque blob
+//   Alice → Jet A (peels layer) → Jet B (peels layer) → Jet C (appends to tree)
+//   Indistinguishable from inter-Jet chunk replication
 
-// Epoch transition on membership change:
-// 1. New F_0' = random, new B_0' computed for remaining members
-// 2. New keys distributed to remaining members via their public keys
-// 3. Transition record appended to room's SafecloudDB track
-// 4. Old member cannot derive keys for new epoch (forward secrecy)
-// 5. New member cannot derive keys for old epochs (backward secrecy)
+// Ordering: monotonic tree position index assigned by Jet on append
+// No wall-clock timestamp in envelope — display timestamps inside encrypted payload
+
+// Jet-side handler is minimal:
+// "submit-blob" — validate Safebux, tree_append(messagesTree, blob), return proof
+// "get-range"   — return blobs by position range
+// "submit-state" — update encrypted state tree (epoch transitions, membership)
+
+// All room management (create, invite, remove, epoch transition) is client-side
+// Client writes encrypted state updates via submit-state
+// Other members sync state tree to learn about changes
+
+// Failover: tree_hydrate(rootCid) on any Jet, continue from last checkpoint
+// Notifications: Safebox push gateway (holds VAPID keys, enforces rate limits)
+
+// Per-message encryption (unchanged):
+// K_msg = HKDF(F_k || B_k || roomId || msgIndex)
+// Epoch transitions rotate both chains on member join/leave
 ```
-See [EpochProtocol.md](EpochProtocol.md) for the full bidirectional hash-chain implementation.
+See [Architecture.md](Architecture.md) for the full chat model, [EpochProtocol.md](EpochProtocol.md) for hash-chain implementation.
 
 ## 10. Content Safety — Three Layers
 ```

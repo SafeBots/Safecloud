@@ -260,11 +260,20 @@ Multiple Jets can register the same app. The caller picks a Jet (or the client a
 The Jet exposes a narrow API to the WASM instance. This is the entire surface area — the WASM cannot do anything else. No WASI needed; the Jet injects these functions directly.
 
 ```
-// Read SafecloudDB state
+// Merkle tree operations (generalized storage)
+fn tree_create(name: &str) -> TreeId
+fn tree_append(tree: TreeId, value: &[u8]) -> (u64, Proof)    // append-only log
+fn tree_get(tree: TreeId, index: u64) -> (Vec<u8>, Proof)     // read by index
+fn tree_put(tree: TreeId, key: &[u8], value: &[u8]) -> Proof  // key-value write
+fn tree_range(tree: TreeId, opts: RangeOpts) -> Iterator<(Vec<u8>, Vec<u8>)>
+fn tree_delete(tree: TreeId, key: &[u8]) -> Proof
+fn tree_root(tree: TreeId) -> Cid                              // current root hash
+fn tree_checkpoint(tree: TreeId) -> Cid                        // flush state to Drops
+fn tree_hydrate(root_cid: Cid) -> TreeId                       // load tree from Drops
+
+// Legacy KV aliases (operate on a default tree in KV mode)
 fn safedb_get(track: &str, key: &[u8]) -> Option<Vec<u8>>
 fn safedb_range(track: &str, gte: &[u8], lte: &[u8]) -> Iterator<(Vec<u8>, Vec<u8>)>
-
-// Write SafecloudDB state (logged in SafecloudChain)
 fn safedb_put(track: &str, key: &[u8], value: &[u8])
 fn safedb_delete(track: &str, key: &[u8])
 
@@ -274,7 +283,7 @@ fn request_params() -> Map<String, String> // request parameters
 fn request_body() -> Vec<u8>              // request body
 
 // Controlled inputs
-fn now() -> u64                           // timestamp from SafecloudChain
+fn now() -> u64                           // logical timestamp (chain position)
 fn random_seed() -> [u8; 32]              // deterministic seed from request hash
 
 // Return response
@@ -283,6 +292,10 @@ fn respond(envelope: SafecloudEnvelope)
 // Call another handler (composable)
 fn call(handler_cid: &str, input: &[u8]) -> SafecloudEnvelope
 ```
+
+The `tree_*` functions are the primary storage API. Trees support two access patterns: append-only log (`tree_append` / `tree_get` by index) and key-value (`tree_put` / `tree_range` / `tree_delete`). Both produce Merkle proofs on every operation. Trees checkpoint transparently to Drops — the Jet maintains an in-memory cache with a write-ahead log (WAL) on local disk, flushing asynchronously to content-addressed storage. On Jet restart or failover, `tree_hydrate(rootCid)` reconstructs the tree from Drops. This makes all SafecloudApp state portable across Jets.
+
+The `safedb_*` functions remain as aliases for backward compatibility. They operate on a default tree using the KV access pattern, with `track` as a namespace prefix on keys.
 
 ---
 
@@ -894,102 +907,149 @@ Handlers that require strict determinism should avoid outbound calls. Outbound-d
 
 ## Rooms and E2E encrypted chat
 
-### Chat as a SafecloudApp
+### Design principles
 
-E2E encrypted chat is not a separate system bolted onto Safecloud — it is a SafecloudApp. The chat handlers run as WASM on Jets, message routing uses SafecloudDB tracks, and message history is a SafecloudChain. The cryptographic protocol (bidirectional hash chains, per-message keys, epoch transitions) is implemented in the client and coordinated through the app's handlers.
+The chat architecture is shaped by two constraints: (1) Jets see only ciphertext — they cannot read messages, identify senders, or correlate who talks to whom; (2) the Jet's role is minimal — it is a durable append-only log, not a message router. Real-time delivery happens peer-to-peer. Notifications go through a Safebox push gateway.
 
-The Jet never sees plaintext messages. It routes ciphertext, manages room membership state, and enforces escrow requirements for media. The decryption happens on the client.
+This is not a separate system bolted onto Safecloud. A room is a Merkle tree on a Jet. Messages are opaque blobs appended to the tree. The cryptographic protocol (bidirectional hash chains, per-message keys, epoch transitions) runs entirely on clients. The Jet provides ordering and persistence; clients provide encryption, decryption, and real-time delivery.
 
-### Room structure
+### Room as a Merkle tree
 
-A room (conversation) is a SafecloudDB track namespace:
+A room is a set of named trees on a Jet:
 
 ```
-Track: rooms/{roomId}/meta
-  key: "info"          → { name, created, epochIndex, ... }
-  key: "epoch/{index}" → { forwardSeed, backwardSeed, members, transition }
-
-Track: rooms/{roomId}/messages
-  key: {timestamp}/{msgId} → { ciphertext, senderPubKey, epochIndex, escrow? }
-
-Track: rooms/{roomId}/members
-  key: {publicKey}     → { role, joined, epochIndex }
+Tree: rooms/{roomId}/messages    (append-only log of ciphertext blobs)
+Tree: rooms/{roomId}/state       (KV: encrypted epoch records, encrypted member list)
 ```
 
-The `meta` track stores room metadata and epoch records. The `messages` track is the append-only message log. The `members` track is the current member set with roles.
+The `messages` tree is append-only. Each entry is an opaque encrypted blob. The Jet assigns a monotonic position index on append — position 42, 43, 44. This index is the canonical ordering. There is no wall-clock timestamp in the envelope; the blob's tree index is its logical time. Inside the encrypted payload, the sender may include a display timestamp visible only to members after decryption.
+
+The `state` tree holds encrypted room metadata: epoch records (chain seeds encrypted per-member), the encrypted member list, and room configuration. The Jet stores this as opaque KV entries — it cannot read the membership list or determine who is in the room.
+
+### What the Jet sees
+
+The Jet knows: a tree ID received an append at a certain time, and the blob is N bytes (padded). The Jet does not know: who authored the blob (onion routing), what the blob contains (encryption), who the room's members are (encrypted state), or even that this tree is a "chat room" rather than a file index or application state — all trees look identical at the protocol level.
+
+### Real-time delivery via WebRTC
+
+When room members are online simultaneously, they establish a WebRTC mesh (data channels). Messages are encrypted under the room's current epoch key and sent directly between peers. Delivery is immediate — no Jet in the latency path.
+
+The Jet acts as a TURN relay when NAT hole-punching fails. It relays encrypted DTLS traffic between peers without being able to read it.
+
+For rooms with more than ~20 concurrent members, a full mesh is impractical. Large rooms can use a Safebox as a selective forwarding unit (SFU), attested not to log the forwarded traffic.
+
+A rotating batch submitter (selected per round using shared epoch randomness invisible to the Jet) collects the last N messages and submits them to the Jet's tree for persistence. The Jet sees one submission from a rotating pubkey — it cannot determine which member authored which message in the batch.
+
+### Persistence via onion-routed append
+
+Every message is also appended to the room's tree on a Jet for durability and offline delivery. To prevent the destination Jet from learning who authored each message, the sender routes the encrypted blob through 2 intermediate Jets using onion routing:
+
+1. Alice encrypts the message blob and wraps it in 2 onion layers.
+2. Alice posts the outer layer to Jet A via HTTPS (looks like a normal chunk upload).
+3. Jet A peels one layer, forwards to Jet B (looks like normal inter-Jet chunk replication).
+4. Jet B peels the last layer, forwards to Jet C (the destination).
+5. Jet C receives an opaque blob from another Jet — indistinguishable from replicated chunk traffic — and appends it to the room's tree.
+
+No single Jet in the chain knows both the sender and the destination tree. The entry Jet knows Alice's IP but not where the blob is going. The destination Jet knows the tree but not who sent the blob. Collusion between entry and destination Jets would be needed to link sender to room — the same threat model as Tor, mitigated by the same approach (choose entry nodes carefully, add hops for higher anonymity).
 
 ### Epoch-based key management
 
-Each room uses the bidirectional hash-chain epoch protocol described in Ecosystem.md. The forward chain provides forward secrecy (compromising a current key does not reveal future messages). The backward chain provides post-compromise security (compromising a past key does not reveal messages sent after the next epoch transition).
+Each room uses the bidirectional hash-chain epoch protocol described in Ecosystem.md. The forward chain provides forward secrecy; the backward chain provides post-compromise security.
 
-The per-message key is `K_msg = HKDF(F_k || B_k || roomId || msgIndex)` where:
-- `F_k` is the k-th value of the forward hash chain for the current epoch
-- `B_k` is the k-th value of the backward hash chain for the current epoch
-- `roomId` prevents cross-room key reuse
-- `msgIndex` prevents within-message-index key reuse
+The per-message key is `K_msg = HKDF(F_k || B_k || roomId || msgIndex)` where `F_k` and `B_k` are the k-th values of the forward and backward hash chains for the current epoch, `roomId` prevents cross-room key reuse, and `msgIndex` prevents within-message-index key reuse.
 
-The sender advances the chain position by one for each message, computes K_msg, encrypts the message content, and sends the ciphertext to the Jet along with the message index and epoch index (both public — needed for recipients to compute the same K_msg).
+Epoch transitions occur on member join/leave and periodically (every N messages or T hours). New chain seeds are distributed to all current members, encrypted under each member's public key, and stored in the room's state tree. The Jet stores these as opaque KV entries.
+
+For groups with more than ~100 members, a key tree (binary tree of HKDF derivations) reduces epoch-transition cost from O(n) to O(log n).
 
 ### Room handlers
 
-The chat SafecloudApp manifest includes these handlers:
+The chat SafecloudApp has two categories of handlers:
+
+**Tree handlers (run on the Jet):** These are minimal — the Jet's WASM handler for message submission just validates payment (Safebux), appends the opaque blob to the tree, and returns a proof. It does not check membership or epochs because it cannot read the blob or the encrypted state.
 
 ```json
 {
   "handlers": {
-    "create-room":      "bafy...room-mgmt",
-    "join-room":        "bafy...room-mgmt",
-    "leave-room":       "bafy...room-mgmt",
-    "invite-member":    "bafy...room-mgmt",
-    "remove-member":    "bafy...room-mgmt",
-    "send-message":     "bafy...messaging",
-    "get-messages":     "bafy...messaging",
-    "send-media":       "bafy...media",
-    "epoch-transition": "bafy...epoch",
-    "key-exchange":     "bafy...keyexchange"
+    "submit-blob":      "bafy...submit",
+    "get-range":        "bafy...query",
+    "submit-state":     "bafy...state"
   }
 }
 ```
 
-**`create-room`**: Creates the room's track namespace, initializes epoch 0 with the creator as the sole member, and stores the initial forward and backward chain seeds (encrypted under each member's public key) in the epoch record.
+**`submit-blob`**: Validates Safebux payment, calls `tree_append(messagesTree, blob)`, returns the position index and Merkle proof. The handler is deliberately simple — it appends and returns.
 
-**`invite-member` / `join-room`**: Adds a member to the room. The inviter (or an admin) provides the current epoch's chain seeds encrypted under the new member's public key. The handler writes the member record and the encrypted seeds to SafecloudDB. The new member can derive K_msg for messages from this point forward but cannot decrypt past messages (they don't have past forward-chain values).
+**`get-range`**: Returns a range of blobs by position index. Pagination via tree range queries. No access control at the Jet level — the blobs are encrypted, so anyone who fetches them still needs the epoch keys to read them.
 
-**`remove-member`**: Triggers an epoch transition. The handler increments the epoch index, generates new chain seeds, and distributes them to all remaining members (encrypted under each member's key). The removed member does not receive the new seeds. Messages sent in the new epoch use the new chains — the removed member cannot derive those keys. This is O(1) per removed member for the cryptographic operations (the re-encryption is per-remaining-member, but the chain mechanism itself is constant).
+**`submit-state`**: Updates the encrypted state tree (epoch records, member list). Used during epoch transitions and membership changes.
 
-**`send-message`**: Validates the sender's membership and epoch index, stores the ciphertext in the messages track, and produces a SafecloudReceipt. For text messages, no escrow is required. The handler enforces ordering: the message index must be the next expected index for this sender in this epoch.
+**Client-side logic:** All room management — creating rooms, inviting members, removing members, epoch transitions, key exchange — happens on the client. The client writes encrypted state updates to the Jet's state tree via `submit-state`. Other members sync the state tree to learn about membership changes and new epoch seeds.
 
-**`send-media`**: Same as `send-message`, but requires a valid escrow ciphertext — `Enc(PK_threshold, K_msg)` — alongside the message ciphertext. The handler verifies that the escrow is a well-formed ElGamal ciphertext under `PK_threshold` (the threshold group's combined public key). Media messages without valid escrow are rejected. See the content safety section in Ecosystem.md.
+### Offline delivery and failover
 
-**`get-messages`**: Returns a range of ciphertext messages from the messages track. The client decrypts locally. Pagination via SafecloudDB range queries. The handler enforces access control: only current members can read the messages track.
+When a member comes online after being away, their client syncs the room's message tree from the last-seen position index: `tree_range(messagesTree, {gte: lastSeen})`. They also sync the state tree to pick up any epoch transitions that occurred while offline. New epoch seeds are encrypted under their public key in the state tree.
 
-**`epoch-transition`**: Explicitly advance to a new epoch. Used for periodic key rotation (e.g. every 1000 messages or every 24 hours) without a membership change. The handler generates new chain seeds and distributes them to all current members. This limits the exposure window if a key is compromised.
+If a Jet goes down, any other Jet can pick up the room: `tree_hydrate(rootCid)` reconstructs the tree from Drops. Members reconnect to the new Jet and continue from the last checkpoint. Payment switches to the new Jet (Safebux). The room is portable because the state is in the tree on Drops, not on any particular Jet.
 
-**`key-exchange`**: Handles the initial key exchange when a new member joins mid-epoch. The joining member's client sends their public key; the handler responds with the current chain seeds encrypted under that key. This is a standard Diffie-Hellman key exchange wrapped in the SafecloudApp handler pattern.
+### Push notifications via Safebox gateway
 
-### Message ordering and consistency
+Web Push requires VAPID keys. Letting every Jet hold VAPID keys and push endpoints creates a spam vector — a malicious or buggy Jet could push unlimited notifications with no recourse.
 
-Messages are ordered by their position in the SafecloudDB track (`{timestamp}/{msgId}`). The SafecloudChain provides a total order of all handler executions for the app — including message sends, membership changes, and epoch transitions. Two Jets running the same chat app against the same SafecloudDB state produce the same message ordering.
+Notifications go through a Safebox push gateway: a TEE-attested service that holds the VAPID keys and user push subscriptions. When a new blob appears in a room's tree, the Jet submits a push request to the gateway with an OCP claim proving it hosts the room. The gateway verifies the claim, checks per-user rate limits, encrypts the notification payload under the user's `notify` key, signs with VAPID, and sends via Web Push.
 
-Concurrent sends from two members to different Jets can produce conflicting timestamps. The resolution is the same as any SafecloudDB conflict: the first receipt to land in the chain wins, and the second Jet must replay against the updated state. In practice, the message handler uses a monotonic counter from the chain's logical clock (the `now()` host API function), so concurrent sends get sequential timestamps.
+The gateway is the only entity with push endpoints. Jet failover does not require new push subscriptions. Users configure rate limits per room via OCP claims ("at most 10 pushes per hour from room X"). The gateway enforces the policy.
 
-### Group size and performance
-
-The bidirectional hash-chain epoch protocol is O(1) for key derivation and O(n) for epoch transitions (new seeds must be encrypted for each remaining member). For small groups (< 100 members), this is negligible. For large groups (1000+ members), epoch transitions are expensive.
-
-Large groups can use a tiered approach: the group key is itself encrypted under a group-management key that only admins hold. Members receive derived keys through a key tree (binary tree of HKDF derivations). An epoch transition re-keys the tree root; members re-derive their leaf keys. This reduces epoch-transition cost from O(n) to O(log n) at the cost of a more complex key distribution.
-
-The SafecloudApp handler handles both modes — it checks the member count and switches strategies automatically.
-
-### Offline message delivery
-
-When a member is offline, messages accumulate in the SafecloudDB messages track. When the member comes online, their client calls `get-messages` with the last-seen message index. The handler returns all messages since that index. The client decrypts each one using the appropriate epoch's chain values (which it stored locally before going offline).
-
-If an epoch transition occurred while the member was offline, the new epoch's chain seeds are waiting in the epoch record, encrypted under the member's public key. The client retrieves them, derives the new chain, and decrypts the post-transition messages.
+This is also the integration point between Safecloud's pull model and Intercloud's push model. The Safebox push gateway can subscribe to Intercloud rails on behalf of users, receive push events from the event layer, and deliver notifications that reference Safecloud CIDs. The user's client pulls the referenced content when they want to see it. See Architecture.md for the full picture of how the pull and push layers compose.
 
 ### Interop with outbound endpoints
 
-Chat rooms can be bridged to external platforms using the outbound endpoint system. A trigger fires on each new message in the messages track. The trigger handler calls `outbound_call("telegram-webhook", ...)` to post a notification (or, for a full bridge, the decrypted plaintext — which requires the bridge handler to hold a member key, making it a visible participant in the room). The bridged messages appear in the SafecloudChain as outbound-call receipts, maintaining the audit trail.
+Chat rooms can be bridged to external platforms using the outbound endpoint system. A trigger fires on each new blob in the messages tree. The trigger handler calls `outbound_call("telegram-webhook", ...)` to post a notification. For a full bridge (forwarding decrypted plaintext), the bridge handler must hold a member key, making it a visible participant in the room. Bridged messages appear in the SafecloudChain as outbound-call receipts, maintaining the audit trail.
+
+---
+
+## SafecloudApp deployment
+
+### Deployment interfaces
+
+**CLI (`@safecloud/cli` via npm):** The primary developer tool. A `cli/` directory in the Safecloud repo containing `index.js` and `package.json`, installed via `npm install -g @safecloud/cli`. The CLI calls canonical Client.js methods — the same SDK that runs in the browser.
+
+```
+safecloud deploy ./my-app        # chunk directory, upload to Drops, register manifest
+safecloud dev --handler ./h.wasm # local Jet emulator, test against mock requests
+safecloud hash ./handler.wasm    # compute CID
+safecloud manifest init          # generate manifest skeleton
+safecloud manifest validate      # check manifest references valid CIDs
+```
+
+**Zip upload:** POST a zip file to the Jet's admin endpoint. The Jet unpacks, chunks, stores on Drops, and registers the manifest. For non-developers who want to host a static site.
+
+**Web dashboard:** A SafecloudApp itself — static HTML+CSS+JS hosted on a Jet, calling the Client.js SDK. Drag-and-drop deploy UI, manifest editor, logs viewer.
+
+### Access control via OCP Actions
+
+App ownership and deployment use the OCP Actions Extension (https://openclaiming.org/ActionsExtension). The app manifest has an owner public key. Operations are authorized by OCP action claims:
+
+- **Owner** (`iss` = owner key): can update handlers, change policies, transfer ownership, delete the app.
+- **Deployer** (delegated via OCP `delegate` claim): can update handler CIDs and static asset CIDs. Cannot change ownership or policies.
+- **Admin** (delegated): can change policies and manage deployer roles. Cannot transfer ownership.
+
+Single owner by default. Multi-owner (M-of-N multisig) uses the Actions Extension's quorum mechanism — `minimum` and `fraction` fields enforce required approvals, with an optional `delay` before execution.
+
+### Standard includes
+
+Every SafecloudApp can load standard libraries from the hosting Jet:
+
+```html
+<script src="/@safecloud/client.js"></script>  <!-- encryption, key mgmt, Drops -->
+<script src="/@safecloud/drop.js"></script>    <!-- content-addressed storage ops -->
+<script src="/@safecloud/app.js"></script>     <!-- App.db.*, App.auth.*, App.ws.*, App.push.* -->
+<link rel="stylesheet" href="/@safecloud/app.css">  <!-- reset, typography, responsive, dark mode -->
+```
+
+Pinned versions: `/@safecloud/client@2.8.js`. The Jet resolves these paths to the current release CIDs.
+
+For embedding (e.g., the video player on a third-party site), the iframe accepts a `css` querystring parameter: `?css=https://example.com/brand.css` or `?css=inline:body{background:%23000}`. The app's loader injects the custom CSS after the default theme.
 
 ---
 
@@ -1002,13 +1062,15 @@ Chat rooms can be bridged to external platforms using the outbound endpoint syst
 | **Jet censors requests** — refuses to serve | 🟡 Medium | Multiple Jets can run the same app. Caller switches to another Jet. Market competition discourages censorship. |
 | **SafecloudChain tampering** — Jet modifies past receipts | 🟢 Low | Hash chain: modifying any receipt breaks the chain. Clients and other Jets can detect the break. |
 | **Resource exhaustion** — WASM consumes excessive resources | 🟢 Low | Fuel metering + memory caps + wall-clock timeout. Jet halts execution when limits are exceeded. |
-| **SafecloudDB state manipulation** — Jet writes incorrect state | 🟡 Medium | SafecloudChain logs all state transitions with before/after roots. Replay detects inconsistency. Multiple Jets can cross-verify. |
-| **Side-channel on Jet** — operator observes I/O patterns | 🟡 Medium | For transparent Jets: I/O metadata is visible by design; content is still encrypted. For confidential workloads: use Safebox Jets (TEE). |
+| **Tree state manipulation** — Jet writes incorrect state | 🟡 Medium | Merkle tree with root CID: every state transition produces a new root. Clients verify proofs. Replay against the tree from Drops detects inconsistency. |
+| **Side-channel on Jet** — operator observes I/O patterns | 🟡 Medium | For transparent Jets: the Jet sees tree IDs and blob arrival times but not senders (onion routing) or content (encryption). For confidential workloads: Safebox Jets (TEE). |
 | **App upgrade attack** — creator silently swaps WASM | 🟡 Medium | App CID is committed at registration. Changing the app means a new CID, visible to all users. Clients can pin an app CID and refuse upgrades. |
 | **Fuel price manipulation** — Jet charges excessive Safebux | 🟢 Low | Market competition. Multiple Jets serve the same app. Callers pick the cheapest. Price gouging loses customers. |
-| **Trigger abuse** — app registers triggers that fire excessively | 🟢 Low | Jet enforces minimum interval and per-trigger fuel budget. Trigger evaluator uses chain logical time, not wall clock, preventing clock-manipulation attacks. |
-| **Outbound endpoint abuse** — WASM makes unauthorized external requests | 🟢 Low | WASM cannot make arbitrary network requests. Only declared endpoints in the manifest are reachable, with rate limits and schema validation enforced by the Jet. Secrets are never exposed to the sandbox. |
-| **Outbound response fabrication** — Jet fakes an external service response | 🟡 Medium | Response hash is committed in the SafecloudReceipt. Verifier can re-call the service to check (weaker than pure-WASM verification). Receipts are marked non-deterministic. |
-| **Epoch key compromise** — attacker obtains current chain seeds | 🟡 Medium | Forward chain limits forward exposure; backward chain limits backward exposure. Next epoch transition rotates both chains. Periodic automatic transitions (every N messages or T hours) bound the exposure window. |
-| **Garbage escrow** — sender escrows a fake key for media | 🟡 Medium | Detectable when threshold group decrypts — garbage key produces garbage plaintext. Detection is evidence of deliberate evasion, a policy violation. |
-| **Modified chat client** — client skips scanning and escrow | 🟡 Medium | Text: unavoidable (same gap as Signal). Media: Jet rejects media messages without valid escrow ciphertext. Reputation signals and inability to send media make the platform hostile to abuse. |
+| **Trigger abuse** — app registers triggers that fire excessively | 🟢 Low | Jet enforces minimum interval and per-trigger fuel budget. Trigger evaluator uses chain logical time, not wall clock. |
+| **Outbound endpoint abuse** — WASM makes unauthorized external requests | 🟢 Low | Only declared endpoints in the manifest are reachable, with rate limits and schema validation enforced by the Jet. Secrets are never exposed to the sandbox. |
+| **Outbound response fabrication** — Jet fakes an external service response | 🟡 Medium | Response hash is committed in the SafecloudReceipt. Verifier can re-call the service to check. Receipts are marked non-deterministic. |
+| **Epoch key compromise** — attacker obtains current chain seeds | 🟡 Medium | Forward chain limits forward exposure; backward chain limits backward exposure. Next epoch transition rotates both chains. Periodic automatic transitions bound the exposure window. |
+| **Garbage escrow** — sender escrows a fake key for media | 🟡 Medium | Detectable when threshold group decrypts — garbage key produces garbage plaintext. Detection is evidence of deliberate evasion. |
+| **Modified chat client** — client skips scanning and escrow | 🟡 Medium | Text: unavoidable (same gap as Signal). Media: Jet rejects media messages without valid escrow ciphertext. |
+| **Push notification spam** — malicious Jet floods user with notifications | 🟢 Low | Jets cannot push directly. Notifications go through a Safebox push gateway with OCP-verified rate limits. The gateway is the only entity with VAPID keys and push endpoints. |
+| **Metadata correlation on chat** — Jet links senders to rooms | 🟢 Low | Onion routing (2 hops) prevents the destination Jet from knowing the sender. The Jet sees only blob arrival from another Jet, indistinguishable from chunk replication. |

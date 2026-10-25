@@ -15,9 +15,10 @@ This document is an overview of the internals of the Safecloud ecosystem. It can
 
 **Companion documents** — this README covers the storage and compute primitives. The broader ecosystem is documented across several companion files:
 
+- **[Architecture.md](Architecture.md)** — top-level architecture: the unified triangle (Safecloud pull, Intercloud push, Safebox trust), three-tier WASM execution model, tree API, chat and messaging, SafecloudApp deployment, and comparison with related systems.
 - **[Ecosystem.md](Ecosystem.md)** — how the pieces connect: the epoch protocol, keychains, delegated identity, organizations, E2E chat, neighborhood cameras, and the unifying role of the bidirectional hash-chain primitive.
 - **[EpochProtocol.md](EpochProtocol.md)** — full implementation reference for the bidirectional hash-chain epoch protocol: data structures, algorithms, invariants, failure modes.
-- **[Apps.md](Apps.md)** — SafecloudApps: WASM execution model on Jets, triggers, outbound endpoints, rooms and E2E encrypted chat handlers.
+- **[Apps.md](Apps.md)** — SafecloudApps: WASM execution model on Jets, tree API for transparent persistence, triggers, outbound endpoints, rooms and E2E encrypted chat (WebRTC mesh, onion-routed persistence, Safebox push gateway), and SafecloudApp deployment (CLI, dashboard, standard includes, OCP access control).
 - **[Flagging.md](Flagging.md)** — content moderation: two-layer scanning architecture (Layer 1: client-side WASM scanning before encryption; Layer 2: Safebox chaperone scanning of stored content via attested TEE with scoped grants), reputation system, corroboration and jury verification, and E2E chat safety (bilateral scanning, batched chaperone delivery, severity-tiered deniability, per-message key escrow under threshold ElGamal).
 - **[Attacks.md](Attacks.md)** — threat model: 150+ attack entries across storage, compute, payments, epoch protocol, and chat. Sections 10–11 cover epoch protocol and E2E chat specifically.
 - **[AdaptiveStreamer.md](AdaptiveStreamer.md)** — adaptive drop selection for striped downloads: probe algorithm, EMA ranking, drop-side serving policy, micropayment ramping.

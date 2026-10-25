@@ -1,5 +1,36 @@
 # Changelog
 
+## 2.8.0 — 2026-10-18
+
+### Architecture document
+- New `Architecture.md`: unified three-layer model (Safecloud = pull, Intercloud = push, Safebox = trust), the composition loop, three-tier WASM with host API tables, chat and messaging model, SafecloudApp deployment, OCP Actions access control, standard includes, and comparisons to Cloudflare Workers, Pear/Hyperswarm, and Signal.
+
+### Tree API (generalized storage)
+- `tree_create`, `tree_append`, `tree_get`, `tree_put`, `tree_range`, `tree_delete`, `tree_root`, `tree_checkpoint`, `tree_hydrate` replace the flat `safedb_*` KV API as the primary storage surface. The KV functions remain as aliases operating on a default tree in KV mode.
+- WAL + checkpoint to Drops: tree state lives in memory while active, WAL on local disk for crash recovery, async checkpoint to Drops as content-addressed chunks. `tree_hydrate(rootCid)` reconstructs from Drops on any Jet for failover.
+
+### Revised chat architecture
+- Rooms are Merkle trees (append-only log of encrypted blobs) rather than Jet-routed message tracks.
+- WebRTC mesh for real-time delivery between online peers; Jet as TURN relay only.
+- 2-hop onion routing for persistence: sender → 2 intermediate Jets → destination Jet. Destination Jet cannot identify sender; traffic is indistinguishable from inter-Jet chunk replication.
+- No sender pubkey in envelope (deniability). No wall-clock timestamp in envelope — monotonic tree position index is the canonical ordering.
+- Safebox push gateway for notifications: TEE-attested service holds VAPID keys and push subscriptions, enforces per-user rate limits via OCP claims. Jets cannot push directly.
+- Room failover via `tree_hydrate`: any Jet can pick up a room from Drops.
+
+### SafecloudApp deployment
+- CLI via npm (`@safecloud/cli`): `safecloud deploy`, `safecloud dev`, `safecloud hash`, `safecloud manifest`.
+- Zip upload to Jet admin endpoint.
+- Web dashboard as a SafecloudApp (dogfooding).
+- Access control via OCP Actions Extension: owner/deployer/admin roles with delegation and M-of-N multisig.
+
+### Standard includes
+- `/@safecloud/client.js`, `/@safecloud/drop.js`, `/@safecloud/app.js`, `/@safecloud/app.css` served from hosting Jet at well-known paths. Pinned versions available (`/@safecloud/client@2.8.js`).
+- Iframe `?css=` querystring for custom styling when embedding.
+
+### Updated docs
+- `Apps.md`: tree API in host API section, revised rooms section (WebRTC + onion routing + Safebox push gateway), deployment section, standard includes section, updated attack vectors table.
+- `LLM.md`: updated architecture summary, companion docs list, rooms section.
+
 ## 1.0.0-beta.1 — 2026-07-06
 
 First packaged release.
