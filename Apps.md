@@ -270,6 +270,7 @@ fn tree_delete(tree: TreeId, key: &[u8]) -> Proof
 fn tree_root(tree: TreeId) -> Cid                              // current root hash
 fn tree_checkpoint(tree: TreeId) -> Cid                        // flush state to Drops
 fn tree_hydrate(root_cid: Cid) -> TreeId                       // load tree from Drops
+fn tree_diff(cid_a: Cid, cid_b: Cid) -> Vec<Change>           // diff two checkpointed states
 
 // Legacy KV aliases (operate on a default tree in KV mode)
 fn safedb_get(track: &str, key: &[u8]) -> Option<Vec<u8>>

@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.9.0 — 2026-10-25
+
+### Data structures (SDK)
+- Five high-level structures built on `tree_*` host API: **Directory** (static folder, IPFS/IPLD analog), **Feed** (append-only log, Hypercore/Kafka analog), **Repo** (versioned directory with branch/merge/diff, Git analog), **Database** (indexed KV with commit/rollback, Dolt analog), **NameResolver** (mutable name→CID, IPNS analog).
+- **TreeStore** reference implementation of `tree_*` for testing and `safecloud dev` emulator. Two modes: KV (ordered key-value with range queries) and append (append-only log with subscribe). Every mutation updates root CID (Merkle property). ChunkStore for checkpoint/hydrate persistence.
+- `tree_diff(cidA, cidB)` added to host API — compares two checkpointed tree states, returns `[{ key, before, after }]` changes.
+
+### Test battery
+- 145 Node.js tests covering all six modules (TreeStore KV, TreeStore append, checkpoint/hydrate, diff, Directory, Feed, Repo with branches and manual merge, Database with indexed range queries, NameResolver, cross-structure integration, edge cases).
+- 53 headless browser tests via Playwright — same coverage in a real browser environment with pure-JS SHA-256, Buffer shim, and module bundling (no webpack).
+
+### Browser bundle
+- `browser_bundle.js` builds a single self-contained `browser_tests.bundle.js` via closure wrapping. Includes synchronous pure-JS SHA-256 (no Web Crypto async dependency) and minimal Buffer polyfill (Uint8Array + TextEncoder/TextDecoder).
+
+### Updated docs
+- New `DataStructures.md`: full API documentation for all five structures with code examples, cross-structure workflows, interoperability table, wire format.
+- `Architecture.md`: added `tree_diff` to host API table, added "Data structures (SDK)" section.
+- `Apps.md`: added `tree_diff` to host API function list.
+- `LLM.md`: added §19 covering the full data structures API surface.
+
 ## 2.8.0 — 2026-10-18
 
 ### Architecture document

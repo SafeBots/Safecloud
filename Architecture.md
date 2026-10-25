@@ -44,6 +44,7 @@ Runs on Jets. Operates on metadata, policies, trees, and ciphertext. Cannot see 
 | `tree_root(treeId)` | Current root CID |
 | `tree_checkpoint(treeId)` | Flush tree state to Drops |
 | `tree_hydrate(rootCid)` | Load tree from Drops |
+| `tree_diff(cidA, cidB)` | Diff two checkpointed tree states |
 | `request_claim()` | Caller's OCP claim |
 | `request_params()` | URL/query parameters |
 | `request_body()` | Request body bytes |
@@ -133,6 +134,18 @@ The gateway is attested not to spam, not to log which notifications go to whom, 
 Users can configure rate limits per room or per app via OCP claims: "at most 10 pushes per hour from room X." The gateway enforces the policy.
 
 This is also the integration point between Safecloud (pull) and Intercloud (push). The Safebox push gateway subscribes to Intercloud rails on behalf of users, receives push events from the event layer, and delivers notifications referencing Safecloud CIDs. The user's client pulls the content by CID when they want to see it.
+
+## Data structures (SDK)
+
+The `tree_*` host API is a low-level primitive. Five higher-level data structures compose trees to provide familiar abstractions, all with content-addressed storage, checkpoint/hydrate portability, and cryptographic diffs. They are part of the Safecloud SDK and run client-side (Tier 2) or inside SafecloudApps (Tier 1).
+
+- **Directory** — static folder (IPFS/IPLD analog). KV tree of path → file manifest. Immutable snapshots addressed by root CID.
+- **Feed** — append-only event log (Hypercore/Kafka analog). Subscribe for live tail. Checkpoint and restore.
+- **Repo** — versioned directory (Git analog). Working tree + commit log + branches. Branch, checkout, merge (LWW or manual conflict resolution), diff.
+- **Database** — indexed KV store (Dolt analog). Primary tree + per-field index trees + commit log. Query by index, commit/rollback/diff.
+- **NameResolver** — mutable name → CID resolution (IPNS analog). Monotonic sequence number prevents rollback.
+
+These structures compose: a deployment pipeline might use a Repo for source control, a Directory for each published snapshot, a NameResolver for the public URL, a Feed for the audit trail, and a Database for status tracking. See [DataStructures.md](DataStructures.md) for the full API.
 
 ## SafecloudApp deployment
 

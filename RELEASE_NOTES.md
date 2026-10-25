@@ -72,3 +72,26 @@ Also covers: three-tier WASM (Jet-side, client-side, Safebox) with host API tabl
 **Standard includes** — `/@safecloud/client.js`, `drop.js`, `app.js`, `app.css` served from hosting Jet. Pinned versions. Iframe `?css=` for custom styling.
 
 **Updated docs:** Apps.md (tree API, revised rooms, deployment, standard includes, updated attack vectors), LLM.md (architecture summary, rooms section), CHANGELOG.md.
+
+## 2.9 — Data structures and testing
+
+The implementation release. Introduces five SDK-level data structures built on the `tree_*` host API, a reference TreeStore implementation, and a comprehensive test battery covering Node.js and headless browser environments.
+
+**New host API function:** `tree_diff(cidA, cidB)` — compares two checkpointed tree states and returns an array of `{ key, before, after }` changes. Added to Architecture.md host API table and Apps.md host API list.
+
+**TreeStore** — in-memory reference implementation of the full `tree_*` host API, for testing and the `safecloud dev` emulator. Two modes: KV (ordered key-value with range queries) and append (append-only log with subscribe for live tail). Every mutation updates the root CID (Merkle property). ChunkStore for checkpoint/hydrate persistence. Deterministic CID via SHA-256 of JSON with recursively sorted keys.
+
+**Five data structures:**
+- **Directory** — static folder (IPFS/IPLD analog). KV tree with slash-delimited path keys and file manifest values. Immutable snapshots addressed by root CID. store, fetch, getFile, list, diff.
+- **Feed** — append-only event log (Hypercore/Kafka analog). Wraps an append-mode tree with subscribe for live tail. Checkpoint/restore. For event sourcing, audit trails, deploy logs.
+- **Repo** — versioned directory with branch/merge/diff (Git analog). Three internal trees: working tree (KV), commit log (append), branches (KV). LWW and manual merge strategies. Manual merge reports `{ path, ours, theirs }` conflicts for caller resolution.
+- **Database** — indexed KV store with version history (Dolt analog). Primary KV tree plus per-field index trees. Index key format: `String(indexValue) + '\0' + primaryKey` for clean range boundaries. Dynamic index management (addIndex, dropIndex). Commit, log, diff, rollback.
+- **NameResolver** — mutable name→CID resolution (IPNS analog). KV tree of name → `{ target, seq, owner, updatedAt }`. Monotonic sequence number prevents rollback. Checkpoint/restore.
+
+**Test battery:**
+- 145 Node.js tests across 11 sections: TreeStore KV, TreeStore append, checkpoint/hydrate, diff, Directory, Feed, Repo (versioned dirs), Repo (manual merge), Database (indexed KV), Database (range queries), NameResolver, cross-structure integration, edge cases.
+- 53 headless browser tests via Playwright covering all six modules plus integration. Browser bundle built without webpack via closure wrapping, with pure-JS synchronous SHA-256 and minimal Buffer polyfill.
+
+**New docs:** DataStructures.md (full API documentation, code examples, cross-structure workflows, interoperability table, wire format).
+
+**Updated docs:** Architecture.md (`tree_diff` in host API table, "Data structures (SDK)" section), Apps.md (`tree_diff` in host API list), LLM.md (§19 data structures API surface), CHANGELOG.md.

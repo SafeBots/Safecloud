@@ -436,3 +436,97 @@ streamer.shouldThrottle(dropId);           // true if unpaid > maxUnpaid
 **Drop-side serving policy** — set at `Drops.init({ servingPolicy: { serveWhen: 'wifi-only' } })`. The Drop monitors `navigator.connection` and Battery API; sends `Safecloud/drop/pause` / `resume` to the Jet when its connection state violates or re-satisfies the policy. Router.js filters paused Drops from `selectForGet`/`selectForPut`.
 
 **Micropayment ramping** — payment is split: unsigned intent on request, signed settlement after Merkle-verified receipt. Per-drop watermark channels (line 0 = Jet infra, line 1+ = per Drop). Max unpaid window: 1 (probe) → 3 (ramp-up) → 8 (steady) → 16 (trusted). See [AdaptiveStreamer.md](AdaptiveStreamer.md) for full algorithm.
+
+## 19. Data Structures (SDK)
+
+Five high-level structures built on the `tree_*` host API (§8). They run client-side (Tier 2) or inside SafecloudApps (Tier 1). No new Jet primitives — they compose `tree_create`, `tree_put`, `tree_get`, `tree_range`, `tree_delete`, `tree_append`, `tree_root`, `tree_checkpoint`, `tree_hydrate`, and `tree_diff`.
+
+```javascript
+// TreeStore — in-memory reference implementation of tree_* host API
+// Two modes: 'kv' (ordered key-value) and 'append' (append-only log)
+const TreeStore = require('safecloud/data/TreeStore');
+const store = new TreeStore();
+const { treeId } = store.createTree('name', { mode: 'kv' });
+store.put(treeId, 'key', value);
+store.get(treeId, 'key');                   // → { key, value }
+store.range(treeId, { gte, lt, limit, reverse });
+store.delete(treeId, 'key');
+store.root(treeId);                         // → 'bafy...' (Merkle root CID)
+store.checkpoint(treeId);                   // serialize to ChunkStore
+store.hydrate(rootCid);                     // restore from ChunkStore
+store.diff(cidA, cidB);                     // → [{ key, before, after }]
+// Append mode:
+const { treeId } = store.createTree('log', { mode: 'append' });
+store.append(treeId, value);
+store.get(treeId, index);
+store.subscribe(treeId, callback);          // live tail
+
+// Directory — static folder (IPFS/IPLD analog)
+const Directory = require('safecloud/data/Directory');
+const dir = new Directory(store);
+const { rootCid } = dir.store({ 'path': { content, type } });
+dir.fetch(rootCid);                         // → { files }
+dir.getFile(rootCid, 'path');               // → content bytes
+dir.list(rootCid, 'prefix/');               // → filtered entries
+dir.diff(cidA, cidB);                       // → [{ path, type, before, after }]
+
+// Feed — append-only event log (Hypercore/Kafka analog)
+const Feed = require('safecloud/data/Feed');
+const feed = new Feed(store, 'name');
+feed.append(value);
+feed.get(index);
+feed.length;
+feed.range({ gte, limit });
+feed.subscribe(callback);                  // live tail
+feed.checkpoint();                          // → rootCid
+Feed.fromCheckpoint(store, rootCid);
+
+// Repo — versioned directory with branch/merge/diff (Git analog)
+const Repo = require('safecloud/data/Repo');
+const repo = new Repo(store, 'name', { author });
+repo.add(path, content);
+repo.commit(message);                      // → { commitIndex, treeCid, commitsCid }
+repo.log();                                 // newest-first
+repo.diff(treeCidA, treeCidB);             // → [{ path, type, before, after }]
+repo.branch('name');
+repo.checkout('name');
+repo.merge('source', { strategy });        // 'lww' (default) or 'manual'
+repo.resolve(path, value);                 // resolve manual merge conflicts
+repo.getFile(path);
+repo.listFiles();                          // all paths in working tree
+repo.getBranches();                        // all branch names
+repo.remove(path);                         // delete from working tree
+repo.currentBranch;                        // current branch (property)
+repo.head;                                 // latest commit index or -1 (property)
+
+// Database — indexed KV store with version history (Dolt analog)
+const Database = require('safecloud/data/Database');
+const db = new Database(store, 'name', { fields, indexes: ['field'] });
+db.put(key, record);
+db.get(key);
+db.delete(key);
+db.count();
+db.scan({ limit, reverse });
+db.query('field', { eq, gte, lt, limit, reverse });  // index query
+db.addIndex('field');
+db.dropIndex('field');
+db.commit(message);                        // → { commitIndex }
+db.log();
+db.diff(commitA, commitB);
+db.rollback(commitIndex);
+// Index key format: String(value) + '\0' + primaryKey
+
+// NameResolver — mutable name→CID (IPNS analog)
+const NameResolver = require('safecloud/data/NameResolver');
+const nr = new NameResolver(store, { owner });
+nr.update('name', targetCid);              // → { seq }
+nr.resolve('name');                        // → { target, seq, owner, updatedAt }
+nr.list({ prefix });
+nr.remove('name');
+nr.checkpoint();
+NameResolver.fromCheckpoint(store, rootCid);
+```
+
+**CID format:** `'bafy' + sha256(JSON.stringify(state)).slice(0, 56)` with keys sorted at every nesting level for deterministic serialization. Two trees with the same root CID contain the same data.
+
+See [DataStructures.md](DataStructures.md) for full documentation, cross-structure workflows, and interoperability mapping.
