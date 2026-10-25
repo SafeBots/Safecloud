@@ -16,6 +16,14 @@
  * @param {Object} [options]
  *   @param {Object}  [options.manifest]    Manifest from Q.Safecloud.Client.store()
  *   @param {Object}  [options.capability]  { rootKey } or { grants }
+ *   @param {Object}  [options.metrics]     {publisherId, streamName} — if
+ *     set, tracks watched second-ranges via Q.Streams.Metrics the same way
+ *     Q/video does, POSTed periodically to Streams/metrics. A Safecloud-
+ *     sourced episode without this leaves streams_metrics empty regardless
+ *     of how much it was watched, which "most viewed videos" depends on.
+ *   @param {String}  [options.path]        Force 'sw' | 'mse' | 'blob' |
+ *     'auto' for THIS player instance, overriding both auto-detection and
+ *     Q.Safecloud.Client.streamPath's global override.
  *   @param {String}  [options.jetUrl]      Jet server URL.
  *   @param {Number}  [options.at]          Start position in seconds.
  *   @param {Q.Event} [options.onLoad]      Fired when player is ready.
@@ -31,6 +39,12 @@ Q.Tool.define('Safecloud/video', function (options) {
 
     tool._startStallTimer = null;
 
+    // Same guard Q/video.js itself uses before constructing one.
+    var sm = state.metrics;
+    if (Q.Streams && Q.Streams.Metrics && !Q.isEmpty(sm) && sm.publisherId && sm.streamName) {
+        tool.metrics = new Q.Streams.Metrics(sm);
+    }
+
         tool.text.video = Q.extend({
         Starting: 'Starting stream…',
         Error: 'Playback error',
@@ -45,8 +59,11 @@ Q.Tool.define('Safecloud/video', function (options) {
 {
     manifest:   null,
     capability: null,
+    metrics:    null,
     jetUrl:     null,
     at:         0,
+    // 'sw' | 'mse' | 'blob' | 'auto' (default) — see the constructor's doc comment.
+    path:       null,
     // Pause and fire onTeaserEnd once currentTime reaches this — a
     // grant's own coverage is chunk-rounded (Client/grant.js widens
     // [clipStart, clipEnd) out to whole chunk boundaries), so relying on
@@ -63,7 +80,13 @@ Q.Tool.define('Safecloud/video', function (options) {
     startStallMs: 10000,
     onLoad:     new Q.Event(),
     onPlay:     new Q.Event(),
-    onPlaying:  new Q.Event(),
+    onPlaying:  new Q.Event(function () {
+        // Mirrors Q/video.js's own default onPlaying handler — tracks
+        // watched second-ranges for streams_metrics ("most viewed videos").
+        if (this.metrics) {
+            this.metrics.add(this.getCurrentPosition() / 1000);
+        }
+    }),
     onStall:    new Q.Event(),
     onTeaserEnd: new Q.Event(),
     onError:    new Q.Event(function (err) {
@@ -176,6 +199,7 @@ Q.Tool.define('Safecloud/video', function (options) {
 
         Q.Safecloud.Client.stream(manifest, capability, {
             at:           state.at || 0,
+            path:         state.path || undefined,
             videoElement: videoEl,
             onTeaserEnd: _fireTeaserEnd
         }).then(function (handle) {
@@ -391,6 +415,7 @@ Q.Tool.define('Safecloud/video', function (options) {
             this._removed = true;
             this._clearPlayInterval();
             clearTimeout(this._startStallTimer);
+            if (this.metrics) { this.metrics.stop(); }
             if (this._visibilityObserver) { this._visibilityObserver.disconnect(); }
             if (this._handle) { try { this._handle.stop(); } catch(e) {} }
             // Without this, a still-playing (merely detached/covered, not
