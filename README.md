@@ -20,7 +20,7 @@ This document is an overview of the internals of the Safecloud ecosystem. It can
 - **[Apps.md](Apps.md)** — SafecloudApps: WASM execution model on Jets, triggers, outbound endpoints, rooms and E2E encrypted chat handlers.
 - **[Flagging.md](Flagging.md)** — content moderation: storage/distribution layer (reputation, corroboration, jury) and E2E chat layer (client scanning, per-message key escrow, threshold ElGamal).
 - **[Attacks.md](Attacks.md)** — threat model: 150+ attack entries across storage, compute, payments, epoch protocol, and chat. Sections 10–11 cover epoch protocol and E2E chat specifically.
-- **[LLM.md](LLM.md)** — compact LLM-context summary of node types and the client API.
+- **[LLM.md](LLM.md)** — compact LLM-context primer: all APIs, architecture layers, epoch protocol, keychains, chat, content safety, organizations.
 
 ---
 

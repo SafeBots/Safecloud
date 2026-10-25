@@ -1,16 +1,40 @@
 # Safecloud Plugin — LLM Coding Primer
 
-Decentralized encrypted storage network. Browser clients encrypt locally, Jet servers route ciphertext, Drop nodes (browser tabs) store chunks in IndexedDB. Plaintext never leaves the client. HLS video streaming via service worker. Micropayments via ERC-20 tokens with EIP-712 signatures.
+Decentralized encrypted storage, compute, and communication network. Browser clients encrypt locally, Jet servers route ciphertext and execute WASM handlers, Drop nodes (browser tabs) store chunks in IndexedDB. Plaintext never leaves the client. HLS video streaming via service worker. Micropayments via ERC-20 tokens with EIP-712 signatures. E2E encrypted chat with per-message key escrow under threshold ElGamal. Identity managed via hash-chained keychains with dual-threshold recovery.
 
-## 1. Four Node Types
+**Companion docs** — this primer covers the API surface for code generation. For deeper treatment: [README.md](README.md) (storage primitives, key hierarchy, OCP, micropayments), [Ecosystem.md](Ecosystem.md) (how all layers unify), [EpochProtocol.md](EpochProtocol.md) (bidirectional hash-chain implementation reference), [Apps.md](Apps.md) (WASM execution model, triggers, rooms), [Flagging.md](Flagging.md) (content moderation, reputation, threshold escrow), [Attacks.md](Attacks.md) (threat model, 150+ attack entries).
+
+## 1. Node Types
 ```
-Cloud  — browser client: encrypts, decrypts, manifests, HLS streaming
-Jets   — Node.js routing server: chunk routing, grant verification, payment check
-Drops  — browser tabs: IndexedDB ciphertext storage, Prolly tree inventory
-Router — Jet-to-Jet: Hyperswarm discovery, weighted Drop selection, relay
+Cloud   — browser client: encrypts, decrypts, manifests, HLS streaming, pre-encryption scanning
+Jets    — Node.js routing server: chunk routing, grant verification, payment check, WASM handler execution
+Drops   — browser tabs: IndexedDB ciphertext storage, Prolly tree inventory, payment claiming
+Router  — Jet-to-Jet: Hyperswarm discovery, weighted Drop selection, relay
 ```
 
-## 2. Client API (Browser-Side)
+## 2. Architecture Layers
+```
+┌─────────────────────────────────────────────────┐
+│  Client applications (browser / native)         │
+│  E2E encryption, scanning, key management       │
+├─────────────────────────────────────────────────┤
+│  SafecloudApps (WASM on Jets)                   │
+│  Handlers, triggers, route handlers             │
+│  Deterministic, sandboxed, auditable            │
+├─────────────────────────────────────────────────┤
+│  SafecloudDB (prolly trees on Drops)            │
+│  Per-track HKDF-derived encryption keys         │
+│  Keychains, chat state, org roles, audit logs   │
+├─────────────────────────────────────────────────┤
+│  Safecloud storage (encrypted chunks on Drops)  │
+│  Content-addressed, replicated, incentivized    │
+├─────────────────────────────────────────────────┤
+│  OCP (auth) + Safebux (payment)                 │
+│  Cryptographic delegation, micropayments        │
+└─────────────────────────────────────────────────┘
+```
+
+## 3. Client API (Browser-Side)
 ```javascript
 // Store (encrypt + upload)
 var result = await Q.Safecloud.Client.store(
@@ -27,11 +51,11 @@ var blob = await Q.Safecloud.Client.fetch(manifest, { rootKey: rootKey });
 
 // Grant (produce a subtree capability for a grantee)
 var capability = await Q.Safecloud.Client.grant(manifest, rootKey, {
-    ranges: [{ start: 0, end: 10 }],  // chunk ranges
+    ranges: [{ start: 0, end: 10 }],
     readLevel: 40,
-    exp: Math.floor(Date.now() / 1000) + 86400  // 24h expiry
+    exp: Math.floor(Date.now() / 1000) + 86400
 });
-// OCP Role A grant — cryptographic proof of access rights
+// OCP delegation proof — same Q.Crypto.delegate used by keychains
 
 // Reshare (grant + send to another user)
 await Q.Safecloud.Client.reshare(manifest, rootKey, {
@@ -46,42 +70,33 @@ await Q.Safecloud.Client.play(videoId, videoElement, {
     versions: ['720p', '1080p']
 });
 // Service worker intercepts fetch to safecloud-hls.local/{videoId}/...
-// Produces synthetic HLS playlists, decrypts segments on-the-fly
 
 await Q.Safecloud.Client.pause(videoId);
-await Q.Safecloud.Client.stream(videoId, { version: '1080p' }); // switch quality
+await Q.Safecloud.Client.stream(videoId, { version: '1080p' });
 
-// Upload (thin wrapper over store)
+// Upload / Download (thin wrappers)
 await Q.Safecloud.Client.upload(fileInput.files[0]);
-
-// Download (thin wrapper over fetch → blob URL)
 await Q.Safecloud.Client.download(manifest, { rootKey: rootKey });
 ```
 
-## 3. Drops API (Browser Storage Nodes)
+## 4. Drops API (Browser Storage Nodes)
 ```javascript
-// Initialize a Drop (browser tab offering storage)
 await Q.Safecloud.Drops.init({
-    maxStorage: 500 * 1024 * 1024,  // 500 MB
-    evmAddress: '0x...'              // for payment claims
+    maxStorage: 500 * 1024 * 1024,
+    evmAddress: '0x...'
 });
 
-// Store and retrieve chunks
 await Q.Safecloud.Drops.put(cid, ciphertext);
 var chunk = await Q.Safecloud.Drops.get(cid);
 
-// Announce inventory changes to Jet (signed, RFC 8785 canonical JSON)
-await Q.Safecloud.Drops.announce('put');  // diff since last announce
+await Q.Safecloud.Drops.announce('put');       // diff since last announce
+await Q.Safecloud.Drops.claimPayments();       // redeem micropayment tokens
 
-// Claim micropayments for stored chunks
-await Q.Safecloud.Drops.claimPayments();
-
-// Inventory structures
-var bloom = await Q.Safecloud.Drops.getBloomFilter();   // fast membership test
-var root = await Q.Safecloud.Drops.getProllyRoot();      // content-addressed tree root
+var bloom = await Q.Safecloud.Drops.getBloomFilter();
+var root = await Q.Safecloud.Drops.getProllyRoot();
 ```
 
-## 4. Jets API (Routing Server)
+## 5. Jets API (Routing Server)
 ```javascript
 // Server-side: start Jet
 Q.Safecloud.Jets.listen({ port: 8443 });
@@ -92,68 +107,244 @@ await Q.Safecloud.Jets.connect({ url: 'wss://jet.example.com' });
 // Put/Get through Jet (routes to Drops)
 await Q.Safecloud.Jets.put(rootCid, chunks, { payments: paymentTokens });
 var result = await Q.Safecloud.Jets.get(rootCid, { start: 0, end: 5 });
-// Jet selects Drops via Router, fans out requests, attaches Merkle proofs
 
 // Drop lifecycle (server-side)
 Q.Safecloud.Jets.callDrop(drop, 'Safe/drop/put', { cid, chunk });
-Q.Safecloud.Jets.selectDrops(cids, opts);  // delegates to Router
-Q.Safecloud.Jets.verifySubtreeGrant(grant, rootCid, chunkIndex);  // OCP verification
+Q.Safecloud.Jets.selectDrops(cids, opts);
+Q.Safecloud.Jets.verifySubtreeGrant(grant, rootCid, chunkIndex);
 Q.Safecloud.Jets.buildMerkleProofs(chunks, merkleRoot);
-Q.Safecloud.Jets._checkPayerBalance(payer, token, amount, chainId);  // ERC-20 pre-screen
+Q.Safecloud.Jets._checkPayerBalance(payer, token, amount, chainId);
 ```
 
-## 5. Router (Pluggable Routing Layer)
+## 6. Router (Pluggable Routing Layer)
 ```javascript
-// Replace before listen() for custom strategy:
 Q.Safecloud.Router = require('./Router.Kademlia');
 Q.Safecloud.Jets.listen(options);
 
-// Public interface (called by Jets):
 await Router.init(options);
-var drop = await Router.selectForGet(cid, options);      // weighted: stake × reliability × storage
+var drop = await Router.selectForGet(cid, options);
 var drops = await Router.selectForPut(cids, options);
-var result = await Router.relayGet(subtree, options);     // Jet-to-Jet relay fallback
-Router.announce(rootCid, 'available');                     // broadcast to peer Jets
-Router.gossipCoC(chainOfCustody);                         // flood over Hyperswarm Noise
+var result = await Router.relayGet(subtree, options);
+Router.announce(rootCid, 'available');
+Router.gossipCoC(chainOfCustody);
 
-// Lifecycle hooks (called by Jets):
 Router.onDropRegistered(drop, prollyRoot);
 Router.onDropAnnounce(drop, diff);
 Router.onDropDisconnected(drop);
 
-// Peer Jets
 var peers = Router.peerJets();  // [{evmAddress, url, stake}]
 ```
 
-## 6. Key Hierarchy
+## 7. Key Hierarchy (Storage)
 ```
 rootKey (32 bytes, random or derived from videoKey+version)
-  ├── encryptionRoot (HKDF) → P-256 keypair (encryptionRootPublicKey in manifest)
+  ├── encryptionRoot (HKDF) → P-256 keypair (in manifest)
   │     └── subtreeKey (HKDF per subtree)
   │           └── chunkKey[i] + chunkIV[i] (HKDF per chunk index)
   │                 → AES-256-GCM encrypt
-  └── accessRoot (HKDF) → P-256 keypair (accessRootPublicKey in manifest)
+  └── accessRoot (HKDF) → P-256 keypair (in manifest)
         └── OCP Role A grants (sign subtree access proofs)
 ```
+This covers per-file storage keys. Identity keys live in keychains (§12). Chat keys use the epoch protocol (§11).
 
-## 7. Manifest (Public, No Secrets)
+## 8. SafecloudApps — WASM Execution on Jets
+```javascript
+// App manifest (stored at content address)
+{
+  "name": "my-handler",
+  "version": "1.0.0",
+  "wasm": "bafybeig...",         // CID of the WASM binary
+  "handlers": {
+    "on-store":    { "type": "hook",    "trigger": "safecloud.store" },
+    "send-media":  { "type": "hook",    "trigger": "room.send-media" },
+    "daily-scan":  { "type": "trigger", "cron": "0 3 * * *" }
+  },
+  "permissions": ["db.read", "db.write", "net.fetch"],
+  "limits": { "maxMemoryMB": 128, "maxCpuMs": 5000 }
+}
+
+// Host API available inside WASM handlers:
+host.db.get(track, key)          // read SafecloudDB track
+host.db.put(track, key, value)   // write SafecloudDB track
+host.db.list(track, prefix)      // scan SafecloudDB
+host.crypto.verify(sig, msg, pk) // signature verification
+host.crypto.hkdf(ikm, salt, info, len)
+host.envelope.emit(type, payload) // produce a SafecloudEnvelope
+host.net.fetch(url, options)     // outbound HTTP (registered endpoints only)
+
+// SafecloudReceipt — tamper-evident execution record
+{
+  "handler": "bafybeig...",
+  "input_hash": "sha256:...",
+  "output_hash": "sha256:...",
+  "db_reads": [...],
+  "db_writes": [...],
+  "prev_receipt": "sha256:...",  // hash chain
+  "jet_signature": "..."
+}
+```
+See [Apps.md](Apps.md) for triggers, outbound endpoints, and room handlers.
+
+## 9. Rooms and E2E Encrypted Chat
+```javascript
+// Room structure (SafecloudDB track)
+{
+  "roomId": "bafybeig...",
+  "appCid": "bafybeig...",       // SafecloudApp managing this room
+  "members": ["alice-fp", "bob-fp"],
+  "epoch": 7,
+  "epochChain": {
+    "forward": "sha256:...",     // F_k = H(F_{k-1})
+    "backward": "sha256:..."     // B_k = H^{n-k}(B_0)
+  }
+}
+
+// Per-message encryption
+// K_msg = HKDF(F_k || B_k)
+// Sender encrypts locally, sends ciphertext to Jet, Jet routes to recipients
+
+// Room handlers in SafecloudApp:
+// "send-text"   — accepts ciphertext, routes to members
+// "send-media"  — requires valid escrow ciphertext: Enc(PK_threshold, K_msg)
+// "add-member"  — epoch transition: new forward seed, extend backward chain
+// "remove-member" — epoch transition: new epoch, old member excluded
+
+// Epoch transition on membership change:
+// 1. New F_0' = random, new B_0' computed for remaining members
+// 2. New keys distributed to remaining members via their public keys
+// 3. Transition record appended to room's SafecloudDB track
+// 4. Old member cannot derive keys for new epoch (forward secrecy)
+// 5. New member cannot derive keys for old epochs (backward secrecy)
+```
+See [EpochProtocol.md](EpochProtocol.md) for the full bidirectional hash-chain implementation.
+
+## 10. Content Safety — Two Layers
+```
+Layer 1: Storage/distribution (Flagging.md)
+  — Nodes can inspect ciphertext metadata, not plaintext
+  — Reputation system: shadowban gradient, stake-based flagging
+  — Corroboration: multiple independent flaggers required
+  — Jury: deterministic jury selection, secret ballot, reputation consequences
+  — Anti-griefing: false flaggers lose reputation and stake
+
+Layer 2: E2E chat (Flagging.md §E2E chat content safety)
+  — Client-side scanning: PDQ (images), NSFWjs, text toxicity
+  — Runs before encryption (sender) and after decryption (recipient)
+  — Per-message key escrow: Enc(PK_threshold, K_msg) under threshold ElGamal
+  — Proof of escrow: send-media handler requires valid escrow ciphertext
+  — Threshold decryption: k-of-n DKG, no TEE required
+  — Garbage escrow: detectable post-hoc (decryption produces garbage)
+  — Honest gap: two cooperating bad actors bypass all mechanisms (same as Signal)
+
+// Client-side scanning pseudocode:
+async function scanBeforeSend(content, type) {
+    if (type === 'image') {
+        var hash = await pdqHash(content);
+        if (await matchesBlocklist(hash)) return { flag: true, reason: 'pdq_match' };
+    }
+    if (type === 'text') {
+        var score = await toxicityClassifier(content);
+        if (score > THRESHOLD) return { flag: true, reason: 'toxicity' };
+    }
+    return { flag: false };
+}
+
+// Per-message key escrow (flagged messages only):
+// escrow = ElGamal.encrypt(PK_threshold, K_msg)
+// K_msg = HKDF(F_k || B_k) — one-way from epoch keys, so escrowing K_msg
+// does NOT reveal chain seeds F_0 or B_0
+```
+
+## 11. Epoch Protocol — Bidirectional Hash Chains
+```
+Forward chain:   F_0 (random) → F_1 = H(F_0) → F_2 = H(F_1) → ...
+Backward chain:  B_0 (random) → B_n = H^n(B_0), reveal B_k = H^{n-k}(B_0)
+Per-message key: K_msg = HKDF(F_k || B_k)
+
+Epoch transition (membership change):
+  1. Generate new F_0', new B_0'
+  2. Distribute to remaining/new members via public keys
+  3. Record transition in SafecloudDB track
+  4. Forward secrecy: removed member can't compute F_k for k > departure
+  5. Backward secrecy: new member can't compute B_k for k < arrival
+
+Scope table — same protocol, different parameters:
+  Chat conversation — participants are chat members
+  Keychain          — participants are device keys
+  Organization role — participants are role holders
+  Camera feed       — participants are authorized viewers
+  Recovery          — participants are recovery attestors
+```
+See [EpochProtocol.md](EpochProtocol.md) for data structures, algorithms, invariants, failure modes.
+
+## 12. Keychains — Identity Key Management
+```javascript
+// Keychain entry (single-writer hash-chained log, stored as SafecloudDB track)
+{
+  "op":        "rotate | add | revoke",
+  "keyType":   "signing | encryption | threshold-share",
+  "key":       "base64...",
+  "prevHash":  "sha256:...",
+  "recovery":  "base64...",
+  "timestamp": 1697500000,
+  "signature": "..."   // signed by owner, OCP Delegation typed data
+}
+// Track path: keychain/{pubkey-fingerprint}
+
+// Fork detection: two entries with same prevHash = fork
+// Detectable via gossip (any two readers comparing notes)
+// Fork invalidates chain from fork point forward
+// No blockchain required — inherent property of hash chains + gossip
+
+// Recovery: dual-threshold
+// BOTH required simultaneously:
+//   M-of-N friend attestations (friends alone can't take over)
+//   A-of-B cold personal keys (cold keys alone can't recover)
+// Recovery is itself an epoch transition → new genesis, old chain tombstoned
+
+// Delegation: Q.Crypto.delegate produces OCP grants recorded in keychain
+// Same mechanism for: device auth, brand delegation, org role grants
+```
+See [Ecosystem.md §Keychains](Ecosystem.md#keychains), [README.md §22](README.md).
+
+## 13. Organizations and Delegation
+```
+Organization = multi-participant hash chain
+Each role = a SafecloudDB track with epoch-based membership
+
+  org/acme/
+    admin        ← hash chain, members: [alice, bob]
+    finance      ← hash chain, members: [alice, carol]
+    support      ← hash chain, members: [dave, eve, frank]
+    board        ← hash chain, members: [alice, bob, carol]
+
+Adding a member to "admin" = same operation as adding a member to a chat group
+Removing a member = epoch transition, same as removing a chat member
+Governance bottoms out at keychain level: root keychain + dual-threshold recovery
+
+Delegation chain verification:
+  delegate's key → authorized by brand's key → in brand's keychain → valid chain to genesis
+```
+See [Ecosystem.md §Organizations and DAOs](Ecosystem.md#organizations-and-daos).
+
+## 14. Manifest (Public, No Secrets)
 ```javascript
 {
-    v: 1,                              // manifest version
-    rootCid: '...',                    // Merkle root of all chunk CIDs
+    v: 1,
+    rootCid: '...',
     encryptionRootPublicKey: '...',    // P-256 (65 bytes, uncompressed)
     accessRootPublicKey: '...',        // P-256 (65 bytes, uncompressed)
     bindingProof: '...',               // proves both keys + rootCid share one rootKey
     chunkCount: 42,
     chunkSize: 262144,                 // 256 KB default
-    size: 10485760,                    // original file size
+    size: 10485760,
     name: 'photo.jpg'
 }
 // Manifest is safe to share publicly — no secrets, no plaintext
 // bindingProof prevents key substitution attacks
 ```
 
-## 8. HLS Service Worker
+## 15. HLS Service Worker
 ```javascript
 // Service worker at Safecloud/sw.js intercepts:
 //   https://safecloud-hls.local/{videoId}/master.m3u8
@@ -170,28 +361,17 @@ rootKey (32 bytes, random or derived from videoKey+version)
 // Decrypts segments on-the-fly, serves to <video> element as standard HLS
 ```
 
-## 9. Server-Side Verification (Node.js)
+## 16. Server-Side Verification (Node.js)
 ```javascript
-// Manifest validation
-Q.Safecloud.Client.validateManifest(manifest);  // → {ok, reason}
-
-// Binding proof verification (encKey + accKey + rootCid belong to same rootKey)
-await Q.Safecloud.Client.verifyBindingProof(manifest);  // → Boolean
-
-// OCP grant verification
-await Q.Safecloud.Client.verifyGrant(grant, rootCid, chunkIndex);  // → Boolean
-
-// Drop announce signature verification (P-256 over RFC 8785 canonical JSON)
-Q.Safecloud.Drops.verifyAnnounce(announcePayload, publicKey);  // → Boolean
-
-// Challenge response verification (proof-of-storage)
-Q.Safecloud.Drops.verifyChallengeResponse(requestedCid, chunk);  // → Boolean
-
-// Slash threshold check (reputation)
-Q.Safecloud.Drops.shouldSlash(drop, failureLog);  // → Boolean
+Q.Safecloud.Client.validateManifest(manifest);                      // → {ok, reason}
+await Q.Safecloud.Client.verifyBindingProof(manifest);              // → Boolean
+await Q.Safecloud.Client.verifyGrant(grant, rootCid, chunkIndex);   // → Boolean
+Q.Safecloud.Drops.verifyAnnounce(announcePayload, publicKey);       // → Boolean
+Q.Safecloud.Drops.verifyChallengeResponse(requestedCid, chunk);     // → Boolean
+Q.Safecloud.Drops.shouldSlash(drop, failureLog);                    // → Boolean
 ```
 
-## 10. Common Mistakes
+## 17. Common Mistakes
 | Wrong | Right |
 |-------|-------|
 | Storing rootKey on the server | rootKey stays client-side; server sees only manifest (no secrets) |
@@ -203,3 +383,7 @@ Q.Safecloud.Drops.shouldSlash(drop, failureLog);  // → Boolean
 | Not calling `Drops.announce()` after puts | Jets need inventory updates for routing; announce after batch puts |
 | Serving sw.js without Service-Worker-Allowed header | HLS interception requires `Service-Worker-Allowed: /` header |
 | Assuming Drops persist forever | Drops are browser tabs; data can disappear; redundancy via multiple Drops |
+| Escrowing chain seeds instead of K_msg | Only escrow per-message key K_msg; HKDF one-way prevents seed leakage |
+| Skipping proof-of-escrow for media | `send-media` handler requires valid escrow ciphertext; text messages pass without |
+| Ignoring keychain fork signals | A fork means key theft or equivocation; invalidate from fork point forward |
+| Assuming single-threshold recovery | Recovery requires BOTH friend attestations AND cold keys simultaneously |
