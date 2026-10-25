@@ -13,6 +13,15 @@ Role-based guides in **`GetStarted/`**:
 
 This document is an overview of the internals of the Safecloud ecosystem. It can serve as the canonical context file for new LLM sessions working on the Safecloud project. It covers architecture, cryptographic design, all method signatures, and the role of OpenClaiming (OCP) in the system.
 
+**Companion documents** — this README covers the storage and compute primitives. The broader ecosystem is documented across several companion files:
+
+- **[Ecosystem.md](Ecosystem.md)** — how the pieces connect: the epoch protocol, keychains, delegated identity, organizations, E2E chat, neighborhood cameras, and the unifying role of the bidirectional hash-chain primitive.
+- **[EpochProtocol.md](EpochProtocol.md)** — full implementation reference for the bidirectional hash-chain epoch protocol: data structures, algorithms, invariants, failure modes.
+- **[Apps.md](Apps.md)** — SafecloudApps: WASM execution model on Jets, triggers, outbound endpoints, rooms and E2E encrypted chat handlers.
+- **[Flagging.md](Flagging.md)** — content moderation: storage/distribution layer (reputation, corroboration, jury) and E2E chat layer (client scanning, per-message key escrow, threshold ElGamal).
+- **[Attacks.md](Attacks.md)** — threat model: 150+ attack entries across storage, compute, payments, epoch protocol, and chat. Sections 10–11 cover epoch protocol and E2E chat specifically.
+- **[LLM.md](LLM.md)** — compact LLM-context summary of node types and the client API.
+
 ---
 
 ## Installation & Quick Start
@@ -98,6 +107,8 @@ The three network roles are:
 
 Jets never see plaintext. Drops never see plaintext. Only the Cloud (owner or
 authorised grantee) has the keys to decrypt.
+
+Beyond storage, Jets also serve as a compute layer — executing SafecloudApp WASM handlers for triggers, chat rooms, and content moderation workflows. See [Apps.md](Apps.md) for the execution model and [Ecosystem.md](Ecosystem.md) for how storage, compute, identity, and governance unify under a single cryptographic primitive.
 
 ---
 
@@ -211,6 +222,8 @@ serialisation). Used by OCP claim signing. Byte-identical to PHP
 ---
 
 ## 4. Tree Structures
+
+These tree structures underpin both storage (chunk integrity, routing) and SafecloudDB (the prolly-tree-based encrypted database that stores keychains, chat state, organization roles, and audit logs as tracks). See [Ecosystem.md §Storage: SafecloudDB and Drops](Ecosystem.md#storage-safeclouddb-and-drops) for how SafecloudDB uses prolly trees for O(diff × log n) reconciliation.
 
 ### 4.1 `Q.Data.Merkle` — ordered Merkle tree for chunk integrity
 
@@ -338,7 +351,7 @@ options.recovered:   Object        (optional — .address written here on EIP712
 ### 5.4 `Q.Crypto.delegate(options)` → Promise<delegation>
 
 Derives a child secret and creates a signed proof that the parent authorised it.
-Used by `Cloud.grant()` to create scoped access tokens.
+Used by `Cloud.grant()` to create scoped access tokens. This same primitive underpins keychain entries (§22), identity delegation ([Ecosystem.md §Delegated identity](Ecosystem.md#delegated-identity)), and organizational role grants ([Ecosystem.md §Organizations and DAOs](Ecosystem.md#organizations-and-daos)).
 
 ```js
 options.rootSecret: Uint8Array    (parent secret)
@@ -382,7 +395,7 @@ options.recovered:     Object        (optional)
 
 Every file has one master secret: the **rootKey** (32 random bytes). From it,
 everything is derived deterministically using `Q.Data.derive`. The owner must
-store the rootKey securely — it is not in the manifest.
+store the rootKey securely — it is not in the manifest. This hierarchy covers per-file storage keys. For identity key management (device keys, key rotation, revocation, recovery), see §22 Keychains below. For the epoch-based key derivation used in E2E chat and group membership, see [EpochProtocol.md](EpochProtocol.md).
 
 ```
 rootKey  (32 bytes — owner must keep this secret)
@@ -670,7 +683,7 @@ callback(err, { announced: Number })
 ## 11. Q.Safecloud.Jets API
 
 **Browser only.** Shared socket client used by both `Cloud` (uploaders/downloaders)
-and `Drops` (storage providers). All methods follow `Q.promisify` convention.
+and `Drops` (storage providers). All methods follow `Q.promisify` convention. Jets also execute SafecloudApp WASM handlers — see [Apps.md](Apps.md) for the execution model, including triggers, outbound endpoints, and room/chat handlers.
 
 ### Connection
 
@@ -884,7 +897,7 @@ see the JSDoc in `web/js/Safecloud.js` for signatures.
 ## 13. Node.js Jet Server (`classes/Safecloud/Jets.js`)
 
 The Jet server routes chunks between Cloud clients and Drop storage providers.
-It never decrypts anything.
+It never decrypts anything. For WASM handler execution, including the `WasmRunner` sandbox, see [Apps.md](Apps.md). For content moderation duties (reputation, flagging, jury coordination), see [Flagging.md](Flagging.md).
 
 ### Starting the server
 
@@ -967,7 +980,7 @@ All socket events under the `/Safecloud/cloud` namespace:
 
 **OCP is the authorisation and payment layer that governs who may store and
 retrieve chunks.** All chunk routing goes through Jets, so OCP verification
-lives primarily in the Jet server.
+lives primarily in the Jet server. OCP grants are also the mechanism for keychain entries and identity delegation — see §22 Keychains and [Ecosystem.md §Delegated identity](Ecosystem.md#delegated-identity). For a comprehensive list of attacks on OCP payment and authorisation flows, see [Attacks.md](Attacks.md) sections 5–7.
 
 ### What OCP is
 
@@ -1932,6 +1945,8 @@ property the incentive design below leans on.
 
 ## 21. Micropayments end to end, and the incentive design
 
+For attacks on the micropayment and incentive model (watermark replay, token withholding, split manipulation), see [Attacks.md](Attacks.md) sections 5–7.
+
 ### Configuration
 
 Server (`local/app.json` or plugin config): `Safecloud.jet.privateKey`
@@ -2064,6 +2079,69 @@ jets post author tokens. It is detection, not prevention — the
 recipientsHash already prevents redirection, and withholding is
 measurable on-chain (authors see which payer lines produce income). If it
 returns, it returns as a reputation feed, not an enforcement layer.
+
+---
+
+## 22. Keychains — identity key management
+
+A keychain is a single-writer hash-chained log stored as a SafecloudDB track at `keychain/{pubkey-fingerprint}`. It is the identity primitive: every user, device, organization, and delegate has a keychain. Keychains reuse the same bidirectional hash-chain epoch protocol documented in [EpochProtocol.md](EpochProtocol.md) — adding a device key is joining an epoch, rotating a key is an epoch transition, revoking a key is excluding a participant from the next epoch. The forward/backward chain math guarantees that after a key rotation the old key cannot derive the new epoch's secrets.
+
+### 22.1 Keychain entry structure
+
+Each entry is a key lifecycle operation, signed by the keychain owner and hash-chained via `prevHash`:
+
+```json
+{
+  "op":        "rotate | add | revoke",
+  "keyType":   "signing | encryption | threshold-share",
+  "key":       "base64...",
+  "prevHash":  "sha256:...",
+  "recovery":  "base64...",
+  "timestamp": 1697500000,
+  "signature": "..."
+}
+```
+
+Readers verify the chain by walking `prevHash` links back to the genesis entry. Keychain entries are OCP grants — the same `Delegation` typed data structure verified by `Client.js verifyGrant` (§5.4). This means delegation is not a separate mechanism; it is the identity system itself. See [Ecosystem.md §Delegated identity](Ecosystem.md#delegated-identity) for how brands and organizations delegate identity via OCP grants recorded in their keychains.
+
+### 22.2 Fork detection
+
+Because keychains are single-writer, a fork — two entries with the same `prevHash` — means either the writer's signing key was stolen or the writer is equivocating (publishing different histories to different readers). A fork is detectable via gossip: any two readers who compare notes will discover the conflicting entries. No EVM, blockchain, or Safebox is required for fork detection; it is an inherent property of hash chains with gossip.
+
+A fork invalidates the entire keychain from the fork point forward. The cost of forking is total: the forker loses their identity from the fork point onward and must go through the recovery protocol to re-establish a valid keychain. See [Attacks.md](Attacks.md) §10 for the full set of epoch-protocol attacks including keychain forks, and [Ecosystem.md §Fork detection](Ecosystem.md#fork-detection) for the broader discussion.
+
+### 22.3 Recovery protocol
+
+Recovery requires BOTH of two independent thresholds simultaneously:
+
+1. **M-of-N friend attestations** — M out of N pre-designated friends attest that the recovery is legitimate. Friends alone cannot commandeer the account.
+2. **A-of-B cold personal keys** — A out of B cold keys (hardware tokens, paper keys, keys in a safe deposit box) sign the recovery request. Cold keys alone cannot recover (preventing a thief who steals the safe deposit box from taking over).
+
+The recovery process:
+
+1. **SOS posted** — an SOS entry is posted to the keychain, signed by any current key (even a compromised one — the point is to start the clock).
+2. **72-hour window opens** — the network observes the SOS and begins a waiting period.
+3. **Cold key signatures collected** — A-of-B cold keys sign the recovery request.
+4. **Friend attestations collected** — M-of-N friends sign attestations confirming the recovery is legitimate.
+5. **Both thresholds met** — a new keychain genesis is created. The old keychain is tombstoned from the SOS point forward.
+6. **Counter-SOS** — if a competing SOS appears (indicating active key theft, where the attacker is also trying to "recover"), the keychain freezes. Resolution requires cold keys — the attacker is unlikely to have both the compromised online keys AND the cold keys.
+
+Recovery is itself an epoch transition. The new keychain genesis starts a new epoch with new keys. The old epoch's keys remain valid for decrypting historical content but cannot be used for new operations.
+
+### 22.4 Keychains and the broader ecosystem
+
+Keychains unify several things that would otherwise be separate systems:
+
+| Use case | Keychain role | See also |
+|---|---|---|
+| Device management | Adding/revoking device keys are epoch transitions | [EpochProtocol.md](EpochProtocol.md) |
+| Identity delegation | Delegation entries are OCP grants in the keychain | [Ecosystem.md §Delegated identity](Ecosystem.md#delegated-identity) |
+| Organizations | Each role is a keychain (hash-chained member list) | [Ecosystem.md §Organizations and DAOs](Ecosystem.md#organizations-and-daos) |
+| E2E chat | Chat conversations use the same epoch protocol | [Apps.md §Rooms and E2E encrypted chat](Apps.md), [Flagging.md §E2E chat content safety](Flagging.md) |
+| Key escrow governance | Threshold ElGamal key shares live in keychains | [Flagging.md §Threshold ElGamal decryption](Flagging.md) |
+| Content moderation | Reputation tied to keychain identity | [Flagging.md](Flagging.md), [Attacks.md](Attacks.md) §11 |
+
+The `Q.Crypto.delegate` primitive (§5.4) is the implementation: it derives a child secret via HKDF and creates a signed OCP grant proving the parent authorized the child. Every delegation chain is verifiable by walking the keychain hash chain back to genesis. See [Ecosystem.md §How the pieces connect](Ecosystem.md#how-the-pieces-connect) for the full picture of how keychains, epochs, delegation, chat, and organizations share code paths through `Q.Crypto.delegate`, HKDF derivation, and OCP grants.
 
 ---
 
