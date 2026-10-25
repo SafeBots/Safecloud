@@ -6,7 +6,7 @@ Decentralized encrypted storage, compute, and communication network. Browser cli
 
 ## 1. Node Types
 ```
-Cloud   — browser client: encrypts, decrypts, manifests, HLS streaming, pre-encryption scanning
+Cloud   — browser client: encrypts, decrypts, manifests, HLS streaming, client-side WASM scanning
 Jets    — Node.js routing server: chunk routing, grant verification, payment check, WASM handler execution
 Drops   — browser tabs: IndexedDB ciphertext storage, Prolly tree inventory, payment claiming
 Router  — Jet-to-Jet: Hyperswarm discovery, weighted Drop selection, relay
@@ -16,7 +16,7 @@ Router  — Jet-to-Jet: Hyperswarm discovery, weighted Drop selection, relay
 ```
 ┌─────────────────────────────────────────────────┐
 │  Client applications (browser / native)         │
-│  E2E encryption, scanning, key management       │
+│  E2E encryption, WASM scanning, key management   │
 ├─────────────────────────────────────────────────┤
 │  SafecloudApps (WASM on Jets)                   │
 │  Handlers, triggers, route handlers             │
@@ -218,18 +218,31 @@ See [Apps.md](Apps.md) for triggers, outbound endpoints, and room handlers.
 ```
 See [EpochProtocol.md](EpochProtocol.md) for the full bidirectional hash-chain implementation.
 
-## 10. Content Safety — Two Layers
+## 10. Content Safety — Three Layers
 ```
-Layer 1: Storage/distribution (Flagging.md)
-  — Nodes can inspect ciphertext metadata, not plaintext
+Layer 1: Client-side WASM scanning (Flagging.md §Layer 1)
+  — Client scans plaintext before encryption with whitelisted WASM classifier (CID-pinned)
+  — Proof-of-scan: deterministic ScanReport included in upload envelope
+  — Jet verifies proof-of-scan exists (cannot verify content — no plaintext)
+  — Whitelisted classifier hashes: client rejects unknown CIDs
   — Reputation system: shadowban gradient, stake-based flagging
-  — Corroboration: multiple independent flaggers required
+  — Corroboration: multiple independent scanners required
   — Jury: deterministic jury selection, secret ballot, reputation consequences
   — Anti-griefing: false flaggers lose reputation and stake
 
-Layer 2: E2E chat (Flagging.md §E2E chat content safety)
-  — Client-side scanning: PDQ (images), NSFWjs, text toxicity
-  — Runs before encryption (sender) and after decryption (recipient)
+Layer 2: Safebox chaperone scanning (Flagging.md §Layer 2)
+  — Attested Safecloud client running in Safebox TEE
+  — Attestation-gated room admission: OCP safebox_announce claim, verifyAnnounce()
+  — Scoped grants: time-limited read-only access to specific CIDs
+  — Retrospective scanning: catches content missed at upload or newly added to hash DBs
+  — Tier 2 classifiers: Detoxify (420 MB), multilingual models, small LLMs (1-3B Q4_0)
+  — Periodic re-attestation: fresh TPM quote every 600 seconds or ejection
+  — Chaperone flag weight: attestation_multiplier = 1.5 (proves unmodified code)
+
+Layer 3: E2E chat (Flagging.md §E2E chat content safety)
+  — Bilateral client-side scanning: sender pre-encryption + recipient post-decryption
+  — Batched chaperone delivery: flagged messages flushed every ~10 min, shuffled
+  — Severity-tiered deniability: clean (full), light flag (no attribution), heavy flag (attributed)
   — Per-message key escrow: Enc(PK_threshold, K_msg) under threshold ElGamal
   — Proof of escrow: send-media handler requires valid escrow ciphertext
   — Threshold decryption: k-of-n DKG, no TEE required
