@@ -528,6 +528,13 @@ Safecloud_Router.onDropAnnounce = function (drop, diff) {
             // Emit 'available' on 0→1 transition
             if (Object.keys(_cidCoverage[rootCid]).length === 1) {
                 Safecloud_Router.announce(rootCid, 'available');
+                // Real EventEmitter signal (Q.makeEventEmitter(Safecloud_Router)
+                // above) for in-process listeners -- announce() itself is still
+                // just a log line (TODO Phase 4: gossip), so this is the only
+                // actual notification today. Q.Safecloud.Jets listens for this
+                // to flip a Media/episode stream's closedTime back off once a
+                // Drop re-announces its content.
+                Safecloud_Router.emit('available', rootCid);
             }
         } else {
             if (_cidCoverage[rootCid]) {
@@ -536,6 +543,7 @@ Safecloud_Router.onDropAnnounce = function (drop, diff) {
                 if (Object.keys(_cidCoverage[rootCid]).length === 0) {
                     delete _cidCoverage[rootCid];
                     Safecloud_Router.announce(rootCid, 'unavailable');
+                    Safecloud_Router.emit('unavailable', rootCid);
                 }
             }
         }
@@ -558,6 +566,7 @@ Safecloud_Router.onDropDisconnected = function (drop) {
             if (Object.keys(_cidCoverage[rootCid]).length === 0) {
                 delete _cidCoverage[rootCid];
                 Safecloud_Router.announce(rootCid, 'unavailable');
+                Safecloud_Router.emit('unavailable', rootCid);
             }
         }
     });

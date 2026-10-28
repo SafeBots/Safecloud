@@ -30,6 +30,11 @@
             "slashWindowMs": 3600000,
             "sbuxPerMB": 0.02
         },
+        "video": {
+            "offlineCheckIntervalMs": 10000000,/* 300000 */
+            "startupGraceMs": 10000000,/* 180000 */
+            "offlineCheckBatchSize": 50
+        },
         "safebux": {
             "address": null,
             "chainId": "eip155:56",
