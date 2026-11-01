@@ -14,6 +14,13 @@
  *   'sev_snp' — Raw AMD SEV-SNP (binary, ES384, VCEK cert chain)
  *   'tdx'     — Raw Intel TDX (binary quote, ES256, AK + PCK cert chain)
  *
+ * Static helpers:
+ *   AttestationVerifier.verifyMLDSASig(sigB64, msg, pkB64)
+ *     Verify a single ML-DSA-65 signature with graceful degradation when
+ *     @noble/post-quantum is not installed (older Qbix without the PQ patch).
+ *     Returns { ok, available, error } — distinguishes "library missing"
+ *     from "signature bad" so callers can emit the right diagnostic.
+ *
  * Usage:
  *   var verifier  = new AttestationVerifier(trustStore);
  *   var result    = await verifier.verify('nitro', doc, resolvedKeys);
@@ -28,6 +35,22 @@ var Azure   = require('./providers/Azure');
 var OCI     = require('./providers/OCI');
 var SEV_SNP = require('./providers/SEV_SNP');
 var TDX     = require('./providers/TDX');
+
+// ── ML-DSA-65 lazy loader ──────────────────────────────────────────────────────
+// Cached after first successful import.  If @noble/post-quantum is not
+// installed (older Qbix without the PQ patch) the import throws — the
+// catch path in verifyMLDSASig returns { available: false } instead of
+// crashing the caller.
+var _mlDsaModule = null;
+
+function _getMlDsa() {
+    if (_mlDsaModule) return Promise.resolve(_mlDsaModule);
+    // ESM-only package — must use dynamic import
+    return import('@noble/post-quantum/ml-dsa.js').then(function (mod) {
+        _mlDsaModule = mod;
+        return mod;
+    });
+}
 
 var PROVIDERS = ['nitro', 'gcp', 'azure', 'oci', 'sev_snp', 'tdx'];
 
@@ -165,6 +188,56 @@ AttestationVerifier.detect = function (doc) {
         if (doc.length >= 8 && doc.readUInt16LE(0) === 4 && doc.readUInt32LE(4) === 0x00000081) return 'tdx';
     }
     return null;
+};
+
+// ── ML-DSA-65 static helper ────────────────────────────────────────────────────
+
+/**
+ * Verify a single ML-DSA-65 signature.
+ *
+ * Returns a structured result rather than throwing so callers can distinguish
+ * "PQ library not installed" from "signature is bad":
+ *   { ok: false, available: false } — @noble/post-quantum not installed (older Qbix)
+ *   { ok: false, available: true  } — library present but signature failed
+ *   { ok: true,  available: true  } — signature verified
+ *
+ * Argument order matches @noble/post-quantum and the Qbix platform patch:
+ *   ml_dsa65.verify(signature, message, publicKey)
+ *
+ * Pass raw canonical bytes as `msg` — FIPS 204 hashes internally (SHAKE256
+ * per §3.4); do NOT pre-hash with SHA-256 unless the Safebox is specifically
+ * signing a digest (e.g. for a challenge-response).
+ *
+ * @param {string}         sigB64  Base64-encoded ML-DSA-65 signature (3309 bytes).
+ * @param {Buffer|string}  msg     Canonical message bytes (Buffer or UTF-8 string).
+ * @param {string}         pkB64   Base64-encoded ML-DSA-65 public key (1952 bytes).
+ * @returns {Promise<{ ok: boolean, available: boolean, error: string|null }>}
+ */
+AttestationVerifier.verifyMLDSASig = function (sigB64, msg, pkB64) {
+    return _getMlDsa()
+        .then(function (mod) {
+            try {
+                var sigRaw = Buffer.from(sigB64, 'base64');
+                var pk     = Buffer.from(pkB64, 'base64');
+                var msgBuf = Buffer.isBuffer(msg) ? msg : Buffer.from(msg, 'utf8');
+                // ml_dsa65.verify(signature, message, publicKey) → boolean
+                var ok = mod.ml_dsa65.verify(sigRaw, msgBuf, pk);
+                return ok
+                    ? { ok: true,  available: true, error: null }
+                    : { ok: false, available: true, error: 'signature check returned false' };
+            } catch (e) {
+                return { ok: false, available: true, error: e.message };
+            }
+        })
+        .catch(function (e) {
+            // @noble/post-quantum not installed on this Qbix version — soft fail.
+            // Callers check available:false to distinguish from a bad sig.
+            return {
+                ok:        false,
+                available: false,
+                error:     '@noble/post-quantum unavailable: ' + (e && e.message)
+            };
+        });
 };
 
 module.exports = AttestationVerifier;

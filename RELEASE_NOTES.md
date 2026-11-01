@@ -1,5 +1,111 @@
 # Safecloud Release Notes
 
+## Safecloud 3.2
+
+ML-DSA-65 hybrid governance attestation and Safebox liveness check. Layered on top of the 3.1 PQClaim scanner authorization — adds quantum-resistant verification to the Safebox's own identity claim, and a challenge-response heartbeat to prove the TEE is live at connection time.
+
+All changes are additive. No existing API surfaces changed. Older Qbix versions without `@noble/post-quantum` continue to work for classical attestation; the new PQ options degrade gracefully with a clear diagnostic.
+
+---
+
+### ML-DSA-65 governance attestation (`requirePQAttestation`)
+
+The 3.1 PQClaim proves who authorized a scannerCID. Governance attestation goes one level deeper: it verifies that the Safebox's own governance claim (the OpenClaim OCP document that authorized the Safebox to operate) carries a valid ML-DSA-65 signature.
+
+After the Qbix platform PQ patch, a Safebox governance claim has parallel `key[]`/`sig[]` arrays with both ES256 and ML-DSA-65 entries. Index `i` of `key[]` pairs with index `i` of `sig[]`. The new `requirePQAttestation` policy option verifies that at least one of those signatures is a valid ML-DSA-65 signature over the canonical claim text.
+
+**Usage:**
+
+```js
+var policy = new AttestationPolicy({
+    scannerCID:           'bafybeig…',
+    requirePQAttestation: true,          // require ML-DSA-65 sig in governance claim
+    pqTrustedKeys: [                     // optional: pin specific key URI(s)
+        'data:key/ml-dsa-65;base64,<1952-byte raw pk>'
+    ]
+});
+
+var pass = await policy.evaluate(verifierResult, {
+    govClaim:      parsedGovClaim,     // parsed OCP document with key[]/sig[] arrays
+    govClaimCanon: canonicalClaimText  // Q.Crypto.OpenClaim.canonicalize(parsedGovClaim)
+});
+// { pass: true, reason: null }
+```
+
+Degradation on older Qbix (no `@noble/post-quantum`):
+
+```js
+// { pass: false, reason: 'requirePQAttestation: ML-DSA-65 library unavailable on this Qbix version — install @noble/post-quantum ^0.7.1 or disable requirePQAttestation' }
+```
+
+---
+
+### Safebox liveness check (`livenessCheck`)
+
+A cached attestation document proves the Safebox was genuine when it was issued — not that it's alive right now. The liveness check closes that gap with a challenge-response: the client posts a fresh nonce, the Safebox signs it with its ML-DSA-65 key, and the client verifies the signature over `SHA-256(nonce || claim_bytes)`.
+
+Three states (default: `null`, i.e. disabled):
+
+| `livenessCheck` | Behavior on failure |
+|-----------------|---------------------|
+| `null` / `false` | No-op; old Safeboxes unaffected |
+| `true` | Warn to console; proceed anyway |
+| `'strict'` | Reject — resolves `{ live: false, reason: '...' }` |
+
+**Usage:**
+
+```js
+var fetcher = new AttestationFetcher(trustStore, {
+    livenessCheck: 'strict'  // or true for non-blocking
+});
+
+var liveness = await fetcher.checkLiveness(
+    'https://safebox.example.com',
+    canonicalClaimText,
+    govClaim.key   // key[] array from the governance claim
+);
+if (!liveness.live) {
+    throw new Error('Safebox liveness failed: ' + liveness.reason);
+}
+```
+
+The Safebox endpoint: `POST {safeboxUrl}/attestation/challenge` receives `{ nonce: "<32-byte hex>" }` and returns `{ signature: "<base64 ML-DSA-65 sig over SHA-256(nonce || claim)>" }`. Old Safeboxes without this endpoint are unaffected when `livenessCheck` is at its default `null`.
+
+---
+
+### `AttestationVerifier.verifyMLDSASig` static helper
+
+New shared helper called by both the policy checker and the liveness check. Lazy-imports `@noble/post-quantum/ml-dsa.js` and caches the module. Returns a structured result rather than throwing:
+
+```js
+var result = await AttestationVerifier.verifyMLDSASig(sigB64, msg, pkB64);
+// { ok: true,  available: true,  error: null }              — verified
+// { ok: false, available: true,  error: 'signature check returned false' } — bad sig
+// { ok: false, available: false, error: '@noble/post-quantum unavailable: …' } — old Qbix
+```
+
+`msg` may be a Buffer or UTF-8 string. FIPS 204 applies its own SHAKE256 internally — pass raw canonical bytes for governance claim verification, or `SHA-256(nonce || claim)` for challenge-response.
+
+---
+
+### Backward compatibility and EVM
+
+- **Older Qbix (no `@noble/post-quantum`):** classical attestation (ES256/ES384/RS256) works exactly as in 3.0/3.1. The new options default to `null`. If `requirePQAttestation` is set on such a Qbix, the error message names the missing package and how to enable it.
+- **Old Safeboxes (no `/attestation/challenge`):** unaffected when `livenessCheck` is at its default. `livenessCheck: true` catches the 404 and continues; `'strict'` returns `{ live: false }`.
+- **EVM/EIP-712:** the `ecrecover`-based signing path is completely untouched. ML-DSA-65 is additive — a separate module invoked only when the new options are set.
+
+---
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `classes/Safecloud/Attestation/AttestationVerifier.js` | Added `verifyMLDSASig` static method + ML-DSA-65 lazy loader |
+| `classes/Safecloud/Attestation/AttestationPolicy.js` | Added `requirePQAttestation`, `pqTrustedKeys` options; refactored `evaluate()` to `Promise.all` pattern |
+| `classes/Safecloud/Attestation/AttestationFetcher.js` | Added `livenessCheck` option, `checkLiveness()` method, `_post()` helper |
+
+---
+
 ## Safecloud 3.0
 
 The trust, persistence, and authoring release. Ships in one batch: TEE attestation across six hardware providers, post-quantum scanner authorization, durable SafecloudDB state, Jet HTTP file serving, a browser-native author upload pipeline, and embed player polish.

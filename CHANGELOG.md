@@ -1,5 +1,58 @@
 # Changelog
 
+## 3.2.0 — 2026-10-31
+
+### ML-DSA-65 hybrid governance attestation and Safebox liveness check
+
+Extends Safecloud's post-quantum attestation stack to cover the Safebox governance layer — not just the scanner authorization (PQClaim, 3.1.0) but the Safebox's own identity claim. Adds a challenge-response liveness check to prove the Safebox TEE is live at connection time, not replaying a cached attestation document. All changes are additive and backward-compatible: existing policies and older Qbix versions without `@noble/post-quantum` are unaffected.
+
+**Backward-compatible degradation matrix:**
+
+| Qbix version | `@noble/post-quantum` | `requirePQAttestation` | `livenessCheck` | Behavior |
+|---|---|---|---|---|
+| New (patched) | ✓ installed | not set | not set | Identical to 3.1.0 |
+| New (patched) | ✓ installed | set | `'strict'` | Full PQ verification + liveness |
+| Old (unpatched) | ✗ missing | not set | not set | Identical to 3.0.0 — no change |
+| Old (unpatched) | ✗ missing | set | any | Fails with "library unavailable" reason |
+
+**EVM compatibility:** EIP712/ecrecover path is completely untouched. ML-DSA-65 is additive only.
+
+#### A — `AttestationVerifier.js`: ML-DSA-65 static helper
+
+New static method `AttestationVerifier.verifyMLDSASig(sigB64, msg, pkB64)`:
+- Returns `{ ok, available, error }` — distinguishes "library missing" (`available: false`, old Qbix) from "signature bad" (`ok: false, available: true`) to enable the right diagnostic in each caller.
+- Lazy-imports `@noble/post-quantum/ml-dsa.js` (ESM-only package) via `import()`, caches the module across calls. Soft-catches import failures so older Qbix without the package does not crash.
+- `msg` may be a Buffer or UTF-8 string. FIPS 204 hashes internally (SHAKE256); callers should NOT pre-hash unless signing a challenge-response digest.
+- Argument order: `ml_dsa65.verify(signature, message, publicKey)` — matches the `@noble/post-quantum` API and the Qbix platform PQ patch.
+
+#### B — `AttestationPolicy.js`: governance claim PQ attestation
+
+New policy options:
+
+- **`requirePQAttestation`** (default: `null`/falsy) — when set, `evaluate()` verifies that the Safebox governance claim (`opts.govClaim`) carries at least one valid ML-DSA-65 signature. The caller passes:
+  - `opts.govClaim` — parsed OpenClaim OCP document with parallel `key[]`/`sig[]` arrays (index `i` of `key[]` paired with index `i` of `sig[]`).
+  - `opts.govClaimCanon` — canonical UTF-8 string (output of `Q.Crypto.OpenClaim.canonicalize(claim)`) that was signed.
+- **`pqTrustedKeys`** (default: `null`) — when set alongside `requirePQAttestation`, only key URIs in this array are accepted. Key URI format: `data:key/ml-dsa-65;base64,<1952-byte raw public key>`.
+- `evaluate()` now returns a `Promise` when either `requirePQClaim` or `requirePQAttestation` is set. For policies with neither, it remains synchronous. Callers should always `await`.
+
+Internals: new private `_checkPQAttestation(policy, opts)` helper. Collects all ML-DSA-65 key/sig pairs from the governance claim, verifies each via `verifyMLDSASig`, passes if any one succeeds. `toJSON()` serializes new fields.
+
+#### C — `AttestationFetcher.js`: Safebox liveness check
+
+New option `livenessCheck` (default: `null`):
+- `null` / `false` — `checkLiveness()` is a no-op; resolves `{ live: true }` immediately. Old Safeboxes without `/attestation/challenge` are unaffected.
+- `true` — attempt challenge-response; 404 / timeout / missing PQ library → warn to console + resolve live. Non-blocking for clients where liveness is a nice-to-have.
+- `'strict'` — challenge-response required; any failure (unreachable endpoint, bad signature, missing library) resolves `{ live: false, reason: '...' }` so the caller can reject the Safebox.
+
+New method `checkLiveness(safeboxUrl, govClaimCanon, govClaimKeys)`:
+- POSTs `{ nonce: <32-byte hex> }` to `{safeboxUrl}/attestation/challenge`.
+- Expects `{ signature: <base64 ML-DSA-65 sig> }` in response.
+- Computes `digest = SHA-256(nonce_bytes || govClaimCanon_bytes)` and verifies the signature via `verifyMLDSASig(resp.signature, digest, pkB64)`. FIPS 204 then applies its own SHAKE256 on top of the digest.
+- Finds the first `data:key/ml-dsa-65;base64,` URI in `govClaimKeys` to extract the public key.
+- Uses a tighter 5 s timeout (vs the 10 s default for JWKS/cert fetches).
+
+New `_post(url, body, timeoutMs)` helper mirrors `_get` with dual Node.js (`https.request`) / browser (`window.fetch`) paths.
+
 ## 3.1.0 — 2026-10-28
 
 ### Post-quantum scanner authorization (ML-DSA-65 / FIPS 204)
