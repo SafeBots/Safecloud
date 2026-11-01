@@ -45,7 +45,7 @@ Q.Tool.define('Safecloud/video', function (options) {
         tool.metrics = new Q.Streams.Metrics(sm);
     }
 
-        tool.text.video = Q.extend({
+    tool.text.video = Q.extend({
         Starting: 'Starting stream…',
         Error: 'Playback error',
         NoManifest: 'No content loaded'

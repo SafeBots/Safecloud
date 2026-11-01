@@ -26,7 +26,13 @@ const Q = {
   listen: () => ({ attached: { express: { post:()=>{}, get:()=>{}, put:()=>{}, use:()=>{} } } }),
   require: () => { throw new Error('no plugin'); },
   app: { DIR: '/tmp/nonexistent' },
-  Crypto: {},
+  Crypto: {
+    // Pre-populate so Jets.js guards (if !Q.Crypto.OpenClaim) never fire the require
+    OpenClaim: {
+      verify: async () => ({ ok: false }),
+      EVM: { verify: async () => ({ ok: false }) }
+    }
+  },
   Data: {},
   Assets: {},
   Socket: {},
@@ -47,6 +53,13 @@ Module._load = function(request, parent, isMain) {
   if (request === './Client') return stubs['./Client'];
   if (request === './Drops') return stubs['./Drops'];
   if (request === './JetSwarm') return stubs['./JetSwarm'];
+  // Stub Q sub-modules that self-attach (guard conditions in Jets.js should
+  // prevent these requires from firing given the pre-populated Q stub, but
+  // intercept anyway to keep the test hermetic)
+  if (request === 'Q/Data') return Q.Data;
+  if (request === 'Q/Crypto') return Q.Crypto;
+  if (request === 'Q/Crypto/OpenClaim') return Q.Crypto.OpenClaim;
+  if (request === 'Q/Crypto/OpenClaim/EVM') return Q.Crypto.OpenClaim.EVM;
   return origLoad.apply(this, arguments);
 };
 

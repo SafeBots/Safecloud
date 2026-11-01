@@ -530,3 +530,69 @@ NameResolver.fromCheckpoint(store, rootCid);
 **CID format:** `'bafy' + sha256(JSON.stringify(state)).slice(0, 56)` with keys sorted at every nesting level for deterministic serialization. Two trees with the same root CID contain the same data.
 
 See [DataStructures.md](DataStructures.md) for full documentation, cross-structure workflows, and interoperability mapping.
+
+## 20. Attestation Verifier (Safecloud 3.0 — Safebox TEE Trust)
+
+The `classes/Safecloud/Attestation/` module verifies that a Safebox chaperone is running an approved scanner WASM inside a real TEE. All imports are Node.js built-ins + this repo — no external deps.
+
+```js
+const Attestation = require('safecloud/classes/Safecloud/Attestation');
+
+// ── Main API ──────────────────────────────────────────────────────────────────
+const store    = new Attestation.TrustStore();    // loads pinned root CAs from trust-roots/
+const fetcher  = new Attestation.Fetcher(store);  // network: JWKS, VCEK certs, Intel root
+const verifier = new Attestation.Verifier(store); // pure: no network
+
+// ── Per-provider verify ───────────────────────────────────────────────────────
+// Nitro — doc is a COSE_Sign1 Buffer (no pre-fetch needed; cert chain in doc)
+const result = await verifier.verify('nitro', docBuffer, {});
+// GCP / Azure — fetch rotating JWKS first
+const gcpJwks  = await fetcher.fetchGCPJwks();
+const azJwks   = await fetcher.fetchAzureJwks(tenantId);
+await verifier.verify('gcp',   jwtString, { jwks: gcpJwks });
+await verifier.verify('azure', jwtString, { jwks: azJwks });
+// OCI/Veraison — key is a KeyObject (from fetcher) or JWKS { keys: [...] }
+const veraisonKey = await fetcher.fetchVeraisonKey(url);
+await verifier.verify('oci', jwtString, { veraisonKey });
+// SEV-SNP — report is a 1184-byte Buffer; VCEK cert from AMD KDS
+const vcekKey = await fetcher.fetchVCEK(product, chipId);
+await verifier.verify('sev_snp', reportBuffer, { vcekDER: vcekKey });
+// TDX — quote is a v4 TDX quote Buffer; Intel root CA from fetcher
+const intelRoot = await fetcher.fetchIntelRootCA();
+await verifier.verify('tdx', quoteBuffer, { intelRootDER: intelRoot });
+
+// Result shape (all providers):
+// { valid: true, provider, scannerCID, claims, ... provider-specific fields }
+
+// ── Policy ────────────────────────────────────────────────────────────────────
+const policy = new Attestation.Policy({
+  scannerCID: 'bafybei...',      // approved scanner WASM CID
+  providers:  ['nitro', 'gcp'],  // allowed TEE providers
+  allowDebug: false              // reject debug-mode enclaves (default)
+});
+const { pass, reason } = policy.evaluate(result);
+```
+
+**Six supported providers:**
+
+| Provider | Wire format | Algorithm | `scannerCID` location |
+|----------|-------------|-----------|----------------------|
+| `nitro` | COSE_Sign1 (CBOR) | ES384 | `user_data` claim |
+| `gcp` | JWT | RS256 | `user_data` claim |
+| `azure` | JWT | RS256 | `x-ms-runtime.user-data` (base64) |
+| `oci` | JWT (EAR) | ES256 | `user_data` claim |
+| `sev_snp` | Binary (1184B) | ES384 | `report_data[0..63]` |
+| `tdx` | TDX Quote v4 | ES256 | `report_data[0..63]` (at +0x248 in TD report) |
+
+**Utilities exposed at `Attestation.util`:**
+- `cbor` — encode/decode CBOR (supports 64-bit integers for Nitro timestamps)
+- `jwt` — parseJWT, verifyJWT (takes a **single JWK** or KeyObject, not a full JWKS; providers extract by `kid` themselves), base64urlEncode/Decode
+- `cose` — parseCOSESign1 (returns `{ protectedHeaders, protectedBytes, payload, signature, sigStructure }`), verifyCOSESign1
+- `certchain` — verifyChain(leaf, cabundle, trustedRootDER)
+
+**Common mistakes:**
+- `jwt.verifyJWT(token, jwks)` — wrong; pass a single JWK, not `{ keys: [...] }`; providers call `_selectJWK(jwks, kid)` first
+- `TDX.verify` with `TD_REPORT_SIZE = 584` — wrong; the TD report is 648 bytes (0x288); `report_data` is at +0x248 (offset 584) inside it, before `sig_data_size` at +0x288
+- Passing a `Date.now()` millisecond timestamp as CBOR — the encoder now supports 64-bit integers (CBOR additional info 27); only a problem if you use an older build
+
+**Unit tests:** `tests/attestation_verifier.test.js` — 71 tests, all green. Uses pre-baked fixture files in `tests/fixtures/{provider}/` (signed with generated test keys). Run with `node --test tests/attestation_verifier.test.js`.

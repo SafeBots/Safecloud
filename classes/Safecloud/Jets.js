@@ -1166,7 +1166,7 @@ Safecloud_Jets.listen = function (options) {
     var server = Q.listen();
     // Ensure JSON bodies are parsed for our POST endpoints (sponsor, faucet).
     // Harmless if a parser is already installed upstream.
-    try { server.attached.express.use(express.json({ limit: '256kb' })); }
+    try { server.attached.express.use(express.json({ limit: '8mb' })); }
     catch (eJson) { /* parser may already be present */ }
     server.attached.express.post('/Q/node', Safecloud_Jets_request_handler);
 
@@ -1525,6 +1525,21 @@ Safecloud_Jets.listen = function (options) {
             _handleSubtreeGet(client, userId, payload, ack);
         });
 
+        // ── safedb root-update gossip  (Safecloud 3.2) ───────────────────────
+        // Peer Jets broadcast { appCid, track, rootCid, checkpointCid, seq,
+        // jetId } after each successful track checkpoint write.  We merge it
+        // into local _trackStore via WasmRunner.applyRootUpdate(), which skips
+        // the message if our local seq is already >= the announced seq (monotone
+        // anti-entropy guard in place of a full Bloom diff for 3.2).
+        on('safedb:root-update', function (payload) {
+            if (!payload || typeof payload !== 'object') { return; }
+            if (payload.jetId === WasmRunner._jetId) { return; } // own echo
+            WasmRunner.applyRootUpdate(payload).catch(function (err) {
+                Q.log('Q.Safecloud.Jets: applyRootUpdate failed: '
+                    + (err && err.message), 'Safecloud');
+            });
+        });
+
         // ── Cloud: check content availability without fetching ────────────────
         // Lightweight pre-flight check — "is at least one Drop online that can
         // serve this rootCid right now", with none of the grant/access/payment
@@ -1693,8 +1708,42 @@ Safecloud_Jets.listen = function (options) {
             var sign = crypto.createSign('SHA256');
             sign.update(buf);
             return sign.sign(_jetKeypair, 'hex');
-        } : null
+        } : null,
+        // Durable track checkpoint index (Safecloud 3.2)
+        checkpointIndexPath: Q.Config.get(
+            ['Safecloud', 'wasm', 'checkpointIndexPath'],
+            require('path').join(require('os').homedir(), '.safecloud-checkpoints.json')
+        )
     });
+
+    // ── Wire gossip emit callback (Safecloud 3.2) ─────────────────────────
+    // After each checkpoint write, WasmRunner calls this to broadcast the
+    // new root CID to all peer Jets over the /Safecloud/cloud namespace.
+    WasmRunner._emitRootUpdate = function (msg) {
+        try {
+            socket.io.of('/Safecloud/cloud').emit('safedb:root-update', msg);
+        } catch (e) {
+            Q.log('Q.Safecloud.Jets: safedb:root-update emit failed: '
+                + (e && e.message), 'Safecloud');
+        }
+    };
+
+    // ── Restore track state from Drops checkpoints (Safecloud 3.2) ───────
+    // Best-effort — Jets start serving immediately; restoration completes
+    // asynchronously. Handlers that execute before restoration finishes
+    // start from empty state and will checkpoint after their first write.
+    WasmRunner.restoreCheckpoints(
+        Q.Config.get(
+            ['Safecloud', 'wasm', 'checkpointIndexPath'],
+            require('path').join(require('os').homedir(), '.safecloud-checkpoints.json')
+        )
+    ).then(function () {
+        Q.log('Q.Safecloud.Jets: WasmRunner track restore complete', 'Safecloud');
+    }).catch(function (err) {
+        Q.log('Q.Safecloud.Jets: WasmRunner track restore error: '
+            + (err && err.message), 'Safecloud');
+    });
+
     Q.log('Q.Safecloud.Jets: WasmRunner initialized', 'Safecloud');
 
     _listenResult = { internal: server, socket: socket };
@@ -2645,6 +2694,15 @@ function _registerHttpRoutes(app) {
     // "simple" requests (no preflight), but the PUT below sends a JSON
     // body, which is not CORS-safelisted and does trigger an OPTIONS
     // preflight — handle that too.
+    // ── Static player / embed files  (Safecloud 3.2) ──────────────────────
+    // Serve embed.html, player.js and companion assets from the /web directory
+    // at /Safecloud/player so any Jet acts as an HTTP origin for iframe embeds.
+    // Example: https://<jet-host>/Safecloud/player/embed.html?rootCid=bafy…
+    app.use('/Safecloud/player', require('express').static(
+        require('path').join(__dirname, '../../web'),
+        { maxAge: '1h', etag: true }
+    ));
+
     app.use('/Safecloud/cloud', function (req, res, next) {
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
@@ -2698,6 +2756,56 @@ function _registerHttpRoutes(app) {
         res.json({ fragment: frag });
     });
 
+    // ── Author upload pipeline (Safecloud 3.3) ────────────────────────────
+    // Browsers posting file chunks from author.html hit these routes.
+    // CORS is open because authors may self-host their dashboard on any origin.
+    app.use('/Safecloud/author', function (req, res, next) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        if (req.method === 'OPTIONS') { return res.status(204).end(); }
+        next();
+    });
+
+    // POST /Safecloud/author/upload — proxy a batch of chunks to connected Drops.
+    // Body: { chunks:[{cid,data:base64}], fragment?:{rootCid,value} }
+    // Each chunk's data must be the base64-encoded raw bytes (not the manifest).
+    // On the final batch the caller may include `fragment` to register the
+    // server-side entropy half for split-key encrypted uploads.
+    app.post('/Safecloud/author/upload', function (req, res) {
+        _handleAuthorUpload(req, res);
+    });
+
+    // GET /Safecloud/drop/price?bytes=N — storage cost estimate.
+    // Returns per-byte price from config (defaults to free / '0' wei).
+    app.use('/Safecloud/drop', function (req, res, next) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        next();
+    });
+    app.get('/Safecloud/drop/price', function (req, res) {
+        _handleDropPrice(req, res);
+    });
+
+    // POST /safecloud/fragment — HTTP counterpart to the socket.io
+    // Safecloud/content/registerFragment event, used by browser-only upload
+    // clients that have no socket connection to the Jet.
+    // Body: { rootCid, fragment } — fragment is the base64/hex server half.
+    app.options('/safecloud/fragment', function (req, res) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+        res.status(204).end();
+    });
+    app.post('/safecloud/fragment', function (req, res) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        var body = req.body;
+        if (!body || !body.rootCid || !body.fragment) {
+            return res.status(400).json({ error: 'rootCid and fragment required' });
+        }
+        _serverFragments.set(body.rootCid, body.fragment);
+        res.json({ registered: true });
+    });
+
     // Jet-to-Jet relay
     app.get('/Safecloud/cloud/relay/:rootCid', function (req, res) {
         _handleHttpRelayGet(req, res);
@@ -2712,6 +2820,80 @@ function _registerHttpRoutes(app) {
     });
     app.all('/Safecloud/app/:appCid', function (req, res) {
         _handleHttpAppRoute(req, res);
+    });
+}
+
+/* ── Author upload handlers (Safecloud 3.3) ─────────────────────────────── */
+
+/**
+ * POST /Safecloud/author/upload
+ * Receives a batch of content-addressed chunks from the browser upload library
+ * and proxies them to one of the Jet's connected Drops.
+ *
+ * Body: {
+ *   chunks:   [{cid: string, data: string}]   // data = base64-encoded bytes
+ *   fragment: {rootCid: string, value: string} // optional — split-key entropy half
+ * }
+ */
+function _handleAuthorUpload(req, res) {
+    var body = req.body;
+    if (!body || !Array.isArray(body.chunks) || !body.chunks.length) {
+        return res.status(400).json({ error: 'chunks array required' });
+    }
+
+    var chunks = body.chunks;
+
+    // Validate each chunk entry
+    for (var i = 0; i < chunks.length; i++) {
+        var c = chunks[i];
+        if (!c || typeof c.cid !== 'string' || typeof c.data !== 'string') {
+            return res.status(400).json({ error: 'each chunk must have cid (string) and data (base64 string)' });
+        }
+    }
+
+    // Register server fragment if present (split-entropy for encrypted uploads)
+    if (body.fragment && body.fragment.rootCid && body.fragment.value) {
+        _serverFragments.set(body.fragment.rootCid, body.fragment.value);
+    }
+
+    // Select a Drop to write to (use first CID as routing hint)
+    var cids = chunks.map(function (c) { return c.cid; });
+    Safecloud_Jets.selectDrops(cids, {}).then(function (drops) {
+        if (!drops || !drops.length) {
+            return res.status(503).json({ error: 'No Drops available — connect a Drop node to this Jet first.' });
+        }
+        // Proxy the batch to the selected Drop
+        return Safecloud_Jets.callDrop(drops[0], 'Safecloud/drop/put', {
+            chunks:  chunks.map(function (c) { return { cid: c.cid, data: c.data }; }),
+            options: {}
+        }).then(function () {
+            res.json({ uploaded: chunks.length });
+        });
+    }).catch(function (err) {
+        var msg = err && err.message ? err.message : String(err);
+        Q.log('Safecloud author upload error: ' + msg, 'Safecloud');
+        res.status(500).json({ error: msg });
+    });
+}
+
+/**
+ * GET /Safecloud/drop/price?bytes=N
+ * Returns a storage cost estimate in wei.
+ * The per-byte price is read from config key Safecloud.author.uploadPricePerByte
+ * (defaults to '0', meaning free / subsidised by the Drop operator).
+ */
+function _handleDropPrice(req, res) {
+    var bytes = parseInt(req.query.bytes, 10) || 0;
+    var perByteWei = Q.Config.get(['Safecloud', 'author', 'uploadPricePerByte'], '0');
+    var perByte    = parseFloat(perByteWei) || 0;
+    var estimatedWei = Math.ceil(bytes * perByte).toString();
+    res.json({
+        pricePerByte:  perByteWei,
+        bytes:         bytes,
+        estimatedWei:  estimatedWei,
+        estimatedEth:  (parseFloat(estimatedWei) / 1e18).toFixed(8),
+        currency:      'wei',
+        free:          perByte === 0
     });
 }
 

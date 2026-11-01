@@ -1,5 +1,47 @@
 # Changelog
 
+## 3.1.0 — 2026-10-28
+
+### Post-quantum scanner authorization (ML-DSA-65 / FIPS 204)
+
+Extends the attestation stack with quantum-resistant scanner-authorization claims. The TEE hardware attestation signatures (ES256/ES384/RS256 issued by AWS, GCP, Azure, OCI, AMD, Intel) are unchanged — those are defined by hardware vendors. The new PQ layer operates at the application level: who authorized the scannerCID that appears in the attestation.
+
+- **`classes/Safecloud/Attestation/PQClaim.js`** — new module. Signs and verifies self-contained ML-DSA-65 scanner-authorization claims. A claim is a JSON object stating `{ v, action: 'approve-scanner', scannerCID, issued, expires, pqPublicKey, pqSig }`. Canonical bytes (all fields except `pqSig`, keys sorted, no whitespace) are signed directly by `ml_dsa65.sign` — ML-DSA-65 performs internal hashing per FIPS 204; no pre-hash step. Signature is 3309 bytes, public key is 1952 bytes, stored as `data:key/ml-dsa-65;base64,<raw b64>` (same key URI format as Qbix platform Q.Crypto). Uses `@noble/post-quantum ^0.7.1` via lazy ESM import.
+  - `PQClaim.sign({ scannerCID, pqPublicKey, pqSecretKey, ttlSeconds? })` → signed claim object
+  - `PQClaim.verify(claim, { scannerCID, trustedKey?, now? })` → `{ valid, error? }`
+- **`classes/Safecloud/Attestation/AttestationPolicy.js`** — extended with `requirePQClaim` (default falsy) and `pqTrustedKey` options. When `requirePQClaim` is set, `evaluate(result, { pqClaim })` additionally verifies a PQClaim signed by the trusted issuer key alongside the classical TEE attestation check. Existing policies without `requirePQClaim` are unchanged — `evaluate()` remains synchronous for them and returns a plain object; with `requirePQClaim` it returns a Promise.
+- **`classes/Safecloud/Attestation/index.js`** — exports `PQClaim` alongside `Verifier`, `Fetcher`, `Policy`, `TrustStore`.
+- **`tests/pq_claim.test.js`** — 16 tests: sign/verify round-trip, tamper detection, expiry, future-issued, wrong scanner CID, wrong trusted key, bad signature bytes, policy integration (with/without PQClaim, wrong CID, wrong key, TEE failure + valid PQ still fails, toJSON/fromJSON round-trip).
+- **`package.json`** — adds `@noble/post-quantum ^0.7.1`.
+
+**Why bother when HKDF and AES-256 are already quantum-resistant?** HKDF-SHA256 and symmetric encryption are safe against Grover's algorithm (√ speedup, leaving 128-bit effective security). ECDSA (ES256/ES384) and RSA (RS256) are broken by Shor's algorithm in polynomial time — a sufficiently large quantum computer recovers the signing private key from the public key. ML-DSA-65 is lattice-based (CRYSTALS-Dilithium) and resists both Shor and Grover. Hybrid attestation carries both the classical hardware-provider signature and a PQClaim, so the authorization chain remains valid as quantum capability grows.
+
+## 3.0.0 — 2026-10-27
+
+### Attestation Verifier (TEE trust for Safebox chaperone)
+
+Pure-JS attestation module — no external dependencies beyond Node.js built-ins.
+
+- **`classes/Safecloud/Attestation/`** — new top-level module, exported as `Attestation` from the main index.
+  - **`AttestationVerifier`** — pure verifier; dispatches by provider name, wraps errors into `{ valid: false, error }` rather than throwing.
+  - **`AttestationFetcher`** — network layer; fetches GCP/Azure JWKS, OCI/Veraison public key, AMD VCEK cert, Intel SGX Root CA. All results cached (URL → value map).
+  - **`AttestationPolicy`** — enforces `scannerCID` + accepted provider list + `allowDebug` flag. `evaluate(result)` → `{ pass, reason }`. `toJSON`/`fromJSON` for persistence.
+  - **`TrustStore`** — loads pinned root CA DER files from `trust-roots/` at startup; exposes `nitroRoot`, `intelRoot`, etc.
+- **Six provider modules** (`providers/Nitro`, `GCP`, `Azure`, `OCI`, `SEV_SNP`, `TDX`):
+  - **Nitro** — COSE_Sign1 (CBOR, RFC 8152), ES384; cert chain in doc; `user_data` → `scannerCID`.
+  - **GCP** — RS256 JWT; rotating JWKS; `user_data` → `scannerCID`.
+  - **Azure MAA** — RS256 JWT; rotating JWKS; `x-ms-runtime.user-data` (base64) → `scannerCID`.
+  - **OCI/Veraison** — ES256 JWT (EAR); accepts KeyObject, single JWK, or JWKS; `ear.status` must be `affirming`; `user_data` → `scannerCID`.
+  - **SEV-SNP** — 1184-byte binary AMD report; ES384; `report_data` at 0x050 → `scannerCID`.
+  - **TDX** — TDX Quote v4; ES256; `report_data` at header+0x248 (TD report is 648 bytes, not 584); `TD_REPORT_SIZE` corrected to 0x288.
+- **Utility modules** (`util/`):
+  - **`cbor.js`** — minimal CBOR encoder/decoder. Fixed `_encodeHead` to support 64-bit integers (CBOR additional info 27) for Nitro millisecond timestamps.
+  - **`jwt.js`** — `parseJWT`, `verifyJWT` (takes single JWK or KeyObject, not JWKS), `base64urlEncode`, `base64urlDecode`.
+  - **`cose.js`** — `parseCOSESign1` (now returns `protectedBytes` alongside `protectedHeaders`), `verifyCOSESign1`.
+  - **`certchain.js`** — `verifyChain(leaf, cabundle, trustedRootDER)`.
+- **Fixture generator** (`tests/fixtures/generate.js`) — generates pre-baked signed fixtures for all 6 providers using test-generated keys + openssl self-signed certs.
+- **Test suite** (`tests/attestation_verifier.test.js`) — 71 tests, all passing. Node.js built-in test runner (`node --test`), no extra dependencies.
+
 ## 2.9.0 — 2026-10-25
 
 ### Data structures (SDK)

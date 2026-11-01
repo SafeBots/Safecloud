@@ -33,6 +33,7 @@
 'use strict';
 
 var crypto   = require('crypto');
+var _fs      = require('fs');
 var _bounded = require('./_bounded');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -54,6 +55,13 @@ var _trackStore = new _bounded.BoundedMap({ max: 500000, ttlMs: 0 });
 
 // Receipt chains keyed by appCid — most recent receiptCid.
 var _chainHeads = {};
+
+// ── Checkpoint persistence (Safecloud 3.2) ────────────────────────────────
+// Latest checkpoint CID on Drops for each 'appCid/track', persisted to disk
+// so Jets can restore _trackStore after restart.
+var _checkpointCids   = {};
+var _checkpointSeq    = {};  // 'appCid/track' → monotonically increasing seq
+var _checkpointIndexPath = null;  // set by WasmRunner.init() or restoreCheckpoints()
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Configuration defaults
@@ -89,7 +97,20 @@ WasmRunner.init = function (opts) {
     WasmRunner._jetId  = opts.jetId;
     WasmRunner._fuelLimit   = opts.fuelLimit   || DEFAULT_FUEL_LIMIT;
     WasmRunner._memoryLimit = opts.memoryLimit  || DEFAULT_MEMORY_LIMIT;
+    // Checkpoint index path for durable track persistence (3.2)
+    if (opts.checkpointIndexPath) {
+        _checkpointIndexPath = opts.checkpointIndexPath;
+    }
+    // Gossip callback set by Jets.js after socket.io namespace is wired (3.2)
+    // WasmRunner._emitRootUpdate = function(msg) { ... } — set externally
 };
+
+/**
+ * Callback invoked after each successful checkpoint write.
+ * Jets.js sets this to emit 'safedb:root-update' over /Safecloud/cloud socket.io.
+ * @type {Function|null}
+ */
+WasmRunner._emitRootUpdate = null;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Manifest loading
@@ -399,6 +420,225 @@ var _trackIndices = {};
 function _trackKey(appCid, track, key) {
     return appCid + '/' + track + '/' + key;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Checkpoint persistence  (Safecloud 3.2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Serialize all entries for one track and write them to Drops as an
+ * immutable checkpoint blob.  Fire-and-forget — called after resolve()
+ * in _instantiateAndRun so it never blocks the response path.
+ *
+ * Blob format (JSON):
+ *   { v:1, appCid, track, rootCid, seq, jetId, checkpointedAt,
+ *     entries: [{key, value}]  (value is base64-encoded bytes) }
+ *
+ * The blob's SHA-256 becomes its CID (bafy… scheme).  After a successful
+ * Drop write the CID is added to _checkpointCids and flushed to the local
+ * index file so a restarted Jet knows where to fetch it from Drops.
+ *
+ * @private
+ */
+function _storeCheckpoint(appCid, track, rootCid) {
+    var idxKey = appCid + '/' + track;
+    var seq    = (_checkpointSeq[idxKey] || 0) + 1;
+    _checkpointSeq[idxKey] = seq;
+
+    // Collect all key→value pairs for this track.
+    var idx    = _trackIndices[idxKey] || [];
+    var prefix = appCid + '/' + track + '/';
+    var entries = [];
+    for (var i = 0; i < idx.length; i++) {
+        var k = idx[i];
+        var v = _trackStore.get(prefix + k);
+        if (v !== undefined) {
+            entries.push({
+                key:   k,
+                value: Buffer.isBuffer(v) ? v.toString('base64') : String(v)
+            });
+        }
+    }
+
+    var blob      = {
+        v:              1,
+        appCid:         appCid,
+        track:          track,
+        rootCid:        rootCid,
+        seq:            seq,
+        jetId:          WasmRunner._jetId,
+        checkpointedAt: Math.floor(Date.now() / 1000),
+        entries:        entries
+    };
+    var blobBytes     = Buffer.from(JSON.stringify(blob));
+    var checkpointCid = 'bafy' + crypto.createHash('sha256')
+        .update(blobBytes).digest('hex').slice(0, 52);
+
+    if (!WasmRunner._Jets) { return; }
+
+    // Select a Drop for writing (no forGet → selectForPut path).
+    WasmRunner._Jets.selectDrops([checkpointCid], {}).then(function (drops) {
+        if (!drops || !drops.length) { return Promise.resolve(); }
+        return WasmRunner._Jets.callDrop(drops[0], 'Safecloud/drop/put', {
+            chunks:  [{ cid: checkpointCid, data: blobBytes.toString('base64') }],
+            options: {}
+        });
+    }).then(function () {
+        // Checkpoint is durable on at least one Drop — update local index.
+        _checkpointCids[idxKey] = checkpointCid;
+        _persistCheckpointIndex();
+
+        // Gossip the new root to peer Jets.
+        if (typeof WasmRunner._emitRootUpdate === 'function') {
+            WasmRunner._emitRootUpdate({
+                appCid:        appCid,
+                track:         track,
+                rootCid:       rootCid,
+                checkpointCid: checkpointCid,
+                seq:           seq,
+                jetId:         WasmRunner._jetId
+            });
+        }
+    }).catch(function (err) {
+        if (WasmRunner._Q) {
+            WasmRunner._Q.log('WasmRunner._storeCheckpoint: write failed for '
+                + checkpointCid + ': ' + (err && err.message), 'Safecloud');
+        }
+    });
+}
+
+/**
+ * Write the checkpoint CID index to disk (best-effort).
+ * @private
+ */
+function _persistCheckpointIndex() {
+    if (!_checkpointIndexPath) { return; }
+    try {
+        _fs.writeFileSync(_checkpointIndexPath,
+            JSON.stringify(_checkpointCids, null, 2), 'utf8');
+    } catch (e) {
+        if (WasmRunner._Q) {
+            WasmRunner._Q.log('WasmRunner: failed to persist checkpoint index: '
+                + (e && e.message), 'Safecloud');
+        }
+    }
+}
+
+/**
+ * Replay a checkpoint blob into _trackStore.
+ * @private
+ */
+function _applyCheckpointBlob(blob) {
+    if (!blob || blob.v !== 1 || !blob.appCid || !blob.track
+            || !Array.isArray(blob.entries)) { return; }
+    for (var i = 0; i < blob.entries.length; i++) {
+        var e = blob.entries[i];
+        if (e && e.key) {
+            var value = (typeof e.value === 'string')
+                ? Buffer.from(e.value, 'base64')
+                : e.value;
+            _trackPut(blob.appCid, blob.track, e.key, value);
+        }
+    }
+    var idxKey = blob.appCid + '/' + blob.track;
+    if (blob.seq && blob.seq > (_checkpointSeq[idxKey] || 0)) {
+        _checkpointSeq[idxKey] = blob.seq;
+    }
+}
+
+/**
+ * Load the checkpoint CID index from disk and restore all track data from
+ * Drops.  Called during Jets startup after WasmRunner.init().
+ *
+ * @param  {String} indexPath   Path to the JSON checkpoint index file.
+ * @return {Promise}
+ */
+WasmRunner.restoreCheckpoints = function (indexPath) {
+    _checkpointIndexPath = indexPath;
+
+    var index;
+    try {
+        var raw = _fs.readFileSync(indexPath, 'utf8');
+        index   = JSON.parse(raw);
+    } catch (e) {
+        return Promise.resolve(); // no index yet — fresh start
+    }
+
+    _checkpointCids = index || {};
+    var keys = Object.keys(_checkpointCids);
+    if (!keys.length) { return Promise.resolve(); }
+
+    var promises = keys.map(function (idxKey) {
+        var cid = _checkpointCids[idxKey];
+        if (!cid) { return Promise.resolve(); }
+        return _fetchBytesByCid(cid).then(function (buf) {
+            try {
+                var blob = JSON.parse(buf.toString('utf8'));
+                _applyCheckpointBlob(blob);
+                if (WasmRunner._Q) {
+                    WasmRunner._Q.log('WasmRunner: restored checkpoint ' + cid
+                        + ' for ' + idxKey + ' ('
+                        + (blob.entries || []).length + ' entries)', 'Safecloud');
+                }
+            } catch (parseErr) {
+                if (WasmRunner._Q) {
+                    WasmRunner._Q.log('WasmRunner: bad checkpoint blob '
+                        + cid + ': ' + (parseErr && parseErr.message), 'Safecloud');
+                }
+            }
+        }).catch(function (fetchErr) {
+            if (WasmRunner._Q) {
+                WasmRunner._Q.log('WasmRunner: failed to fetch checkpoint '
+                    + cid + ' for ' + idxKey + ': '
+                    + (fetchErr && fetchErr.message), 'Safecloud');
+            }
+        });
+    });
+
+    return Promise.all(promises);
+};
+
+/**
+ * Merge a received gossip root-update into local _trackStore.
+ * Called by Jets.js when 'safedb:root-update' arrives from a peer Jet.
+ *
+ * Skipped if seq is not newer than what we already have, so the Bloom
+ * anti-entropy check degrades gracefully to a monotone seq guard here.
+ *
+ * @param  {Object} msg  { appCid, track, rootCid, checkpointCid, seq, jetId }
+ * @return {Promise}
+ */
+WasmRunner.applyRootUpdate = function (msg) {
+    if (!msg || !msg.appCid || !msg.track || !msg.checkpointCid) {
+        return Promise.resolve();
+    }
+    var idxKey = msg.appCid + '/' + msg.track;
+    if (msg.seq && msg.seq <= (_checkpointSeq[idxKey] || 0)) {
+        return Promise.resolve(); // already at or ahead of this state
+    }
+    return _fetchBytesByCid(msg.checkpointCid).then(function (buf) {
+        try {
+            var blob = JSON.parse(buf.toString('utf8'));
+            _applyCheckpointBlob(blob);
+            _checkpointCids[idxKey] = msg.checkpointCid;
+            _persistCheckpointIndex();
+            if (WasmRunner._Q) {
+                WasmRunner._Q.log('WasmRunner: merged root-update from jet '
+                    + msg.jetId + ' for ' + idxKey + ' seq=' + msg.seq, 'Safecloud');
+            }
+        } catch (e) {
+            if (WasmRunner._Q) {
+                WasmRunner._Q.log('WasmRunner: applyRootUpdate parse error for '
+                    + idxKey + ': ' + (e && e.message), 'Safecloud');
+            }
+        }
+    }).catch(function (err) {
+        if (WasmRunner._Q) {
+            WasmRunner._Q.log('WasmRunner: applyRootUpdate fetch failed for '
+                + msg.checkpointCid + ': ' + (err && err.message), 'Safecloud');
+        }
+    });
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WASM compilation and instantiation
@@ -758,6 +998,22 @@ function _instantiateAndRun(compiled, ctx) {
         _trackPut(ctx.appCid, receiptTrack, receiptKey,
             Buffer.from(JSON.stringify(receipt)));
         _chainHeads[ctx.appCid] = receiptCid;
+
+        // ── Checkpoint modified tracks to Drops  (Safecloud 3.2) ─────────
+        // Collect the distinct tracks touched by this execution (from the
+        // stateChanges log) plus the receipt track, then fire-and-forget a
+        // Drops write for each.  Async — does NOT block the response path.
+        var _modifiedTracks = {};
+        for (var _sci = 0; _sci < stateChanges.length; _sci++) {
+            if (stateChanges[_sci].track) {
+                _modifiedTracks[stateChanges[_sci].track] = true;
+            }
+        }
+        _modifiedTracks[receiptTrack] = true; // always checkpoint the receipt track
+        var _tracksToCheckpoint = Object.keys(_modifiedTracks);
+        for (var _tci = 0; _tci < _tracksToCheckpoint.length; _tci++) {
+            _storeCheckpoint(ctx.appCid, _tracksToCheckpoint[_tci], stateRootAfter);
+        }
 
         // ── Build SafecloudEnvelope ──────────────────────────────────────
         var envelope = {

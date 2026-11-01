@@ -4,6 +4,7 @@
   "description": "Safecloud Jet server — distributed encrypted storage network",
   "main": "classes/Safecloud.js",
   "dependencies": {
+    "@noble/post-quantum": "^0.7.1",
     "ethers": "^6.17.0",
     "express": "^4.18.0",
     "hypercore-crypto": "^3.4.0",
@@ -21,13 +22,15 @@
     "test:integration": "node tests/eip712.test.js && node tests/policy_and_sponsor.test.js && node tests/jet_module.test.js && node tests/e2e.test.js && node tests/transport.test.js && node tests/drop_storage.test.js && node tests/adversarial.test.js && node tests/tree_math.test.js && node tests/splitkey.test.js && node tests/pricing_and_encoding.test.js && node tests/drop_identity.test.js && node tests/flow_full_circuit.test.js && node tests/flow_sponsored.test.js && node tests/flow_multidrop.test.js && node tests/http_routes.test.js && node tests/robustness.test.js && node tests/http_hostile.test.js && node tests/chunk_assembly.test.js && node tests/socket_handlers.test.js && node tests/socket_dos.test.js && node tests/router.test.js && node tests/adaptive_streamer.test.js && node tests/operator_setup.test.js",
     "test:all": "npm test && npm run test:integration",
     "test:evm": "node tests/evm/compile.js && node tests/evm/onchain.test.js",
-    "test:everything": "npm run test:all && npm run test:evm"
+    "test:everything": "npm run test:all && npm run test:evm",
+    "test:streaming": "node tests/playwright_streaming_test.js",
+    "test:e2e": "node tests/playwright_e2e_test.js"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.0.0",
     "ganache": "^7.9.2",
     "socket.io": "^4.7.5",
-    "socket.io-client": "^4.7.5",
+    "socket.io-client": "^4.8.4",
     "solc": "^0.8.26"
   }
 }

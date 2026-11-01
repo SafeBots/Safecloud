@@ -1,0 +1,2060 @@
+{
+  "contractName": "OpenClaiming",
+  "abi": [
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "supplied",
+          "type": "address"
+        }
+      ],
+      "name": "DynamicPayeeInvalid",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "exp",
+          "type": "uint256"
+        }
+      ],
+      "name": "Expired",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "target",
+          "type": "address"
+        }
+      ],
+      "name": "HookCallFailed",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "requested",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "available",
+          "type": "uint256"
+        }
+      ],
+      "name": "InsufficientCapacity",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "recipient",
+          "type": "address"
+        }
+      ],
+      "name": "InvalidRecipient",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidSignature",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidSignatureLength",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidSignatureS",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidSignatureV",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InvalidSignerCount",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "InvokerNotInSigners",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "account",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "line",
+          "type": "uint256"
+        }
+      ],
+      "name": "LineClosed",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NativeCoinDelegationUnsupported",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "NativeCoinPolicyUnsupported",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "expected",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "actual",
+          "type": "uint256"
+        }
+      ],
+      "name": "NativeCoinValueMismatch",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "uint256",
+          "name": "nbf",
+          "type": "uint256"
+        }
+      ],
+      "name": "NotYetValid",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "ParamsHashMismatch",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "expected",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "actual",
+          "type": "address"
+        }
+      ],
+      "name": "PayerMismatch",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "PaymentRecipientsHashMismatch",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "PolicyHashMismatch",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "PolicyInvalid",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "Reentrancy",
+      "type": "error"
+    },
+    {
+      "inputs": [],
+      "name": "TransferFailed",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "account",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "caller",
+          "type": "address"
+        }
+      ],
+      "name": "UnauthorizedLineOperator",
+      "type": "error"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "expected",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "actual",
+          "type": "address"
+        }
+      ],
+      "name": "WrongContract",
+      "type": "error"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "authority",
+          "type": "address"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "subject",
+          "type": "address"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "contractAddress",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "bytes4",
+          "name": "method",
+          "type": "bytes4"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "invokeID",
+          "type": "uint256"
+        }
+      ],
+      "name": "ActionsExecuted",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "account",
+          "type": "address"
+        },
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "line",
+          "type": "uint256"
+        }
+      ],
+      "name": "LineClosedEvent",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "account",
+          "type": "address"
+        },
+        {
+          "indexed": true,
+          "internalType": "uint256",
+          "name": "line",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "max",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "bool",
+          "name": "implicit",
+          "type": "bool"
+        }
+      ],
+      "name": "LineOpened",
+      "type": "event"
+    },
+    {
+      "anonymous": false,
+      "inputs": [
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "payer",
+          "type": "address"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "token",
+          "type": "address"
+        },
+        {
+          "indexed": true,
+          "internalType": "address",
+          "name": "recipient",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "line",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "uint256",
+          "name": "newSpent",
+          "type": "uint256"
+        },
+        {
+          "indexed": false,
+          "internalType": "address",
+          "name": "target",
+          "type": "address"
+        },
+        {
+          "indexed": false,
+          "internalType": "bytes32",
+          "name": "recipientsHash",
+          "type": "bytes32"
+        }
+      ],
+      "name": "PaymentsExecuted",
+      "type": "event"
+    },
+    {
+      "inputs": [],
+      "name": "ACTIONS_TYPEHASH",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "DEFAULT_LINE",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "DYNAMIC_ANY",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "DYNAMIC_IN_RECIPIENTS",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "EIP712_DOMAIN_TYPEHASH",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "FRACTION",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "NAME_HASH",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "PAYMENTS_TYPEHASH",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "VERSION_HASH",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "authority",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "subject",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddress",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes4",
+              "name": "method",
+              "type": "bytes4"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "paramsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "minimum",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "fraction",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "delay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "invoker",
+              "type": "address"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Action",
+          "name": "a",
+          "type": "tuple"
+        }
+      ],
+      "name": "actionsDigest",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "authority",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "subject",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddress",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes4",
+              "name": "method",
+              "type": "bytes4"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "paramsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "minimum",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "fraction",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "delay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "invoker",
+              "type": "address"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Action",
+          "name": "a",
+          "type": "tuple"
+        },
+        {
+          "internalType": "bytes",
+          "name": "params",
+          "type": "bytes"
+        },
+        {
+          "internalType": "address[]",
+          "name": "signers",
+          "type": "address[]"
+        },
+        {
+          "internalType": "bytes[]",
+          "name": "signatures",
+          "type": "bytes[]"
+        },
+        {
+          "internalType": "uint256",
+          "name": "minValid",
+          "type": "uint256"
+        }
+      ],
+      "name": "actionsExecute",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "authority",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "subject",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddress",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes4",
+              "name": "method",
+              "type": "bytes4"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "paramsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "minimum",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "fraction",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "delay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "invoker",
+              "type": "address"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Action",
+          "name": "a",
+          "type": "tuple"
+        }
+      ],
+      "name": "actionsHash",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "pure",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes",
+          "name": "params",
+          "type": "bytes"
+        }
+      ],
+      "name": "actionsHashParams",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "pure",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "authority",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "subject",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddress",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes4",
+              "name": "method",
+              "type": "bytes4"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "paramsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "minimum",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "fraction",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "delay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "invoker",
+              "type": "address"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Action",
+          "name": "a",
+          "type": "tuple"
+        },
+        {
+          "internalType": "bytes",
+          "name": "params",
+          "type": "bytes"
+        },
+        {
+          "internalType": "address[]",
+          "name": "signers",
+          "type": "address[]"
+        },
+        {
+          "internalType": "bytes[]",
+          "name": "signatures",
+          "type": "bytes[]"
+        },
+        {
+          "internalType": "uint256",
+          "name": "minValid",
+          "type": "uint256"
+        }
+      ],
+      "name": "actionsInvoke",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "authority",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "subject",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddress",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes4",
+              "name": "method",
+              "type": "bytes4"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "paramsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "minimum",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "fraction",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "delay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "invoker",
+              "type": "address"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Action",
+          "name": "a",
+          "type": "tuple"
+        },
+        {
+          "internalType": "bytes",
+          "name": "sig",
+          "type": "bytes"
+        }
+      ],
+      "name": "actionsRecoverSigner",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "authority",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "subject",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddress",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes4",
+              "name": "method",
+              "type": "bytes4"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "paramsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "minimum",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "fraction",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "delay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "invoker",
+              "type": "address"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Action",
+          "name": "a",
+          "type": "tuple"
+        },
+        {
+          "internalType": "bytes",
+          "name": "sig",
+          "type": "bytes"
+        }
+      ],
+      "name": "actionsVerify",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "authority",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "subject",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddress",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes4",
+              "name": "method",
+              "type": "bytes4"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "paramsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "minimum",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "fraction",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "delay",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "invoker",
+              "type": "address"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Action",
+          "name": "a",
+          "type": "tuple"
+        },
+        {
+          "internalType": "address[]",
+          "name": "signers",
+          "type": "address[]"
+        },
+        {
+          "internalType": "bytes[]",
+          "name": "signatures",
+          "type": "bytes[]"
+        },
+        {
+          "internalType": "uint256",
+          "name": "minValid",
+          "type": "uint256"
+        }
+      ],
+      "name": "actionsVerifySignatures",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address[]",
+              "name": "payees",
+              "type": "address[]"
+            },
+            {
+              "internalType": "uint256[]",
+              "name": "fractions",
+              "type": "uint256[]"
+            },
+            {
+              "internalType": "uint256",
+              "name": "dynamicBps",
+              "type": "uint256"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "dynamicConstraint",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "address[]",
+              "name": "targets",
+              "type": "address[]"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Policy",
+          "name": "policy",
+          "type": "tuple"
+        }
+      ],
+      "name": "hashPolicy",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "pure",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "account",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "line",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "claimMax",
+          "type": "uint256"
+        }
+      ],
+      "name": "lineAvailable",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "account",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "line",
+          "type": "uint256"
+        }
+      ],
+      "name": "lineClose",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "account",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "line",
+          "type": "uint256"
+        }
+      ],
+      "name": "lineIsOpen",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "account",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "line",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "max",
+          "type": "uint256"
+        }
+      ],
+      "name": "lineOpen",
+      "outputs": [],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "name": "lines",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "max",
+          "type": "uint256"
+        },
+        {
+          "internalType": "uint256",
+          "name": "spent",
+          "type": "uint256"
+        },
+        {
+          "internalType": "bool",
+          "name": "open",
+          "type": "bool"
+        },
+        {
+          "internalType": "bool",
+          "name": "closed",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "payer",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "token",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "recipientsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "max",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "line",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddr",
+              "type": "address"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Payment",
+          "name": "p",
+          "type": "tuple"
+        }
+      ],
+      "name": "paymentsDigest",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [],
+      "name": "paymentsDomainSeparator",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "payer",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "token",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "recipientsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "max",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "line",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddr",
+              "type": "address"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Payment",
+          "name": "p",
+          "type": "tuple"
+        },
+        {
+          "internalType": "address[]",
+          "name": "recipients",
+          "type": "address[]"
+        },
+        {
+          "internalType": "bytes",
+          "name": "sig",
+          "type": "bytes"
+        },
+        {
+          "internalType": "address",
+          "name": "recipient",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "internalType": "address",
+          "name": "hook",
+          "type": "address"
+        }
+      ],
+      "name": "paymentsExecute",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "payable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "payer",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "token",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "recipientsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "max",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "line",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddr",
+              "type": "address"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Payment",
+          "name": "p",
+          "type": "tuple"
+        },
+        {
+          "internalType": "bytes",
+          "name": "sig",
+          "type": "bytes"
+        },
+        {
+          "internalType": "uint256",
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "components": [
+            {
+              "internalType": "address[]",
+              "name": "payees",
+              "type": "address[]"
+            },
+            {
+              "internalType": "uint256[]",
+              "name": "fractions",
+              "type": "uint256[]"
+            },
+            {
+              "internalType": "uint256",
+              "name": "dynamicBps",
+              "type": "uint256"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "dynamicConstraint",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "address[]",
+              "name": "targets",
+              "type": "address[]"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Policy",
+          "name": "policy",
+          "type": "tuple"
+        },
+        {
+          "internalType": "address",
+          "name": "dynamicPayee",
+          "type": "address"
+        },
+        {
+          "internalType": "bytes32[]",
+          "name": "dynamicProof",
+          "type": "bytes32[]"
+        }
+      ],
+      "name": "paymentsExecutePolicy",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "payer",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "token",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "recipientsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "max",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "line",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddr",
+              "type": "address"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Payment",
+          "name": "p",
+          "type": "tuple"
+        },
+        {
+          "internalType": "address[]",
+          "name": "recipients",
+          "type": "address[]"
+        },
+        {
+          "internalType": "address",
+          "name": "recipient",
+          "type": "address"
+        },
+        {
+          "internalType": "uint256",
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "internalType": "address[]",
+          "name": "signers",
+          "type": "address[]"
+        },
+        {
+          "internalType": "bytes[]",
+          "name": "signatures",
+          "type": "bytes[]"
+        },
+        {
+          "internalType": "uint256",
+          "name": "minValid",
+          "type": "uint256"
+        },
+        {
+          "internalType": "address",
+          "name": "hook",
+          "type": "address"
+        }
+      ],
+      "name": "paymentsExecuteSignatures",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "payable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "payer",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "token",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "recipientsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "max",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "line",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddr",
+              "type": "address"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Payment",
+          "name": "p",
+          "type": "tuple"
+        },
+        {
+          "internalType": "uint256",
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "components": [
+            {
+              "internalType": "address[]",
+              "name": "payees",
+              "type": "address[]"
+            },
+            {
+              "internalType": "uint256[]",
+              "name": "fractions",
+              "type": "uint256[]"
+            },
+            {
+              "internalType": "uint256",
+              "name": "dynamicBps",
+              "type": "uint256"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "dynamicConstraint",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "address[]",
+              "name": "targets",
+              "type": "address[]"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Policy",
+          "name": "policy",
+          "type": "tuple"
+        },
+        {
+          "internalType": "address",
+          "name": "dynamicPayee",
+          "type": "address"
+        },
+        {
+          "internalType": "bytes32[]",
+          "name": "dynamicProof",
+          "type": "bytes32[]"
+        },
+        {
+          "internalType": "address[]",
+          "name": "signers",
+          "type": "address[]"
+        },
+        {
+          "internalType": "bytes[]",
+          "name": "signatures",
+          "type": "bytes[]"
+        },
+        {
+          "internalType": "uint256",
+          "name": "minValid",
+          "type": "uint256"
+        }
+      ],
+      "name": "paymentsExecuteSignaturesPolicy",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "nonpayable",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "payer",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "token",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "recipientsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "max",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "line",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddr",
+              "type": "address"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Payment",
+          "name": "p",
+          "type": "tuple"
+        }
+      ],
+      "name": "paymentsHash",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "pure",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address[]",
+          "name": "recipients",
+          "type": "address[]"
+        }
+      ],
+      "name": "paymentsHashRecipients",
+      "outputs": [
+        {
+          "internalType": "bytes32",
+          "name": "",
+          "type": "bytes32"
+        }
+      ],
+      "stateMutability": "pure",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "components": [
+            {
+              "internalType": "address",
+              "name": "payer",
+              "type": "address"
+            },
+            {
+              "internalType": "address",
+              "name": "token",
+              "type": "address"
+            },
+            {
+              "internalType": "bytes32",
+              "name": "recipientsHash",
+              "type": "bytes32"
+            },
+            {
+              "internalType": "uint256",
+              "name": "max",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "line",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "nbf",
+              "type": "uint256"
+            },
+            {
+              "internalType": "uint256",
+              "name": "exp",
+              "type": "uint256"
+            },
+            {
+              "internalType": "address",
+              "name": "contractAddr",
+              "type": "address"
+            }
+          ],
+          "internalType": "struct OpenClaiming.Payment",
+          "name": "p",
+          "type": "tuple"
+        },
+        {
+          "internalType": "bytes",
+          "name": "sig",
+          "type": "bytes"
+        }
+      ],
+      "name": "paymentsRecoverSigner",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "name": "receivedTotal",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "digest",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "bytes",
+          "name": "signature",
+          "type": "bytes"
+        }
+      ],
+      "name": "recoverSigner",
+      "outputs": [
+        {
+          "internalType": "address",
+          "name": "signer",
+          "type": "address"
+        }
+      ],
+      "stateMutability": "pure",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        },
+        {
+          "internalType": "address",
+          "name": "",
+          "type": "address"
+        }
+      ],
+      "name": "redeemed",
+      "outputs": [
+        {
+          "internalType": "uint256",
+          "name": "",
+          "type": "uint256"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "digest",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "bytes",
+          "name": "signature",
+          "type": "bytes"
+        },
+        {
+          "internalType": "address",
+          "name": "expectedSigner",
+          "type": "address"
+        }
+      ],
+      "name": "verify",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "pure",
+      "type": "function"
+    },
+    {
+      "inputs": [
+        {
+          "internalType": "bytes32",
+          "name": "digest",
+          "type": "bytes32"
+        },
+        {
+          "internalType": "address[]",
+          "name": "signers",
+          "type": "address[]"
+        },
+        {
+          "internalType": "bytes[]",
+          "name": "signatures",
+          "type": "bytes[]"
+        },
+        {
+          "internalType": "uint256",
+          "name": "minValid",
+          "type": "uint256"
+        }
+      ],
+      "name": "verifySignatures",
+      "outputs": [
+        {
+          "internalType": "bool",
+          "name": "",
+          "type": "bool"
+        }
+      ],
+      "stateMutability": "view",
+      "type": "function"
+    }
+  ],
+  "bytecode": "0x6080806040523461001b57600160035561385390816100208239f35b5f80fdfe60a06040526004361015610011575f80fd5b5f3560e01c806304622c2e14611e6c5780630a659fae14611dbf5780630fc7c67514611d855780633031a85314611d2357806331ea6cfa14611c6d578063337686f514611c245780634c20d353146119205780634d35b7d3146118c2578063578032a3146118a45780635d9028b714611888578063605a998a1461184a5780636952b08f14611823578063709deeef1461147f57806371891d4714611463578063795bd134146113f75780637bfe51ff146113a55780637f01f1fe1461118d578063823ac37314611348578063823f04b8146112cd57806397aba7f91461127d5780639e4e731814611263578063a79d379c14611248578063b1cb4a691461120d578063b1d718db146111f1578063b350ae5c146111a7578063b448c82d1461118d578063bfb6bbcf14611173578063c208ea511461108a578063c3740f1b14610b12578063c4c5c82a14610a1b578063c7977be7146109e1578063c7befe2c14610994578063cd268638146108bd578063dc8cda3f146102dd578063dca00d9c146102b6578063f33dae47146102955763fee1e342146101b0575f80fd5b346102915736600319016101c081126102915761016013610291576001600160401b0361016435818111610291576101ec903690600401611f78565b90916101843590811161029157610207903690600401611f78565b916101243580151580610288575b61027057506101443580151580610267575b61024f5760206102456101a4358686868a6102406127ce565b6122b1565b6040519015158152f35b60249060405190637c06dd7560e11b82526004820152fd5b50804211610227565b60249060405190636d021d6d60e01b82526004820152fd5b50804210610215565b5f80fd5b346102915760206102ae6102a8366120e4565b91612a38565b604051908152f35b34610291575f3660031901126102915760206040515f805160206137fe8339815191528152f35b34610291576003193681016101a081126102915761010013610291576001600160401b0390610104358281116102915761031b903690600401611fa8565b9290918161014435116102915760a090610144353603011261029157610164356001600160a01b0381169003610291576101843590811161029157610364903690600401611f78565b9190926001600354036108ab5761037f916002600355612b97565b6024356001600160a01b038116908190036102915715610899576103a86101443560040161250e565b60443503610887576103bc61012435613270565b6103cc6004610144350180612493565b809291506103e66024610144350161014435600401612493565b9050036107ca576104036084610144350161014435600401612493565b9050151580610866575b6107ca57811580610857575b6107ca576101443560440135925f845b8482106107dc576127109150036107ca57831561079157610164356001600160a01b03161561064e576064610144350135610621575b5050505b61046f61012435612c11565b6004356001600160a01b03811690819003610291575f525f60205260405f206084355f52602052600160405f200154905f805b6104b26004610144350180612493565b90508110156105d45782158061059a575b6001919015610565576104e36104dc8461012435612a2b565b8094612c04565b9285811561055e576105519161051161050c856105066004610144350180612493565b9061223e565b61214b565b6105276084610144350161014435600401612493565b1590506105575761054b61050c866105066084610144350161014435600401612493565b90613710565b016104a2565b5f90613710565b5050610551565b6104e3612710610592610588846105066024610144350161014435600401612493565b3561012435612fdc565b048094612c04565b506105ab6004610144350180612493565b5f19810192915082116105c0579081146104c3565b634e487b7160e01b5f52601160045260245ffd5b50919080151590610615575b6105f5575b6001600355602060405160018152f35b61060561060e9261012435612a2b565b61016435613690565b80806105e5565b508161012435116105e0565b61014435606401356001036106bc5750505f905f5b818110610672575b50501561064e575b81808061045f565b604051637c9f38a360e01b8152610164356001600160a01b03166004820152602490fd5b6106826004610144350180612493565b6001600160a01b036101643581169290916106a29161050c91869161223e565b16146106b057600101610636565b5050506001828061063e565b915060405160208101906001600160601b03196101643560601b168252601481526106e681611ed9565b519020915f915b8083106107285750505060646101443501351461064657604051637c9f38a360e01b8152610164356001600160a01b03166004820152602490fd5b90919260019061073985848661223e565b3580821161076b57604051906020820192835260408201526040815261075e81611ea2565b5190205b930191906106ed565b90604051906020820192835260408201526040815261078981611ea2565b519020610762565b505050610164356001600160a01b03161561046357604051637c9f38a360e01b8152610164356001600160a01b03166004820152602490fd5b60405163dbfebf9d60e01b8152600490fd5b8161080261050c6107f36004610144350180612493565b6001600160a01b03949161223e565b16156107ca57610822826105066024610144350161014435600401612493565b35156107ca5761084f600191610848846105066024610144350161014435600401612493565b3590612c04565b910190610429565b50604461014435013515610419565b508161087e6084610144350161014435600401612493565b9050141561040d565b6040516337b03cdd60e21b8152600490fd5b604051631646b3fd60e01b8152600490fd5b60405163558a1e0360e11b8152600490fd5b34610291576040366003190112610291576108d6611fec565b60243590811561093f576108ea33826131ae565b6001600160a01b03165f818152602081815260408083208584529091528120600201805461ffff19166101001790557f0a6994bec90859ed45a3e748038bffcabe461fdb09c23cbdb49ea382cad523069080a3005b60405162461bcd60e51b815260206004820152602760248201527f4f70656e436c61696d696e673a2063616e6e6f7420636c6f73652064656661756044820152666c74206c696e6560c81b6064820152608490fd5b34610291576040366003190112610291576109ad611fec565b6109b5612002565b9060018060a01b038091165f52600260205260405f2091165f52602052602060405f2054604051908152f35b34610291575f3660031901126102915760206040517f8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f8152f35b36600319016101e081126102915761010013610291576001600160401b036101043581811161029157610a52903690600401611f78565b61012435926001600160a01b03929083851685036102915761014435926101643582811161029157610a88903690600401611f78565b9190926101843590811161029157610aa4903690600401611f78565b9290916101c4359788168803610291576001600354036108ab5788610adc91610ae9976002600355610ad78a8383612b0f565b612b3e565b6101a43593610240612456565b15610b00576105e592610afb82612c11565b612ce5565b604051638baa579f60e01b8152600490fd5b34610291576003193681016101e081126102915761010013610291576001600160401b03908161012435116102915760a090610124353603011261029157610b58611fd5565b6101643582811161029157610b71903690600401611f78565b90926101843581811161029157610b8c903690600401611f78565b916101a43590811161029157610ba6903690600401611f78565b906001600354036108ab57610bc79360026003556101c43593610240612456565b15610b00576024356001600160a01b03811690819003610291571561089957610bf56101243560040161250e565b6044350361088757610c0961010435613270565b610c196004610124350180612493565b80929150610c336024610124350161012435600401612493565b9050036107ca57610c506084610124350161012435600401612493565b9050151580611069575b6107ca5781158061105a575b6107ca576101243560440135935f855b848210610ff5576127109150036107ca578415610fc5576001600160a01b03841615610fa4576064610124350135610e3e575b5050505b610cb961010435612c11565b6004356001600160a01b03811690819003610291575f525f60205260405f206084355f52602052600160405f200154915f905f5b610cfd6004610124350180612493565b9050811015610df357811580610dcd575b6001919015610d9857610d2e610d278561010435612a2b565b8095612c04565b93868115610d9157610d8b91610d5161050c856105066004610124350180612493565b610d676084610124350161012435600401612493565b1590506105575761054b61050c866105066084610124350161012435600401612493565b01610ced565b5050610d8b565b610d2e612710610dc5610dbb846105066024610124350161012435600401612493565b3561010435612fdc565b048095612c04565b50610dde6004610124350180612493565b5f19810192915082116105c057908114610d0e565b5082849180151590610e32575b610e14576001600355602060405160018152f35b610e24610e2a9361010435612a2b565b90613690565b8080806105e5565b50826101043511610e00565b6101243560640135600103610ed45750505f905f5b818110610e8d575b505015610e6b575b828080610ca9565b604051637c9f38a360e01b81526001600160a01b039091166004820152602490fd5b610e9d6004610124350180612493565b6001600160a01b03868116929091610eba9161050c91869161223e565b1614610ec857600101610e53565b50505060018380610e5b565b915060405160208101906001600160601b03198560601b16825260148152610efb81611ed9565b519020915f915b808310610f3b57505050606461012435013514610e6357604051637c9f38a360e01b81526001600160a01b039091166004820152602490fd5b909192600190610f4c85848661223e565b35808211610f7e576040519060208201928352604082015260408152610f7181611ea2565b5190205b93019190610f02565b906040519060208201928352604082015260408152610f9c81611ea2565b519020610f75565b604051637c9f38a360e01b81526001600160a01b0385166004820152602490fd5b5050506001600160a01b03811680610fdd5750610cad565b60249060405190637c9f38a360e01b82526004820152fd5b8161100c61050c6107f36004610124350180612493565b16156107ca5761102c826105066024610124350161012435600401612493565b35156107ca57611052600191610848846105066024610124350161012435600401612493565b910190610c76565b50604461012435013515610c66565b50816110816084610124350161012435600401612493565b90501415610c5a565b346102915761016080600319360112610291576001600160a01b03906004358281169190829003610291576024359083821680920361029157604435938085168095036102915760643563ffffffff60e01b811680910361029157610104359182168092036102915760209560405194878601965f805160206137fe833981519152885260408701526060860152608085015260a084015260843560c084015260a43560e084015260c43561010084015260e43561012084015261014083015261012435908201526101806101443581830152815261116881611ebd565b519020604051908152f35b34610291575f3660031901126102915760206102ae6129b6565b34610291575f3660031901126102915760206040515f8152f35b34610291576020366003190112610291576004356001600160401b038111610291576111e36111dc6020923690600401611fa8565b3691612208565b818151910120604051908152f35b34610291576101603660031901126102915760206102ae6127ce565b34610291576020366003190112610291576004356001600160401b038111610291576102ae6112426020923690600401611f78565b906127ae565b34610291575f36600319011261029157602060405160018152f35b34610291575f3660031901126102915760206102ae61210e565b34610291576040366003190112610291576024356001600160401b038111610291576112bb6112b26020923690600401611fa8565b9060043561268c565b6040516001600160a01b039091168152f35b346102915760407fb4afc9f320019024d2cd63e2c8fc9c71f93329ed3a4bca3f1307ff352cd82c876112fe366120e4565b929161130d94919433826131ae565b6001600160a01b03165f81815260208181528382208783528152838220868155600201805461ffff19166001179055835195865285015292a3005b34610291576060366003190112610291576024356001600160401b0381116102915761139161137d6020923690600401611fa8565b611388929192612018565b9260043561268c565b60018060a01b038060405193169116148152f35b34610291576113d36113e46113b9366120a7565b906113c5839593612f07565b6113ce856128d2565b61268c565b916001600160a01b0391829161214b565b16911603610b0057602060405160018152f35b34610291576040366003190112610291576001600160a01b03611418611fec565b165f525f60205260405f206024355f52602052608060405f2060ff815491600260018201549101549060405193845260208401528181161515604084015260081c1615156060820152f35b34610291575f3660031901126102915760206040516127108152f35b346102915761148d3661202e565b936001600398979894929454036108ab5760026003556001600160a01b036114b8610100890161214b565b16611811576114c687612f07565b6114d136878a612208565b602081519101206080880135036117ff57811580156117f5575b6117e3576114f8876128d2565b5f9461150384612f59565b925f5b858110611715575050505050505010610b0057602082019161158160406001600160a01b036115348661214b565b1695818401966115438861214b565b915f611564606088019861155e6115598b6125f8565b612fef565b936130cc565b85516315f4b56760e11b8152968795869485939160048501612653565b03925af180156116ca576116d5575b5060405160208101906115d5816115c7304442879160549391835260208301526001600160601b03199060601b1660408201520190565b03601f198101835282611ef4565b5190206001600160a01b036115e98561214b565b16803b15610291575f8091602460405180948193631fcfe3eb60e01b83528760048401525af180156116ca57611699575b5061165a61165461164e61164e7fbd6dc37500e553ab4dc34139e98d244b6efa4a4c7374019e477ed277702803fb9561214b565b9661214b565b936125f8565b604080516001600160e01b031992909216825260208201929092526001600160a01b039384169584169490931692a46001600355602060405160018152f35b916001600160401b0383116116b65760409290925261165a61161a565b634e487b7160e01b5f52604160045260245ffd5b6040513d5f823e3d90fd5b6040813d60401161170d575b816116ee60409383611ef4565b81010312610291576020015164ffffffffff8116036102915784611590565b3d91506116e1565b6001600160a01b0361172b61050c83898661223e565b16801580156117cf575b6117c6578061175861174884878c612262565b6001600160a01b0392918961268c565b1603610b00575f805b8a811061179a575b501561177b575b506001905b01611506565b886117939161178d6001949b89612f8b565b526122a3565b9790611770565b826001600160a01b036117ad838b612f8b565b5116146117bc57600101611761565b505060018e611769565b50600190611775565b506117db82858a612262565b905015611735565b60405163719feac760e01b8152600490fd5b50838214156114eb565b60405163b1561fdb60e01b8152600490fd5b604051630ec5e53560e01b8152600490fd5b34610291576040366003190112610291576020610245611841611fec565b602435906125a8565b346102915760031960203682011261029157600435906001600160401b0382116102915760a0908236030112610291576102ae60209160040161250e565b34610291576101003660031901126102915760206102ae612456565b346102915760206112bb6113ce6118ba366120a7565b9290916128d2565b34610291576080366003190112610291576001600160401b03602435818111610291576118f3903690600401611f78565b919060443591821161029157602092611913610245933690600401611f78565b91606435936004356122b1565b346102915761192e3661202e565b91600160039897989594929554036108ab5760026003556001600160a01b0361195a610100890161214b565b16156118115761196987612f07565b61197436878a612208565b602081519101206080880135036117ff5781158015611c1a575b6117e35761199b876128d2565b6119a8610100890161214b565b905f6080526119b684612f59565b965f965f5b868110611b3e575050505050505060805110610b0057156118115760208301926119e48461214b565b94611a5660408301966119f68861214b565b611a2f611a136060870198611a0d6115598b6125f8565b966130cc565b6040516315f4b56760e11b602082015295869360248501612653565b0392611a43601f1994858101835282611ef4565b611a50610100860161214b565b916135e2565b611a63610100830161214b565b90611aa66040519182611a9a60208201954442889160549391835260208301526001600160601b03199060601b1660408201520190565b03908101835282611ef4565b519020604051631fcfe3eb60e01b6020820152602480820183905281529092611ace82611ea2565b5f5b6080518110611b10575050509061165a61165461164e61164e7fbd6dc37500e553ab4dc34139e98d244b6efa4a4c7374019e477ed277702803fb9561214b565b600190611b38611b1f8961214b565b85848060a01b03611b308588612f8b565b5116916135e2565b01611ad0565b6001600160a01b03611b5461050c838a8661223e565b1680158015611c06575b611bfd5780611b7161174884878b612262565b1603610b00575f805b6080518110611bd1575b5015611b96575b506001905b016119bb565b80611ba36080518d612f8b565b52611baf6080516122a3565b6080526001600160a01b03861614611bc8575b8d611b8b565b60019850611bc2565b828d611be48360018060a01b0392612f8b565b511614611bf357600101611b7a565b505060018f611b84565b50600190611b90565b50611c12828589612262565b905015611b5e565b508482141561198e565b346102915736600319016101208112610291576101001361029157610104356001600160401b038111610291576112bb611c646020923690600401611fa8565b906113ce612456565b346102915761010080600319360112610291576004356001600160a01b038181169182900361029157602435908082168092036102915760e4359081168091036102915760209360405192858401947fa6aa1cd3e819678d29365a4f2d841f112cc67f805d75ae9c99e164b63b955b63865260408501526060840152604435608084015260643560a084015260843560c084015260a43560e084015260c435908301526101209081830152815261116881611e86565b3461029157606036600319011261029157611d3c611fec565b611d44612002565b90611d4d612018565b9160018060a01b038092165f5260016020528160405f2091165f5260205260405f2091165f52602052602060405f2054604051908152f35b34610291575f3660031901126102915760206040517fa6aa1cd3e819678d29365a4f2d841f112cc67f805d75ae9c99e164b63b955b638152f35b36600319016101a081126102915761010013610291576001600160401b036101043581811161029157611df6903690600401611f78565b916101243590811161029157611e10903690600401611fa8565b9091611e1a611fd5565b61018435936101643593919291906001600160a01b0386168603610291576001600354036108ab57611e5e846105e598611e63956002600355610ad7898383612b0f565b612b97565b610afb82612c11565b34610291575f3660031901126102915760206102ae611f30565b61014081019081106001600160401b038211176116b657604052565b606081019081106001600160401b038211176116b657604052565b6101a081019081106001600160401b038211176116b657604052565b604081019081106001600160401b038211176116b657604052565b90601f801991011681019081106001600160401b038211176116b657604052565b6001600160401b0381116116b657601f01601f191660200190565b6b4f70656e436c61696d696e6760a01b6020604051611f4e81611ed9565b600c815201527f9a2256b6bd16cabe1aefd78675c9211005215f2efc42945376c4d2bad4a7e01590565b9181601f84011215610291578235916001600160401b038311610291576020808501948460051b01011161029157565b9181601f84011215610291578235916001600160401b038311610291576020838186019501011161029157565b61014435906001600160a01b038216820361029157565b600435906001600160a01b038216820361029157565b602435906001600160a01b038216820361029157565b604435906001600160a01b038216820361029157565b60031981016101e081126102915761016013610291576004916001600160401b0361016435818111610291578361206791600401611fa8565b9390939261018435838111610291578261208391600401611f78565b939093926101a4359182116102915761209e91600401611f78565b90916101c43590565b906003198201610180811261029157610160136102915760049161016435906001600160401b038211610291576120e091600401611fa8565b9091565b6060906003190112610291576004356001600160a01b038116810361029157906024359060443590565b603160f81b602060405161212181611ed9565b6001815201527fc89efdaa54c0f20c7adf612882df0950f5a951637e0307cdcb4c672f298b8bc690565b356001600160a01b03811681036102915790565b6004356001600160a01b038181169182900361029157602435908082168092036102915760e435908116809103610291576040519160208301937fa6aa1cd3e819678d29365a4f2d841f112cc67f805d75ae9c99e164b63b955b63855260408401526060830152604435608083015260643560a083015260843560c083015260a43560e083015260c4356101008301526101209081830152815261220281611e86565b51902090565b92919261221482611f15565b916122226040519384611ef4565b829481845281830111610291578281602093845f960137010152565b919081101561224e5760051b0190565b634e487b7160e01b5f52603260045260245ffd5b919081101561224e5760051b81013590601e19813603018212156102915701908135916001600160401b038311610291576020018236038113610291579190565b5f1981146105c05760010190565b93919282840361244c57851561244c575f945f5b8581106122d757505050505050101590565b6001600160a01b03806122ee61050c848a8961223e565b169081158015612438575b6123e4575f805b8481106123ee575b506123e457612318838887612262565b6040908151809381936397aba7f960e01b8352896004840152602483015282604483015282606491828401375f8284018201526020938493601f01601f19168101030181305afa9182915f936123ab575b505061237d575b5050506001905b016122c5565b161461238c575b5f8080612370565b95612396906122a3565b95878710612384575050505050505050600190565b9080929350813d83116123dd575b6123c38183611ef4565b810103126102915751828116810361029157905f80612369565b503d6123b9565b5050600190612377565b838361240a61050c8d959f9d989e9c9885908d989c999d61223e565b1614612425576001019a90989a999397999692959196612300565b509799509490936001989296985f612308565b50612444838887612262565b9050156122f9565b5050505050505f90565b61245e6129b6565b6115c761220261246c61215f565b604051928391602083019586909160429261190160f01b8352600283015260228201520190565b903590601e198136030182121561029157018035906001600160401b03821161029157602001918160051b3603831361029157565b9190808252602080920192915f5b8281106124e4575050505090565b9091929384359060018060a01b0382168092036102915790815282019382019291906001016124d6565b6125188180612493565b916125266020820182612493565b6125336080840184612493565b929061254f60405196602088019860a08a5260c08901916124c8565b601f198782038101604089015284825294906001600160fb1b03851161029157612202966060611a9a956020938b9860051b80928683013701916040810135828901520135608087015285810360a087015201916124c8565b81156125f1576001600160a01b03165f90815260208181526040808320938352929052206002015460ff81166125eb5760081c60ff166125e757600190565b5f90565b50600190565b5050600190565b356001600160e01b0319811681036102915790565b5f5b83811061261e5750505f910152565b818101518382015260200161260f565b906020916126478151809281855285808601910161260d565b601f01601f1916010190565b6001600160a01b03909116815260606020820181905261268993919261267b9184019061262e565b91604081840391015261262e565b90565b90929160410361279c576020830135604093848101355f1a7f7fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a0831161278b5780158015612781575b612761575b60ff16601b81141580612756575b61274257925f926080926020958851938452868401523587830152606082015282805260015afa15612738575f51916001600160a01b038316156127285750565b51638baa579f60e01b8152600490fd5b50513d5f823e3d90fd5b8551600162aae17760e01b03198152600490fd5b50601c8114156126e7565b601b0160ff8111156126d957634e487b7160e01b5f52601160045260245ffd5b50600181146126d4565b85516317e97eb760e31b8152600490fd5b604051634be6321b60e01b8152600490fd5b6122026115c79160405192839160208301956020875260408401916124c8565b6127d66129b6565b6001600160a01b036004358181169081900361029157602435908282168092036102915760443591838316809303610291576064359363ffffffff60e01b85168095036102915761010435908116809103610291576115c794612202946040519360208501955f805160206137fe833981519152875260408601526060850152608084015260a083015260843560c083015260a43560e083015260c43561010083015260e43561012083015261014082015261012435610160820152610180610144358183015281526128a881611ebd565b519020604051928391602083019586909160429261190160f01b8352600283015260228201520190565b6115c76122026128e06129b6565b926128ea8161214b565b6128f66020830161214b565b916129036040820161214b565b92612910606083016125f8565b906101009061292082850161214b565b61012092610140946040519760208901995f805160206137fe8339815191528b5260018060a01b0380968180941660408d01521660608b015216608089015263ffffffff60e01b1660a0880152608086013560c088015260a086013560e088015260c08601359087015260e08501358387015216828501528201356101608401526101809101358183015281526128a881611ebd565b6129be611f30565b6129c661210e565b6040519060208201927f8b73c3c69bb8fe3d512ecc4cf759cc79239f7b179b0ffacaa9a75d522b39400f8452604083015260608201524660808201523060a082015260a0815260c081018181106001600160401b038211176116b65760405251902090565b919082039182116105c057565b6001600160a01b03165f9081526020818152604080832084845290915290209015919082158080612afe575b80612aef575b612ae75760018201549280612ac757505f19935b90612abe575b15612a9f5750505f195b80821015612a9a575090565b905090565b5490818110612ab05750505f612a8e565b612ab991612a2b565b612a8e565b50805415612a84565b83818110612ad95750505f5b93612a7e565b612ae291612a2b565b612ad3565b505050505f90565b5060ff60028301541615612a6a565b5060ff600283015460081c16612a64565b90612b19916127ae565b60443503612b2c57612b2a90613270565b565b6040516323c91f8360e21b8152600490fd5b905f5b818110612b6957604051630bc2c5df60e11b81526001600160a01b0385166004820152602490fd5b612b7761050c82848661223e565b6001600160a01b03858116911614612b9157600101612b41565b50505050565b90612bba91612ba46129b6565b6115c7612bb261246c61215f565b51902061268c565b6004356001600160a01b038082169081830361029157831603612bdb575050565b6040516335b13a3960e01b81526001600160a01b03918216600482015291166024820152604490fd5b919082018092116105c057565b6004356001600160a01b0381169081900361029157600181612c5f925f525f60205260405f2060843590815f5260205260405f209181151580612ca7575b612c63575b505001918254612c04565b9055565b600283018460ff198254161790557fb4afc9f320019024d2cd63e2c8fc9c71f93329ed3a4bca3f1307ff352cd82c87604080515f8152866020820152a35f80612c54565b5060ff60028401541615612c4f565b3d15612ce0573d90612cc782611f15565b91612cd56040519384611ef4565b82523d5f602084013e565b606090565b909190600480356001600160a01b03818116939091848114158061029157855f526020965f8852604092835f209260843593845f528a526001855f20015497602435908882169b8c8303610291578c15612dfa575034612dde57505f92612d4e8d898385613428565b848916612dbc5783610291578261029157878d91612d6b93613485565b61029157610291579151908152602081019790975260408701939093526001600160a01b039092166060860152604435608086015216925f805160206137de833981519152908060a081015b0390a4565b92509050612dce8b845f945f94613485565b612dd98b8785613545565b612d6b565b6044905f88519163377bc28160e01b8352820152346024820152fd5b959894925095969b98999a505082915016612ef757873303612ee757853403612eca575f805260018252835f20885f528252835f20981697885f528152825f20612e45868254612c04565b90555f805260028152825f2090885f5252815f20612e64858254612c04565b90555f808080878b5af1612e76612cb6565b5015612ebc575051908152602081019190915260408101919091525f60608201819052604435608083015291905f805160206137de833981519152908060a08101612db7565b90516312171d8360e31b8152fd5b835163377bc28160e01b8152808401879052346024820152604490fd5b8351633fa4ca2d60e21b81528390fd5b8351631646b3fd60e01b81528390fd5b61012081013580151580612f39575b6102705750610140013580151580612f30575b61024f5750565b50804211612f29565b50804210612f16565b6001600160401b0381116116b65760051b60200190565b90612f6382612f42565b612f706040519182611ef4565b8281528092612f81601f1991612f42565b0190602036910137565b805182101561224e5760209160051b010190565b60405190612fac82611ed9565b601082526f181899199a1a9b1b9c1cb0b131b232b360811b6020830152565b90815181101561224e570160200190565b818102929181159184041417156105c057565b604051612ffb81611ed9565b600881526020368183013761300e612f9f565b925f5b6004808210156130b7576001600160f81b03199085831a908261303983831c60ff168a612fcb565b51169260019285841b94868604600214871517156130a45761306c91600f915f1a613064888c612fcb565b53168a612fcb565b511691830180931161309157509061308a600193925f1a9186612fcb565b5301613011565b601190634e487b7160e01b5f525260245ffd5b601184634e487b7160e01b5f525260245ffd5b50509250905090565b9082101561224e570190565b6001908260011b92600290808504600214811517156105c0576130ee85611f15565b946130fc6040519687611ef4565b80865261310b601f1991611f15565b0136602087013761311a612f9f565b925f5b82811061312d5750505050505090565b6001600160f81b031990816131506131468387876130c0565b3560fc1c88612fcb565b51169181881b928284048714831517156105c0575f1a613170848b612fcb565b5361318c600f6131818488886130c0565b3560f81c1688612fcb565b5116918781018091116105c0576131a788935f1a918a612fcb565b530161311d565b90916001600160a01b038084168184168114613269575f806040516020810190638da5cb5b60e01b8252600481526131e581611ed9565b5190875afa916131f3612cb6565b8361325d575b83613235575b505050613230575060405163e8d587f360e01b81526001600160a01b03918216600482015291166024820152604490fd5b915050565b90919250602081805181010312610291576020015190811680910361029157145f80806131ff565b805160201493506131f9565b5050915050565b6001600160a01b0360e4358181168082036102915730036133ff575060a435801515806133f6575b610270575060c435801515806133ed575b61024f5750600435908116808203610291575f525f60205260405f209060843591825f5260205260405f208215928315928380946133dc575b806133cd575b6133a25750506001810154916064358061338257505f19935b90613379575b1561335a5750505f195b8082101561335357505b8115801561334a575b61332c575050565b6044925060405191631040f08960e01b835260048301526024820152fd5b50808211613324565b905061331b565b549081811061336b5750505f613311565b61337491612a2b565b613311565b50805415613307565b838181106133945750505f5b93613301565b61339d91612a2b565b61338e565b6040516350cd22cd60e11b81526001600160a01b039190911660048201526024810191909152604490fd5b5060ff600284015416156132e8565b5060ff600284015460081c166132e2565b508042116132a9565b50804210613298565b6040516374bb94c560e11b81523060048201526001600160a01b03919091166024820152604490fd5b60018060a01b0380911691825f5260016020528160405f2091165f5260205260405f20921691825f5260205260405f20613463848254612c04565b90555f52600260205260405f20905f52602052612c5f60405f20918254612c04565b6040516323b872dd60e01b602082019081526001600160a01b03938416602483015292909316604484015260648084019490945292825260a0820192906001600160401b038411838510176116b6575f809493819460405251925af16134e9612cb6565b901590811561350c575b506134fa57565b6040516312171d8360e31b8152600490fd5b8051801515925082613521575b50505f6134f3565b81925090602091810103126102915760200151801590811503610291575f80613519565b91823b156135c157604051636203b43b60e11b602082019081526001600160a01b03909316602482015260448101919091525f91829161358881606481016115c7565b519082855af1613596612cb6565b501561359f5750565b60405163092887eb60e41b81526001600160a01b039091166004820152602490fd5b60405163092887eb60e41b81526001600160a01b0384166004820152602490fd5b5f929183809361362b603460405180936020613607818401988981519384920161260d565b8201906001600160601b03199060601b166020820152036014810184520182611ef4565b51925af1613637612cb6565b501561363f57565b60405162461bcd60e51b815260206004820152602360248201527f4f70656e436c61696d696e673a20666f727761726465642063616c6c206661696044820152621b195960ea1b6064820152608490fd5b6024356001600160a01b0381811693928483036102915760043582811694858203610291576136de818484886136d98484612db7995f805160206137de8339815191529d613428565b613485565b604051938493169760443591608435859094939260809260a08301968352602083015260408201525f60608201520152565b6001600160a01b03602435818116949093909290858514158061029157600435848116968782141591826102915761374a88878385613428565b8487166137bb578361029157826102915785889161376793613485565b610291576102915760408051608435815260208101959095528401969096526001600160a01b0390951660608301526044356080830152909316925f805160206137de833981519152908060a08101612db7565b925090506137cd86845f945f94613485565b6137d8868585613545565b61376756feff09a7d3964ee540d7f7c6192a0248e09966936b157f8f265321f9a6695691b0a8408771ad75ee9fa3f107886e309a557dfb1a10ac79538d28a4c4d69c4dedfba26469706673582212205ff4bb8988691d3ceb3e9f3bdaa4321745d47d4dc45c8c2e706cca03dca81a0264736f6c63430008180033",
+  "linkReferences": {}
+}

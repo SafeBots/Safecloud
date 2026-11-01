@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safecloud — Publish Content</title>
+<style>
+/* ── Design tokens ─────────────────────────────────────────────────────── */
+:root {
+    --bg:          #0d0d12;
+    --surface:     #16161f;
+    --border:      #2a2a38;
+    --border-hi:   #4a4a6a;
+    --accent:      #7c6fef;
+    --accent-hi:   #9d94f5;
+    --accent-dim:  #3d3870;
+    --text:        #e2e2ee;
+    --text-muted:  #888899;
+    --green:       #4ade80;
+    --red:         #f87171;
+    --yellow:      #facc15;
+    --radius:      10px;
+    --shadow:      0 4px 24px rgba(0,0,0,.45);
+}
+@media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+        --bg:         #f0f0f8;
+        --surface:    #ffffff;
+        --border:     #d0d0e0;
+        --border-hi:  #9090c0;
+        --accent:     #5a4fd0;
+        --accent-hi:  #7c6fef;
+        --accent-dim: #dddaf8;
+        --text:       #1a1a2e;
+        --text-muted: #666680;
+        --shadow:     0 4px 24px rgba(0,0,0,.12);
+    }
+}
+:root[data-theme="dark"] {
+    --bg:          #0d0d12;
+    --surface:     #16161f;
+    --border:      #2a2a38;
+    --border-hi:   #4a4a6a;
+    --accent:      #7c6fef;
+    --accent-hi:   #9d94f5;
+    --accent-dim:  #3d3870;
+    --text:        #e2e2ee;
+    --text-muted:  #888899;
+    --shadow:      0 4px 24px rgba(0,0,0,.45);
+}
+
+/* ── Reset ─────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.6 system-ui, -apple-system, sans-serif;
+    min-height: 100vh;
+    padding: 0 16px 48px;
+}
+a { color: var(--accent-hi); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+.page {
+    max-width: 680px;
+    margin: 0 auto;
+}
+header {
+    padding: 32px 0 24px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 32px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+header svg { flex-shrink: 0; }
+header h1 { font-size: 1.2rem; font-weight: 700; letter-spacing: -.01em; }
+header p  { font-size: .85rem; color: var(--text-muted); margin-top: 2px; }
+
+/* ── Card ───────────────────────────────────────────────────────────────── */
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 20px;
+    box-shadow: var(--shadow);
+}
+.card-title {
+    font-size: .8rem;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+}
+
+/* ── Drop zone ──────────────────────────────────────────────────────────── */
+#drop-zone {
+    border: 2px dashed var(--border-hi);
+    border-radius: var(--radius);
+    padding: 44px 24px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+    position: relative;
+}
+#drop-zone.drag-over {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+#drop-zone.has-file {
+    border-color: var(--green);
+    border-style: solid;
+}
+#drop-zone input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+}
+.drop-icon { font-size: 2.4rem; margin-bottom: 10px; line-height: 1; }
+.drop-label { font-size: .95rem; color: var(--text-muted); }
+.drop-label span { color: var(--accent-hi); font-weight: 600; }
+.drop-label.file-name { color: var(--text); font-weight: 600; font-size: 1rem; }
+.drop-sub { font-size: .8rem; color: var(--text-muted); margin-top: 4px; }
+
+/* ── Form ───────────────────────────────────────────────────────────────── */
+.field + .field { margin-top: 14px; }
+label {
+    display: block;
+    font-size: .82rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    margin-bottom: 5px;
+    letter-spacing: .03em;
+}
+label .opt { font-weight: 400; font-style: italic; }
+input[type="text"], textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: 15px/1.5 inherit;
+    padding: 8px 12px;
+    transition: border-color .15s;
+    outline: none;
+    resize: vertical;
+}
+input[type="text"]:focus, textarea:focus {
+    border-color: var(--accent);
+}
+textarea { min-height: 72px; }
+
+/* ── Checkbox row ───────────────────────────────────────────────────────── */
+.check-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 14px;
+    cursor: pointer;
+    user-select: none;
+}
+.check-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+.check-row .check-label { font-size: .9rem; color: var(--text); }
+.check-row .check-sub   { font-size: .78rem; color: var(--text-muted); }
+
+/* ── Button ─────────────────────────────────────────────────────────────── */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 22px;
+    border-radius: 8px;
+    font: 600 15px/1 inherit;
+    cursor: pointer;
+    transition: background .15s, opacity .15s, transform .1s;
+    border: none;
+    outline: none;
+}
+.btn-primary {
+    background: var(--accent);
+    color: #fff;
+}
+.btn-primary:hover:not(:disabled) { background: var(--accent-hi); }
+.btn-primary:active:not(:disabled) { transform: scale(.98); }
+.btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+.btn-copy {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 14px;
+    font-size: .82rem;
+}
+.btn-copy:hover { border-color: var(--accent); color: var(--accent-hi); }
+.btn-copy.copied { color: var(--green); border-color: var(--green); }
+.btn-full { width: 100%; justify-content: center; margin-top: 20px; }
+
+/* ── Progress ───────────────────────────────────────────────────────────── */
+#progress-wrap { display: none; }
+#progress-wrap.visible { display: block; }
+.progress-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: .82rem;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+.progress-bar {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.progress-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 3px;
+    transition: width .25s ease, background .25s;
+    width: 0%;
+}
+.progress-fill.done { background: var(--green); }
+.phase-label {
+    font-size: .82rem;
+    color: var(--text-muted);
+    margin-top: 6px;
+    min-height: 18px;
+}
+
+/* ── Result ─────────────────────────────────────────────────────────────── */
+#result-wrap { display: none; }
+#result-wrap.visible { display: block; }
+.result-cid {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: .8rem;
+    color: var(--accent-hi);
+    word-break: break-all;
+    margin-bottom: 8px;
+}
+.result-cid code { flex: 1; }
+.snippet-wrap {
+    position: relative;
+}
+textarea.snippet {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: .75rem;
+    min-height: 90px;
+    color: var(--text-muted);
+    background: var(--bg);
+    padding-top: 10px;
+}
+.snippet-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 8px;
+    flex-wrap: wrap;
+}
+.key-notice {
+    background: color-mix(in srgb, var(--yellow) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--yellow) 40%, transparent);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: .82rem;
+    color: var(--text);
+    margin-bottom: 14px;
+    display: none;
+}
+.key-notice.visible { display: block; }
+.key-notice strong { color: var(--yellow); }
+
+/* ── Error banner ───────────────────────────────────────────────────────── */
+.error-banner {
+    background: color-mix(in srgb, var(--red) 12%, transparent);
+    border: 1px solid color-mix(in srgb, var(--red) 40%, transparent);
+    border-radius: 6px;
+    padding: 10px 14px;
+    font-size: .85rem;
+    color: var(--red);
+    margin-top: 14px;
+    display: none;
+}
+.error-banner.visible { display: block; }
+
+/* ── Footer ─────────────────────────────────────────────────────────────── */
+footer {
+    text-align: center;
+    font-size: .78rem;
+    color: var(--text-muted);
+    padding-top: 32px;
+}
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+    <!-- cloud icon -->
+    <svg width="36" height="36" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+        <rect width="36" height="36" rx="8" fill="var(--accent-dim)"/>
+        <path d="M10 23a6 6 0 1 1 .3-12 7 7 0 0 1 13.4 2H25a4 4 0 1 1 0 8H10z"
+              fill="var(--accent)" opacity=".9"/>
+        <path d="M18 19v5M15.5 22.5 18 25l2.5-2.5" stroke="#fff" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <div>
+        <h1>Safecloud Publisher</h1>
+        <p>Upload content to a Jet-connected Drop network</p>
+    </div>
+</header>
+
+<!-- ── Step 1: drop zone ─────────────────────────────────────────────────── -->
+<div class="card">
+    <div class="card-title">1 · Choose a file</div>
+    <div id="drop-zone" role="button" tabindex="0" aria-label="Drop file or click to browse">
+        <input type="file" id="file-input" aria-hidden="true">
+        <div class="drop-icon">☁︎</div>
+        <div id="drop-label" class="drop-label">Drop a file here or <span>browse</span></div>
+        <div id="drop-sub"   class="drop-sub">Audio, video, documents, images — any format up to 2 GB</div>
+    </div>
+</div>
+
+<!-- ── Step 2: metadata ─────────────────────────────────────────────────── -->
+<div class="card">
+    <div class="card-title">2 · Metadata</div>
+
+    <div class="field">
+        <label for="f-title">Title <span class="opt">(optional)</span></label>
+        <input type="text" id="f-title" placeholder="My Podcast Episode 42" maxlength="256">
+    </div>
+
+    <div class="field">
+        <label for="f-desc">Description <span class="opt">(optional)</span></label>
+        <textarea id="f-desc" placeholder="A short description of the content…" maxlength="2000"></textarea>
+    </div>
+
+    <div class="field">
+        <label for="f-tags">Tags <span class="opt">(comma-separated, optional)</span></label>
+        <input type="text" id="f-tags" placeholder="music, podcast, episode-42" maxlength="512">
+    </div>
+
+    <label class="check-row">
+        <input type="checkbox" id="f-encrypt">
+        <div>
+            <div class="check-label">🔒 Encrypt content</div>
+            <div class="check-sub">AES-256-GCM. The decryption key is split: half in your share URL, half on the Jet.</div>
+        </div>
+    </label>
+</div>
+
+<!-- ── Step 3: Jet URL ──────────────────────────────────────────────────── -->
+<div class="card">
+    <div class="card-title">3 · Jet connection</div>
+    <div class="field">
+        <label for="f-jeturl">Jet URL</label>
+        <input type="text" id="f-jeturl" placeholder="https://jet.example.com" autocomplete="url">
+    </div>
+    <div class="field" id="price-row" style="display:none">
+        <div id="price-display" style="font-size:.85rem;color:var(--text-muted);">Checking storage price…</div>
+    </div>
+</div>
+
+<!-- ── Upload button + progress ─────────────────────────────────────────── -->
+<div class="card">
+    <div class="card-title">4 · Upload</div>
+
+    <div id="progress-wrap">
+        <div class="progress-label">
+            <span id="phase-label" class="phase-label">—</span>
+            <span id="pct-label">0%</span>
+        </div>
+        <div class="progress-bar"><div id="progress-fill" class="progress-fill"></div></div>
+        <div class="phase-label" id="phase-sub"></div>
+    </div>
+
+    <div id="error-banner" class="error-banner" role="alert"></div>
+
+    <button id="upload-btn" class="btn btn-primary btn-full" disabled>
+        <span>⬆︎</span> Publish to Network
+    </button>
+</div>
+
+<!-- ── Result ───────────────────────────────────────────────────────────── -->
+<div id="result-wrap" class="card">
+    <div class="card-title">✓ Published</div>
+
+    <div class="key-notice" id="key-notice">
+        <strong>⚠ Save your share URL now.</strong>
+        The decryption key is in the URL fragment. Anyone with this URL can decrypt the content.
+        Losing the URL means losing access — the Jet holds only half the key.
+    </div>
+
+    <div style="font-size:.82rem;color:var(--text-muted);margin-bottom:6px;">Root CID</div>
+    <div class="result-cid">
+        <code id="result-cid-text">—</code>
+        <button class="btn btn-copy" id="copy-cid-btn" aria-label="Copy CID">Copy</button>
+    </div>
+
+    <div style="font-size:.82rem;color:var(--text-muted);margin:14px 0 6px;">Embed snippet</div>
+    <div class="snippet-wrap">
+        <textarea class="snippet" id="snippet-box" readonly rows="4" spellcheck="false"></textarea>
+    </div>
+    <div class="snippet-actions">
+        <button class="btn btn-copy" id="copy-snippet-btn">Copy snippet</button>
+        <button class="btn btn-copy" id="copy-url-btn">Copy embed URL</button>
+        <button class="btn btn-copy" id="open-player-btn">Open player ↗</button>
+    </div>
+
+    <div style="margin-top:20px;text-align:center;">
+        <button class="btn btn-primary" id="upload-another-btn" style="font-size:.85rem;padding:8px 18px;">
+            Upload another file
+        </button>
+    </div>
+</div>
+
+<footer>
+    Powered by <strong>Safecloud 3.3</strong> · Content stays on the Drop network ·
+    <a href="embed.html?rootCid=&amp;jetUrl=" id="player-link" target="_blank" rel="noopener">Open blank player</a>
+</footer>
+
+</div><!-- .page -->
+
+<script src="safecloud-upload.js"></script>
+<script>
+(function () {
+'use strict';
+
+/* ── DOM refs ──────────────────────────────────────────────────────────── */
+var dropZone     = document.getElementById('drop-zone');
+var fileInput    = document.getElementById('file-input');
+var dropLabel    = document.getElementById('drop-label');
+var dropSub      = document.getElementById('drop-sub');
+var fTitle       = document.getElementById('f-title');
+var fDesc        = document.getElementById('f-desc');
+var fTags        = document.getElementById('f-tags');
+var fEncrypt     = document.getElementById('f-encrypt');
+var fJetUrl      = document.getElementById('f-jeturl');
+var priceRow     = document.getElementById('price-row');
+var priceDisplay = document.getElementById('price-display');
+var progressWrap = document.getElementById('progress-wrap');
+var progressFill = document.getElementById('progress-fill');
+var phaseLabel   = document.getElementById('phase-label');
+var pctLabel     = document.getElementById('pct-label');
+var phaseSub     = document.getElementById('phase-sub');
+var errorBanner  = document.getElementById('error-banner');
+var uploadBtn    = document.getElementById('upload-btn');
+var resultWrap   = document.getElementById('result-wrap');
+var keyNotice    = document.getElementById('key-notice');
+var resultCidTxt = document.getElementById('result-cid-text');
+var snippetBox   = document.getElementById('snippet-box');
+var copyCidBtn   = document.getElementById('copy-cid-btn');
+var copySnippet  = document.getElementById('copy-snippet-btn');
+var copyUrl      = document.getElementById('copy-url-btn');
+var openPlayer   = document.getElementById('open-player-btn');
+var uploadAgain  = document.getElementById('upload-another-btn');
+
+/* ── State ─────────────────────────────────────────────────────────────── */
+var selectedFile = null;
+var lastResult   = null;
+var priceTimer   = null;
+
+/* ── Initialise Jet URL from page origin ───────────────────────────────── */
+fJetUrl.value = window.location.origin;
+
+/* ── Drag & drop ───────────────────────────────────────────────────────── */
+dropZone.addEventListener('dragover', function (e) {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
+});
+dropZone.addEventListener('dragleave', function () {
+    dropZone.classList.remove('drag-over');
+});
+dropZone.addEventListener('drop', function (e) {
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length) setFile(files[0]);
+});
+dropZone.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' || e.key === ' ') fileInput.click();
+});
+fileInput.addEventListener('change', function () {
+    if (fileInput.files && fileInput.files.length) setFile(fileInput.files[0]);
+});
+
+function setFile(f) {
+    selectedFile = f;
+    dropZone.classList.add('has-file');
+    dropLabel.textContent = f.name;
+    dropLabel.classList.add('file-name');
+    dropSub.textContent   = formatBytes(f.size) + ' · ' + (f.type || 'unknown type');
+    uploadBtn.disabled    = false;
+    showError('');
+    fetchPrice();
+}
+
+/* ── Jet URL change → re-fetch price ──────────────────────────────────── */
+fJetUrl.addEventListener('input', function () {
+    clearTimeout(priceTimer);
+    priceTimer = setTimeout(fetchPrice, 500);
+});
+
+function fetchPrice() {
+    if (!selectedFile || !fJetUrl.value.trim()) return;
+    var jetUrl = fJetUrl.value.trim().replace(/\/$/, '');
+    priceRow.style.display = '';
+    priceDisplay.textContent = 'Checking storage price…';
+    fetch(jetUrl + '/Safecloud/drop/price?bytes=' + selectedFile.size)
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+            if (d.free) {
+                priceDisplay.textContent = '✓ Free to upload on this Jet';
+            } else {
+                priceDisplay.textContent = 'Estimated cost: ' + d.estimatedEth + ' ETH ('
+                    + d.estimatedWei + ' wei)';
+            }
+        })
+        .catch(function () {
+            priceDisplay.textContent = 'Could not fetch price — Jet may not be reachable.';
+        });
+}
+
+/* ── Upload ─────────────────────────────────────────────────────────────── */
+uploadBtn.addEventListener('click', doUpload);
+
+async function doUpload() {
+    if (!selectedFile) return;
+    var jetUrl = fJetUrl.value.trim().replace(/\/$/, '');
+    if (!jetUrl) { showError('Please enter the Jet URL.'); return; }
+
+    var tags = fTags.value.split(',')
+        .map(function (t) { return t.trim(); })
+        .filter(Boolean);
+
+    showError('');
+    uploadBtn.disabled = true;
+    progressWrap.classList.add('visible');
+    resultWrap.classList.remove('visible');
+    setProgress('Preparing…', 0);
+
+    var up = new SafecloudUpload({ jetUrl: jetUrl });
+
+    up.on('progress', function (ev) {
+        var phases = {
+            chunking:   'Chunking file…',
+            encrypting: 'Encrypting…',
+            uploading:  'Uploading to Drop network…',
+            done:       'Done!'
+        };
+        setProgress(phases[ev.phase] || ev.phase, ev.pct);
+        if (ev.phase === 'uploading') {
+            phaseSub.textContent = ev.pct + '% of chunks uploaded';
+        }
+    });
+
+    up.on('error', function (ev) {
+        showError(ev.message);
+    });
+
+    try {
+        var result = await up.upload(selectedFile, {
+            title:       fTitle.value.trim(),
+            description: fDesc.value.trim(),
+            tags:        tags,
+            encrypt:     fEncrypt.checked,
+            price:       '0'
+        });
+
+        lastResult = result;
+        showResult(result);
+    } catch (err) {
+        showError(err.message || 'Upload failed.');
+        uploadBtn.disabled = false;
+        setProgress('', 0);
+        progressWrap.classList.remove('visible');
+    }
+}
+
+/* ── UI helpers ─────────────────────────────────────────────────────────── */
+function setProgress(phase, pct) {
+    phaseLabel.textContent = phase;
+    pctLabel.textContent   = pct + '%';
+    progressFill.style.width = pct + '%';
+    if (pct >= 100) {
+        progressFill.classList.add('done');
+    } else {
+        progressFill.classList.remove('done');
+    }
+}
+
+function showError(msg) {
+    if (msg) {
+        errorBanner.textContent = '⚠ ' + msg;
+        errorBanner.classList.add('visible');
+    } else {
+        errorBanner.classList.remove('visible');
+    }
+}
+
+function showResult(result) {
+    resultWrap.classList.add('visible');
+    resultCidTxt.textContent = result.rootCid;
+
+    var snippet = '<iframe\n'
+        + '  src="' + result.embedUrl + '"\n'
+        + '  width="640" height="360"\n'
+        + '  allowfullscreen\n'
+        + '  style="border:0;border-radius:8px;overflow:hidden;"\n'
+        + '></iframe>';
+
+    snippetBox.value = snippet;
+
+    if (result.urlFragment) {
+        keyNotice.classList.add('visible');
+    }
+
+    // Update copy buttons
+    makeCopyBtn(copyCidBtn, result.rootCid);
+    makeCopyBtn(copySnippet, snippet);
+    makeCopyBtn(copyUrl, result.embedUrl);
+    openPlayer.onclick = function () {
+        window.open(result.embedUrl, '_blank', 'noopener');
+    };
+}
+
+function makeCopyBtn(btn, text) {
+    btn.onclick = function () {
+        navigator.clipboard.writeText(text).then(function () {
+            var orig = btn.textContent;
+            btn.textContent = '✓ Copied!';
+            btn.classList.add('copied');
+            setTimeout(function () {
+                btn.textContent = orig;
+                btn.classList.remove('copied');
+            }, 1800);
+        }).catch(function () {
+            // Fallback for non-HTTPS or blocked clipboard
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity  = '0';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            try { document.execCommand('copy'); } catch (_) {}
+            document.body.removeChild(ta);
+        });
+    };
+}
+
+uploadAgain.addEventListener('click', function () {
+    selectedFile = null;
+    lastResult   = null;
+    dropZone.classList.remove('has-file');
+    dropLabel.textContent = 'Drop a file here or ';
+    var span = document.createElement('span');
+    span.textContent = 'browse';
+    dropLabel.classList.remove('file-name');
+    dropLabel.innerHTML = 'Drop a file here or <span>browse</span>';
+    dropSub.textContent = 'Audio, video, documents, images — any format up to 2 GB';
+    uploadBtn.disabled  = true;
+    resultWrap.classList.remove('visible');
+    progressWrap.classList.remove('visible');
+    keyNotice.classList.remove('visible');
+    progressFill.classList.remove('done');
+    fTitle.value = '';
+    fDesc.value  = '';
+    fTags.value  = '';
+    fEncrypt.checked = false;
+    phaseSub.textContent = '';
+    priceRow.style.display = 'none';
+    fileInput.value = '';
+    showError('');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
+/* ── Utilities ──────────────────────────────────────────────────────────── */
+function formatBytes(n) {
+    if (n < 1024)             return n + ' B';
+    if (n < 1024 * 1024)      return (n / 1024).toFixed(1) + ' KB';
+    if (n < 1024 * 1024 * 1024) return (n / 1048576).toFixed(1) + ' MB';
+    return (n / 1073741824).toFixed(2) + ' GB';
+}
+
+})();
+</script>
+</body>
+</html>

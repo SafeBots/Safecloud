@@ -49,12 +49,14 @@
     var teaserCap   = capB64 ? _b64urlToJSON(capB64) : null;
 
     // DOM
-    var video   = document.getElementById('video');
-    var status  = document.getElementById('status');
-    var overlay = document.getElementById('pass-overlay');
-    var passIn  = document.getElementById('pass-input');
-    var passBtn = document.getElementById('pass-btn');
-    var passErr = document.getElementById('pass-error');
+    var video      = document.getElementById('video');
+    var status     = document.getElementById('status');
+    var statusText = document.getElementById('status-text');
+    var spinner    = document.getElementById('spinner');
+    var overlay    = document.getElementById('pass-overlay');
+    var passIn     = document.getElementById('pass-input');
+    var passBtn    = document.getElementById('pass-btn');
+    var passErr    = document.getElementById('pass-error');
 
     video.controls = controls;
 
@@ -66,10 +68,28 @@
         }
     }
 
+    /**
+     * Update the status overlay.
+     * @param {string}  msg      Status message; empty string hides the overlay.
+     * @param {boolean} isError  If true the text turns red and spinner hides.
+     */
     function setStatus(msg, isError) {
-        status.textContent = msg || '';
-        status.className = msg ? (isError ? 'error' : '') : 'hidden';
+        if (!msg) {
+            status.classList.add('hidden');
+            return;
+        }
+        status.classList.remove('hidden');
+        statusText.textContent = msg;
+        if (isError) {
+            status.classList.add('error');
+        } else {
+            status.classList.remove('error');
+        }
     }
+
+    /** Friendly wrappers for common states. */
+    function setLoading(msg) { setStatus(msg || 'Loading…', false); }
+    function setError(msg)   { setStatus(msg || 'Playback error.', true); }
 
     function _b64urlToJSON(s) {
         try {
@@ -99,7 +119,7 @@
     // ── Start playback using Q.Safecloud.Client.stream() ─────────────────────
 
     function startPlayback(manifest, capability) {
-        setStatus('Loading…');
+        setLoading('Connecting to Jet…');
 
         // Override the Jet URL if provided via query param
         if (jetUrl) {
@@ -109,10 +129,14 @@
         // Connect to the Jet (uses Q.Socket.connect — correct path automatically)
         Q.Safecloud.Jets.connect(function (err) {
             if (err) {
-                setStatus('Could not connect to Jet: ' + err.message, true);
+                var connMsg = 'Could not connect to Jet.';
+                if (err.message && err.message.length < 120) connMsg = err.message;
+                setError(connMsg);
                 emit({ event: 'error', message: err.message });
                 return;
             }
+
+            setLoading('Fetching content…');
 
             // Stream: registers SW, fetches chunks via socket, plays
             Q.Safecloud.Client.stream(video, {
@@ -122,10 +146,16 @@
             }).then(function (handle) {
                 // Wire video events → postMessage
                 video.addEventListener('loadedmetadata', function () {
-                    setStatus('', false);
+                    setStatus('');  // hide overlay — video is ready
                     emit({ event: 'ready', duration: video.duration || 0 });
                 });
-                video.addEventListener('play', function () { emit({ event: 'play' }); });
+                video.addEventListener('waiting', function () {
+                    setLoading('Buffering…');
+                });
+                video.addEventListener('playing', function () {
+                    setStatus('');  // hide when playing
+                });
+                video.addEventListener('play',  function () { emit({ event: 'play' }); });
                 video.addEventListener('pause', function () { emit({ event: 'pause' }); });
                 video.addEventListener('ended', function () { emit({ event: 'ended' }); });
 
@@ -139,8 +169,8 @@
                 });
 
                 video.addEventListener('error', function () {
-                    var msg = video.error ? video.error.message : 'Playback error';
-                    setStatus(msg, true);
+                    var msg = (video.error && video.error.message) || 'Playback error.';
+                    setError(msg);
                     emit({ event: 'error', message: msg });
                 });
 
@@ -149,8 +179,8 @@
                     video.play().catch(function () {});
                 }
             }).catch(function (err) {
-                setStatus(err.message, true);
-                emit({ event: 'error', message: err.message });
+                setError(err && err.message ? err.message : 'Could not start stream.');
+                emit({ event: 'error', message: err ? err.message : 'stream error' });
             });
         });
     }
@@ -189,9 +219,10 @@
             ).then(function (rk) {
                 rootKey = rk;
                 overlay.classList.add('hidden');
+                setLoading('Decrypting\u2026');
                 startPlayback(manifest, { rootKey: rootKey });
             }).catch(function () {
-                passErr.textContent = 'Incorrect passphrase.';
+                passErr.textContent = 'Incorrect passphrase. Please try again.';
                 passBtn.disabled = false;
                 passBtn.textContent = 'Unlock';
                 passIn.select();
@@ -206,22 +237,25 @@
     // ── Bootstrap ────────────────────────────────────────────────────────────
 
     function boot() {
+        setLoading('Initializing…');
+
         onQReady(function () {
             if (!manifest) {
                 if (rootCid) {
-                    // Try loading from Q.Safecloud.Client's IndexedDB cache
+                    setLoading('Loading saved capability…');
                     Q.Safecloud.Client.loadCapability(rootCid).then(function (saved) {
                         if (saved && saved.manifest && saved.capability) {
                             manifest = saved.manifest;
                             startPlayback(manifest, saved.capability);
                         } else {
-                            setStatus('No key for this content on this device.', true);
+                            setError('No decryption key found for this content on this device.');
                         }
-                    }).catch(function () {
-                        setStatus('Could not load saved capability.', true);
+                    }).catch(function (e) {
+                        setError('Could not load saved capability'
+                            + ((e && e.message) ? ': ' + e.message : '.'));
                     });
                 } else {
-                    setStatus('No content specified.', true);
+                    setError('No content specified. Add ?rootCid=bafy… to the URL.');
                 }
                 return;
             }
@@ -235,7 +269,7 @@
             // Split-entropy: need passphrase or server fragment
             if (splitToken && splitMask && !rootKey) {
                 if (jetUrl && params.get('sf') === '1') {
-                    setStatus('Fetching key fragment\u2026');
+                    setLoading('Fetching key fragment…');
                     Q.Safecloud.Client.fetchJetFragment(rootCid || manifest.rootCid, jetUrl)
                         .then(function (fragment) {
                             return Q.Safecloud.Client.recoverFromFragment(
@@ -261,15 +295,16 @@
 
             // Manifest but no key — try cache
             if (rootCid || manifest.rootCid) {
+                setLoading('Checking local cache…');
                 Q.Safecloud.Client.loadCapability(rootCid || manifest.rootCid).then(function (saved) {
                     if (saved && saved.capability) {
                         startPlayback(manifest, saved.capability);
                     } else {
-                        setStatus('Missing decryption key.', true);
+                        setError('Missing decryption key. Share the full URL including the #… fragment.');
                     }
                 });
             } else {
-                setStatus('Missing decryption key.', true);
+                setError('Missing decryption key. Share the full URL including the #… fragment.');
             }
         });
     }

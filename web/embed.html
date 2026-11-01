@@ -16,11 +16,30 @@
 html,body{width:100%;height:100%;overflow:hidden;background:var(--void);color:var(--text);font-family:var(--sans)}
 #player-wrap{position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center}
 video{width:100%;height:100%;object-fit:contain;background:var(--void)}
+
+/* ── Status overlay ── */
 #status{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
   font-size:.88rem;color:var(--muted);text-align:center;pointer-events:none;
-  transition:opacity .3s}
-#status.hidden{opacity:0}
-#status.error{color:var(--red)}
+  transition:opacity .4s;display:flex;flex-direction:column;align-items:center;gap:10px;
+  min-width:0;max-width:80%}
+#status.hidden{opacity:0;pointer-events:none}
+#status.error .status-text{color:var(--red)}
+#status.error .spinner{display:none}
+
+/* ── Spinner ── */
+.spinner{width:36px;height:36px;border:3px solid rgba(255,255,255,.12);
+  border-top-color:var(--green);border-radius:50%;
+  animation:spin .8s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+.status-text{line-height:1.4;word-break:break-word}
+
+/* ── Mobile: larger touch targets, readable text ── */
+@media(max-width:480px){
+  #status{font-size:1rem}
+  .spinner{width:44px;height:44px}
+  #pass-modal{padding:24px 20px}
+  #pass-input{font-size:1rem}
+}
 
 /* Passphrase modal */
 #pass-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);backdrop-filter:blur(8px);
@@ -44,7 +63,10 @@ video{width:100%;height:100%;object-fit:contain;background:var(--void)}
 
 <div id="player-wrap">
   <video id="video" playsinline></video>
-  <div id="status">Initializing…</div>
+  <div id="status">
+    <div class="spinner" id="spinner"></div>
+    <div class="status-text" id="status-text">Initializing…</div>
+  </div>
 </div>
 
 <div id="pass-overlay" class="hidden">
