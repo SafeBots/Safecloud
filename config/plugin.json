@@ -31,8 +31,8 @@
             "sbuxPerMB": 0.02
         },
         "video": {
-            "offlineCheckIntervalMs": 300000,/* 300000 */
-            "startupGraceMs": 180000,/* 180000 */
+            "offlineCheckIntervalMs": false,/* false disables the periodic offline-episode sweep entirely (e.g. for testing) -- see Safecloud/Jets.js listen() */
+            "startupGraceMs": 180000,
             "offlineCheckBatchSize": 50
         },
         "safebux": {

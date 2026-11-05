@@ -1697,58 +1697,75 @@ Safecloud_Jets.listen = function (options) {
     var episodeSweepBatchSize = Q.Config.get(['Safecloud', 'video', 'offlineCheckBatchSize'], 50);
     var episodeSweepStartedAt = Date.now();
     var episodeSweepOffset = 0;
-    Q.log('Q.Safecloud.Jets: episode availability sweep scheduled -- interval='
-        + episodeSweepIntervalMs + 'ms, startupGrace=' + episodeSweepStartupGraceMs
-        + 'ms, batchSize=' + episodeSweepBatchSize, false);
-    setInterval(function () {
-        var sinceStart = Date.now() - episodeSweepStartedAt;
-        if (sinceStart < episodeSweepStartupGraceMs) {
-            Q.log('Q.Safecloud.Jets: episode availability sweep tick skipped -- '
-                + 'still in startup grace window ('
-                + Math.round((episodeSweepStartupGraceMs - sinceStart) / 1000) + 's left)', false);
-            return;
-        }
-        var Streams, Db;
-        try {
-            Streams = Q.require('Streams');
-            Db = Q.require('Db');
-        } catch (e) {
-            Q.log('Q.Safecloud.Jets: episode availability sweep tick aborted -- '
-                + 'Q.require("Streams"/"Db") threw: ' + (e && e.message || e), false);
-            return;
-        }
-        Streams.Stream.SELECT('*').where({ type: 'Media/episode' })
-            .where(new Db.Expression("JSON_EXTRACT(attributes, '$.video.rootCid') IS NOT NULL"))
-            .limit(episodeSweepBatchSize, episodeSweepOffset)
-            .execute(function (err, rows) {
-                if (err) {
-                    Q.log('Q.Safecloud.Jets: episode availability sweep query failed: ' + err, false);
-                    return;
-                }
-                rows = rows || [];
-                Q.log('Q.Safecloud.Jets: episode availability sweep tick -- '
-                    + 'offset=' + episodeSweepOffset + ', found ' + rows.length
-                    + ' episode(s) with a rootCid to check', false);
-                episodeSweepOffset = (rows.length < episodeSweepBatchSize)
-                    ? 0
-                    : episodeSweepOffset + episodeSweepBatchSize;
-                rows.forEach(function (stream) {
-                    var video = stream.getAttribute('video') || {};
-                    var rootCid = video.rootCid;
-                    var label = stream.fields.publisherId + '/' + stream.fields.name;
-                    if (!rootCid) {
-                        Q.log('Q.Safecloud.Jets: sweep: ' + label + ' has no video.rootCid -- skipping', false);
+
+    // offlineCheckIntervalMs: false (or any falsy/non-positive value) turns
+    // the periodic sweep off entirely -- e.g. for local testing, so episodes
+    // never get auto-closed just because this process's in-memory Drop
+    // coverage hasn't caught up yet. Checked explicitly rather than just
+    // passing a falsy value to setInterval: setInterval(fn, false) coerces
+    // its delay to 0 and fires in a tight loop instead of never, same
+    // footgun as the 32-bit-overflow bug this config block had before (see
+    // the bugfix log). The event-driven Router 'unavailable'/'available'
+    // listeners above are a separate, real-time mechanism and are NOT
+    // affected by this flag -- they still close/reopen episodes immediately
+    // on an actual Drop coverage change.
+    if (!episodeSweepIntervalMs || episodeSweepIntervalMs <= 0) {
+        Q.log('Q.Safecloud.Jets: episode availability sweep DISABLED -- '
+            + 'Safecloud.video.offlineCheckIntervalMs is falsy', false);
+    } else {
+        Q.log('Q.Safecloud.Jets: episode availability sweep scheduled -- interval='
+            + episodeSweepIntervalMs + 'ms, startupGrace=' + episodeSweepStartupGraceMs
+            + 'ms, batchSize=' + episodeSweepBatchSize, false);
+        setInterval(function () {
+            var sinceStart = Date.now() - episodeSweepStartedAt;
+            if (sinceStart < episodeSweepStartupGraceMs) {
+                Q.log('Q.Safecloud.Jets: episode availability sweep tick skipped -- '
+                    + 'still in startup grace window ('
+                    + Math.round((episodeSweepStartupGraceMs - sinceStart) / 1000) + 's left)', false);
+                return;
+            }
+            var Streams, Db;
+            try {
+                Streams = Q.require('Streams');
+                Db = Q.require('Db');
+            } catch (e) {
+                Q.log('Q.Safecloud.Jets: episode availability sweep tick aborted -- '
+                    + 'Q.require("Streams"/"Db") threw: ' + (e && e.message || e), false);
+                return;
+            }
+            Streams.Stream.SELECT('*').where({ type: 'Media/episode' })
+                .where(new Db.Expression("JSON_EXTRACT(attributes, '$.video.rootCid') IS NOT NULL"))
+                .limit(episodeSweepBatchSize, episodeSweepOffset)
+                .execute(function (err, rows) {
+                    if (err) {
+                        Q.log('Q.Safecloud.Jets: episode availability sweep query failed: ' + err, false);
                         return;
                     }
-                    _isRootCidAvailable(rootCid, function (available) {
-                        Q.log('Q.Safecloud.Jets: sweep: ' + label + ' (rootCid ' + rootCid + ') -- '
-                            + 'available=' + available + ', currently '
-                            + (stream.fields.closedTime ? 'closed' : 'open'), false);
-                        _applyEpisodeClosedTime(stream, !available);
+                    rows = rows || [];
+                    Q.log('Q.Safecloud.Jets: episode availability sweep tick -- '
+                        + 'offset=' + episodeSweepOffset + ', found ' + rows.length
+                        + ' episode(s) with a rootCid to check', false);
+                    episodeSweepOffset = (rows.length < episodeSweepBatchSize)
+                        ? 0
+                        : episodeSweepOffset + episodeSweepBatchSize;
+                    rows.forEach(function (stream) {
+                        var video = stream.getAttribute('video') || {};
+                        var rootCid = video.rootCid;
+                        var label = stream.fields.publisherId + '/' + stream.fields.name;
+                        if (!rootCid) {
+                            Q.log('Q.Safecloud.Jets: sweep: ' + label + ' has no video.rootCid -- skipping', false);
+                            return;
+                        }
+                        _isRootCidAvailable(rootCid, function (available) {
+                            Q.log('Q.Safecloud.Jets: sweep: ' + label + ' (rootCid ' + rootCid + ') -- '
+                                + 'available=' + available + ', currently '
+                                + (stream.fields.closedTime ? 'closed' : 'open'), false);
+                            _applyEpisodeClosedTime(stream, !available);
+                        });
                     });
                 });
-            });
-    }, episodeSweepIntervalMs);
+        }, episodeSweepIntervalMs);
+    }
 
     // ── 6. Router + JetSwarm ─────────────────────────────────────────────────
     _initSwarm(options);
