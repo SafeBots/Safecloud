@@ -1,0 +1,188 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  # ─── Build matrix: one job per target ──────────────────────────────────────
+  build:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target:  linux-x64
+            runner:  ubuntu-latest
+            node:    '22'
+            exe:     safecloud-jet-linux-x64
+
+          - target:  linux-arm64
+            runner:  ubuntu-24.04-arm
+            node:    '22'
+            exe:     safecloud-jet-linux-arm64
+
+          - target:  macos-x64
+            runner:  macos-13
+            node:    '22'
+            exe:     safecloud-jet-macos-x64
+
+          - target:  macos-arm64
+            runner:  macos-latest
+            node:    '22'
+            exe:     safecloud-jet-macos-arm64
+
+          - target:  windows-x64
+            runner:  windows-latest
+            node:    '22'
+            exe:     safecloud-jet-windows-x64.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install production dependencies
+        run: npm ci --omit=dev
+
+      # Bundle everything into a single CommonJS file that the SEA blob can
+      # run — esbuild resolves all requires at build time so the binary is
+      # fully self-contained.
+      - name: Install esbuild (build-time only)
+        run: npm install --no-save esbuild
+
+      - name: Bundle entry point
+        run: |
+          npx esbuild bin/jet.js \
+            --bundle \
+            --platform=node \
+            --format=cjs \
+            --outfile=bin/jet-bundle.cjs \
+            --external:fsevents \
+            --external:bufferutil \
+            --external:utf-8-validate
+
+      # Node SEA (Single Executable Application) — stable in Node 22.
+      - name: Generate SEA blob
+        run: node --experimental-sea-config sea-config.json
+
+      # Copy the Node binary; inject the blob; strip debug symbols.
+      - name: Inject blob into Node binary (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          cp "$(which node)" "${{ matrix.exe }}"
+          # Remove the existing code signature on macOS before patching
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            codesign --remove-signature "${{ matrix.exe }}" || true
+          fi
+          npx postject "${{ matrix.exe }}" NODE_SEA_BLOB sea-prep.blob \
+            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            codesign --sign - "${{ matrix.exe }}" || true
+          fi
+          chmod +x "${{ matrix.exe }}"
+          # Smoke test
+          ./"${{ matrix.exe }}" --version
+
+      - name: Inject blob into Node binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item (Get-Command node).Source -Destination "${{ matrix.exe }}"
+          npx postject "${{ matrix.exe }}" NODE_SEA_BLOB sea-prep.blob `
+            --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
+          & ".\${{ matrix.exe }}" --version
+
+      # Attest provenance for each binary
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: ${{ matrix.exe }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.exe }}
+          path: ${{ matrix.exe }}
+          if-no-files-found: error
+
+  # ─── Publish GitHub Release ────────────────────────────────────────────────
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+
+      # Flatten: download-artifact creates one sub-dir per artifact
+      - name: Flatten dist/
+        run: |
+          find dist/ -type f | while read f; do
+            mv "$f" "dist/$(basename "$f")"
+          done
+          # Remove now-empty sub-directories
+          find dist/ -mindepth 1 -type d -empty -delete
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > ../checksums.txt
+          cat ../checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Safecloud Jet ${{ github.ref_name }}
+          body: |
+            ## Safecloud Jet ${{ github.ref_name }}
+
+            Standalone Jet server binary — no Node.js or npm required.
+
+            ### Installation
+
+            See [docs/install.md](https://github.com/${{ github.repository }}/blob/main/docs/install.md) for full instructions.
+
+            **Quick start (Linux x64):**
+            ```bash
+            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/safecloud-jet-linux-x64
+            chmod +x safecloud-jet-linux-x64
+            mkdir -p local
+            ./safecloud-jet-linux-x64
+            ```
+
+            ### Verify build provenance
+
+            ```bash
+            gh attestation verify safecloud-jet-linux-x64 \
+              --repo ${{ github.repository }}
+            ```
+
+            ### Checksums (SHA-256)
+
+            ```
+            $(cat checksums.txt)
+            ```
+          files: |
+            dist/*
+            checksums.txt
+          fail_on_unmatched_files: true
+          generate_release_notes: true
