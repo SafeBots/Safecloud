@@ -74,6 +74,21 @@ Q.exports(function (Q, _) {
         // a genuine grant/teaser boundary.
         var _deniedRetries = {};
         var MAX_DENIED_RETRIES = 1;
+        // Transient fetch failures -- a null chunk (Jets/get.js: "unavailable,
+        // retry or try another Jet") or any non-grant-boundary error (timeout,
+        // "No Drops available", etc.) -- used to be abandoned permanently:
+        // _tick()'s _frontier only ever advances, so a segIndex that failed
+        // once was never requested again, and once playback caught up to that
+        // gap the service worker kept 503ing it forever (sw.js's serveSegment
+        // has nothing to serve and nothing ever posts it anything). Confirmed
+        // live: a single transient null/error partway through a video (Drop
+        // momentarily busy, or a chunk that hadn't finished replicating yet)
+        // permanently stalled playback right at that point, even though the
+        // Drop was fine moments later. Retry with backoff, same pattern as
+        // the grant-boundary retry above, before giving up for good.
+        var _retries = {};
+        var MAX_SEG_RETRIES = options.maxSegRetries || 5;
+        var SEG_RETRY_DELAY_MS = options.segRetryDelayMs || 1000;
         var _segStart  = _chunkAtTime(startAt, chunkDuration, videoManifest);
         // Next index the tick loop hasn't requested yet — see _tick() for
         // why this, not currentTime, drives the window's upper edge.
@@ -148,9 +163,11 @@ Q.exports(function (Q, _) {
                     // a Drop that never actually has the chunk it's supposed
                     // to be serving — count it so a stall log can show
                     // "N consecutive nulls for this content" instead of
-                    // just "no chunk yet."
+                    // just "no chunk yet." _retrySeg actually does the
+                    // "retry" part Jets/get.js's own doc comment promises —
+                    // nothing did, before now.
                     _segStats.nullChunks++;
-                    return;
+                    return _retrySeg(segIndex, null);
                 }
 
                 if (onChunk) {
@@ -215,23 +232,44 @@ Q.exports(function (Q, _) {
                     // viewer's buffer actually runs dry) means this is the
                     // only chance to remember it was denied.
                     _denied[segIndex] = true;
+                    // segIndex and whether it's actually needed for CURRENT
+                    // playback (as opposed to one of the prefetchAhead segments
+                    // this loop deliberately requests before they're needed —
+                    // see _tick()'s own comment on racing ahead of playback) are
+                    // both passed through so a caller can tell a real,
+                    // just-reached grant/subscription boundary (segIndex <=
+                    // current) apart from hitting that same boundary purely
+                    // because the loop is scouting ahead of where the viewer
+                    // actually is. This distinction alone isn't sufficient to
+                    // detect "teaser genuinely ended" though — see the
+                    // 'waiting' listener below, which is what actually does
+                    // that now.
+                    return onError(err, segIndex, segIndex <= _currentSegIndex());
                 }
-                // segIndex and whether it's actually needed for CURRENT
-                // playback (as opposed to one of the prefetchAhead segments
-                // this loop deliberately requests before they're needed —
-                // see _tick()'s own comment on racing ahead of playback) are
-                // both passed through so a caller can tell a real,
-                // just-reached grant/subscription boundary (segIndex <=
-                // current) apart from hitting that same boundary purely
-                // because the loop is scouting ahead of where the viewer
-                // actually is. This distinction alone isn't sufficient to
-                // detect "teaser genuinely ended" though — see the
-                // 'waiting' listener below, which is what actually does
-                // that now.
-                onError(err, segIndex, segIndex <= _currentSegIndex());
+                _retrySeg(segIndex, err);
             }).then(function () {
                 delete _inFlight[segIndex];
             });
+        }
+
+        // Retries a segment that failed transiently (null chunk, timeout, or
+        // any other non-grant-boundary error) with backoff, up to
+        // MAX_SEG_RETRIES times, before finally reporting it via onError —
+        // see the _retries comment above for why this exists at all.
+        function _retrySeg(segIndex, err) {
+            var n = _retries[segIndex] || 0;
+            if (n < MAX_SEG_RETRIES) {
+                _retries[segIndex] = n + 1;
+                setTimeout(function () {
+                    if (!_stopped) { _fetchSeg(segIndex); }
+                }, SEG_RETRY_DELAY_MS);
+                return;
+            }
+            onError(
+                err || new Error('segment ' + segIndex + ' unavailable after '
+                    + MAX_SEG_RETRIES + ' retries'),
+                segIndex, segIndex <= _currentSegIndex()
+            );
         }
 
         // ── Decrypt chunk (MSE path) ──────────────────────────────────────────
@@ -467,6 +505,12 @@ Q.exports(function (Q, _) {
                 // anything outside that window needs to be treated as
                 // undelivered again even though we sent it once before.
                 _delivered = {};
+                // Retry counts are about timing/caching, not a fact about
+                // the grant (unlike _denied/_deniedRetries, which are
+                // deliberately NOT reset here) — a segment that exhausted
+                // its retries before a seek deserves a fresh attempt budget
+                // at the new position.
+                _retries = {};
                 // Give the new position a fresh stallLogMs grace period
                 // instead of comparing against a pre-seek delivery time that
                 // may already be stale.
@@ -483,6 +527,7 @@ Q.exports(function (Q, _) {
             setVersion: function (label, timestamp) {
                 _inFlight  = {};
                 _delivered = {}; // switching renditions means an entirely different chunk set
+                _retries   = {}; // see seek()'s identical reset for why
                 _lastDeliveredAt = Date.now();
                 _stalled = false;
                 _version  = label;

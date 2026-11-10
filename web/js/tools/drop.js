@@ -38,6 +38,10 @@ Q.Tool.define('Safecloud/drop', function (options) {
         Safebux:           'Safebux Earned',
         Uptime:            'Uptime',
         ProllyRoot:        'Prolly Root',
+        Persistent:        'Persistent Storage',
+        PersistentYes:     'Yes',
+        PersistentNo:      'No',
+        PersistentUnknown: 'Unsupported',
         InitialisingWebAuthn: 'Initialising WebAuthn PRF…',
         PluginNotLoaded:   'Safecloud plugin not loaded.',
         Connected:         'Connected'
@@ -129,6 +133,7 @@ Q.Tool.define('Safecloud/drop', function (options) {
             }
             $st.text(Q.getObject('drop.Connected', tool.text) || 'Connected').addClass('ok');
             Q.handle(state.onConnected, tool);
+            tool.requestPersistentStorage();
             tool.showDashboard();
         });
     },
@@ -146,6 +151,62 @@ Q.Tool.define('Safecloud/drop', function (options) {
             tool.renderStats();
         }, tool.state.pollMs);
         tool.renderStats();
+        tool.renderPersistence();
+    },
+
+    /**
+     * Best-effort request that the browser not auto-evict this Drop's
+     * IndexedDB storage under disk pressure -- it's the only copy of
+     * whatever chunks this Drop holds, so a silent eviction looks
+     * identical to the Drop simply going offline for every peer relying
+     * on it. Not supported in every browser (notably Safari lacks
+     * navigator.storage.persist()), so this is feature-detected and
+     * never blocks or fails the connect flow on its outcome either way
+     * -- renderPersistence() (always called right after, from both this
+     * and showDashboard()'s reload path) reflects whatever the browser
+     * actually decided, independent of whether the request itself was
+     * even supported.
+     * @method requestPersistentStorage
+     */
+    requestPersistentStorage: function () {
+        var tool = this;
+        if (!navigator.storage || !navigator.storage.persist) {
+            return;
+        }
+        navigator.storage.persist().then(function () {
+            tool.renderPersistence();
+        }).catch(function () {
+            tool.renderPersistence();
+        });
+    },
+
+    /**
+     * Reflects navigator.storage.persisted() in the stats table. Called
+     * once per connect/reload (not on every renderStats() poll tick,
+     * unlike the other stats) since this is a one-time browser-level
+     * grant that doesn't change mid-session.
+     * @method renderPersistence
+     */
+    renderPersistence: function () {
+        var tool  = this;
+        var $cell = $(tool.element).find('.Safecloud_drop_stat_persistent');
+        if (!$cell.length) {
+            return;
+        }
+        if (!navigator.storage || !navigator.storage.persisted) {
+            $cell.text(Q.getObject('drop.PersistentUnknown', tool.text) || 'Unsupported')
+                .removeClass('ok error');
+            return;
+        }
+        navigator.storage.persisted().then(function (persisted) {
+            $cell.text(persisted
+                ? (Q.getObject('drop.PersistentYes', tool.text) || 'Yes')
+                : (Q.getObject('drop.PersistentNo', tool.text) || 'No')
+            ).toggleClass('ok', !!persisted).toggleClass('error', !persisted);
+        }).catch(function () {
+            $cell.text(Q.getObject('drop.PersistentUnknown', tool.text) || 'Unsupported')
+                .removeClass('ok error');
+        });
     },
 
     renderStats: function () {
@@ -339,6 +400,8 @@ Q.Template.set('Safecloud/drop',
                 '<td class="Safecloud_drop_stat_uptime">00:00:00</td></tr>' +
             '<tr><th>{{text.drop.ProllyRoot}}</th>' +
                 '<td class="Safecloud_drop_stat_prollyRoot d">null</td></tr>' +
+            '<tr><th>{{text.drop.Persistent}}</th>' +
+                '<td class="Safecloud_drop_stat_persistent">–</td></tr>' +
         '</table>' +
         '<button class="Safecloud_drop_claim_btn Q_button" disabled>' +
             '{{text.drop.ClaimButton}}' +

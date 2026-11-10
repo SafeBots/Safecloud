@@ -122,6 +122,8 @@
 .Safecloud_drop_stat_evmAddress { color: #00ff88; font-size: 11px; }
 .Safecloud_drop_stat_safebux    { color: #ffaa00; }
 .Safecloud_drop_stat_prollyRoot { color: #3a4a3a; font-size: 10px; }
+.Safecloud_drop_stat_persistent.ok    { color: #00ff88; }
+.Safecloud_drop_stat_persistent.error { color: #ff3344; }
 
 .Safecloud_drop_claim_btn {
     margin-top: 18px;

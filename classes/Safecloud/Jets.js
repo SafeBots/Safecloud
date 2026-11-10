@@ -1904,6 +1904,130 @@ Safecloud_Jets.listen = function (options) {
         });
     }, graceMs);
 
+    // ── 5.5 Episode availability tracking ─────────────────────────────────────
+    // Media/episode streams with a Safecloud-stored video should disappear
+    // from /clips listings once every Drop holding their content has gone
+    // offline, and reappear once one reconnects. Streams_Stream.closedTime is
+    // the mechanism: Media::mostViewedEpisodes() already filters it, and
+    // Streams::related() already excludes any related stream whose
+    // testReadLevel('see') fails (which closedTime causes, for anyone but the
+    // stream's own publisher) -- so just keeping closedTime in sync here is
+    // the whole fix; no listing-side code needed.
+    //
+    // Two complementary paths keep it in sync, registered once per listen():
+    //   - event-driven (fast): Router emits 'available'/'unavailable' on each
+    //     real 0<->1 coverage transition (see Router.js onDropAnnounce/
+    //     onDropDisconnected) -- flip immediately.
+    //   - periodic (safety net): Router's in-memory coverage is wiped on every
+    //     Jet restart with no event to replay it, so also re-derive true state
+    //     for every known Safecloud episode on an interval, skipping an
+    //     initial startup grace window so a restart doesn't transiently close
+    //     everything before Drops have reconnected and re-announced.
+    // NOTE on every _episodeAvailabilityLog(...) call in this section (and
+    // in the _isRootCidAvailable/_applyEpisodeClosedTime/
+    // _notifyPublisherVideoOffline/_setEpisodesByRootCid helpers below):
+    // that wrapper (defined just above this section) passes Q.log's own
+    // second ("name") argument as `false` -- which is what actually routes
+    // a message to the console (see Q.log's source, classes/Q.js: passing
+    // NO second argument defaults `name` to Q.Config.get(['Q','app'], false),
+    // normally truthy for a real running app, so it would *still* silently
+    // write to a log file instead of the terminal; only an explicitly falsy
+    // `name` hits Q.log's `if (!name) return console.log...` branch) --
+    // UNLESS Safecloud.jet.debugging is explicitly set to false, in which
+    // case the wrapper passes 'Safecloud' instead, sending the exact same
+    // message to the Safecloud_node log file instead of the console. Every
+    // Q.log(...) call stays in the source either way; only where the
+    // message goes is config-gated. Defaults to true (today's
+    // always-console behavior, unchanged for anyone who hasn't set this).
+    if (Q.Safecloud.Router) {
+        Q.Safecloud.Router.on('unavailable', function (rootCid) {
+            _episodeAvailabilityLog('Q.Safecloud.Jets: Router says UNAVAILABLE for rootCid ' + rootCid + ' -- closing matching episode(s)');
+            _setEpisodesByRootCid(rootCid, true);
+        });
+        Q.Safecloud.Router.on('available', function (rootCid) {
+            _episodeAvailabilityLog('Q.Safecloud.Jets: Router says AVAILABLE for rootCid ' + rootCid + ' -- reopening matching episode(s)');
+            _setEpisodesByRootCid(rootCid, false);
+        });
+    } else {
+        _episodeAvailabilityLog('Q.Safecloud.Jets: Q.Safecloud.Router is not available -- '
+            + 'episode availability event listeners were NOT registered');
+    }
+
+    var episodeSweepIntervalMs = Q.Config.get(['Safecloud', 'video', 'offlineCheckIntervalMs'], 300000);
+    var episodeSweepStartupGraceMs = Q.Config.get(['Safecloud', 'video', 'startupGraceMs'], 180000);
+    var episodeSweepBatchSize = Q.Config.get(['Safecloud', 'video', 'offlineCheckBatchSize'], 50);
+    var episodeSweepStartedAt = Date.now();
+    var episodeSweepOffset = 0;
+
+    // offlineCheckIntervalMs: false (or any falsy/non-positive value) turns
+    // the periodic sweep off entirely -- e.g. for local testing, so episodes
+    // never get auto-closed just because this process's in-memory Drop
+    // coverage hasn't caught up yet. Checked explicitly rather than just
+    // passing a falsy value to setInterval: setInterval(fn, false) coerces
+    // its delay to 0 and fires in a tight loop instead of never, same
+    // footgun as the 32-bit-overflow bug this config block had before (see
+    // the bugfix log). The event-driven Router 'unavailable'/'available'
+    // listeners above are a separate, real-time mechanism and are NOT
+    // affected by this flag -- they still close/reopen episodes immediately
+    // on an actual Drop coverage change.
+    if (!episodeSweepIntervalMs || episodeSweepIntervalMs <= 0) {
+        _episodeAvailabilityLog('Q.Safecloud.Jets: episode availability sweep DISABLED -- '
+            + 'Safecloud.video.offlineCheckIntervalMs is falsy');
+    } else {
+        _episodeAvailabilityLog('Q.Safecloud.Jets: episode availability sweep scheduled -- interval='
+            + episodeSweepIntervalMs + 'ms, startupGrace=' + episodeSweepStartupGraceMs
+            + 'ms, batchSize=' + episodeSweepBatchSize);
+        setInterval(function () {
+            var sinceStart = Date.now() - episodeSweepStartedAt;
+            if (sinceStart < episodeSweepStartupGraceMs) {
+                _episodeAvailabilityLog('Q.Safecloud.Jets: episode availability sweep tick skipped -- '
+                    + 'still in startup grace window ('
+                    + Math.round((episodeSweepStartupGraceMs - sinceStart) / 1000) + 's left)');
+                return;
+            }
+            var Streams, Db;
+            try {
+                Streams = Q.require('Streams');
+                Db = Q.require('Db');
+            } catch (e) {
+                _episodeAvailabilityLog('Q.Safecloud.Jets: episode availability sweep tick aborted -- '
+                    + 'Q.require("Streams"/"Db") threw: ' + (e && e.message || e));
+                return;
+            }
+            Streams.Stream.SELECT('*').where({ type: 'Media/episode' })
+                .where(new Db.Expression("JSON_EXTRACT(attributes, '$.video.rootCid') IS NOT NULL"))
+                .limit(episodeSweepBatchSize, episodeSweepOffset)
+                .execute(function (err, rows) {
+                    if (err) {
+                        _episodeAvailabilityLog('Q.Safecloud.Jets: episode availability sweep query failed: ' + err);
+                        return;
+                    }
+                    rows = rows || [];
+                    _episodeAvailabilityLog('Q.Safecloud.Jets: episode availability sweep tick -- '
+                        + 'offset=' + episodeSweepOffset + ', found ' + rows.length
+                        + ' episode(s) with a rootCid to check');
+                    episodeSweepOffset = (rows.length < episodeSweepBatchSize)
+                        ? 0
+                        : episodeSweepOffset + episodeSweepBatchSize;
+                    rows.forEach(function (stream) {
+                        var video = stream.getAttribute('video') || {};
+                        var rootCid = video.rootCid;
+                        var label = stream.fields.publisherId + '/' + stream.fields.name;
+                        if (!rootCid) {
+                            _episodeAvailabilityLog('Q.Safecloud.Jets: sweep: ' + label + ' has no video.rootCid -- skipping');
+                            return;
+                        }
+                        _isRootCidAvailable(rootCid, function (available) {
+                            _episodeAvailabilityLog('Q.Safecloud.Jets: sweep: ' + label + ' (rootCid ' + rootCid + ') -- '
+                                + 'available=' + available + ', currently '
+                                + (stream.fields.closedTime ? 'closed' : 'open'));
+                            _applyEpisodeClosedTime(stream, !available);
+                        });
+                    });
+                });
+        }, episodeSweepIntervalMs);
+    }
+
     // ── 6. Router + JetSwarm ─────────────────────────────────────────────────
     _initSwarm(options);
 
@@ -2037,6 +2161,189 @@ Safecloud_Jets.listen = function (options) {
 };
 
 Safecloud_Jets.listen.options = {};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Episode availability tracking  (private — wired up from listen(), step 5.5)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Routes one episode-availability-tracking log message to the console
+ * (today's default, unchanged) or to the Safecloud_node log file only,
+ * per Safecloud.jet.debugging. Every Q.log(...) call in this subsystem
+ * (the periodic sweep, the Router 'available'/'unavailable' listeners,
+ * and the _isRootCidAvailable/_applyEpisodeClosedTime/
+ * _notifyPublisherVideoOffline/_setEpisodesByRootCid helpers below) goes
+ * through this wrapper instead of calling Q.log directly, so the calls
+ * themselves never need to be removed to quiet a noisy terminal -- e.g.
+ * during local testing, set Safecloud.jet.debugging: false in an app's
+ * local/app.json (Node-side config, needs a process restart to take
+ * effect, same as other Safecloud.jet.* keys) and these same messages
+ * keep getting written, just to the log file instead of stdout.
+ * @method _episodeAvailabilityLog
+ * @private
+ * @param {String} message
+ */
+function _episodeAvailabilityLog(message) {
+    var debugging = Q.Config.get(['Safecloud', 'jet', 'debugging'], true);
+    Q.log(message, debugging ? false : 'Safecloud');
+}
+
+/**
+ * Is any Drop online right now for this rootCid? Same check the existing
+ * Safecloud/subtree/checkAvailable handler makes (paywall pre-flight).
+ * @method _isRootCidAvailable
+ * @private
+ * @param {String} rootCid
+ * @param {Function} callback  fn(available: Boolean)
+ */
+function _isRootCidAvailable(rootCid, callback) {
+    var flatCids = (_cidIndex[rootCid] && _cidIndex[rootCid]['track/data']) || [];
+    if (!flatCids.length) {
+        _episodeAvailabilityLog('Q.Safecloud.Jets: _isRootCidAvailable(' + rootCid + ') -- '
+            + 'no _cidIndex entry (or empty track/data) -- treating as unavailable. '
+            + 'Known _cidIndex keys so far: ' + Object.keys(_cidIndex).length);
+        return callback(false);
+    }
+    Safecloud_Jets.selectDrops([flatCids[0]], { forGet: true }).then(function (drops) {
+        var available = !!(drops && drops.length);
+        _episodeAvailabilityLog('Q.Safecloud.Jets: _isRootCidAvailable(' + rootCid + ') -- '
+            + 'selectDrops returned ' + (drops ? drops.length : 0) + ' drop(s) -- available=' + available);
+        callback(available);
+    }).catch(function (err) {
+        _episodeAvailabilityLog('Q.Safecloud.Jets: _isRootCidAvailable(' + rootCid + ') -- '
+            + 'selectDrops threw: ' + (err && err.message || err) + ' -- treating as unavailable');
+        callback(false);
+    });
+}
+
+/**
+ * Sets or clears a Media/episode stream's closedTime to match availability,
+ * skipping the write entirely when it's already correct.
+ * @method _applyEpisodeClosedTime
+ * @private
+ * @param {Streams.Stream} stream
+ * @param {Boolean} offline
+ * @param {Function} [callback]
+ */
+function _applyEpisodeClosedTime(stream, offline, callback) {
+    var label = stream.fields.publisherId + '/' + stream.fields.name;
+    var isClosed = !!stream.fields.closedTime;
+    if (isClosed === offline) {
+        _episodeAvailabilityLog('Q.Safecloud.Jets: ' + label + ' already ' + (offline ? 'closed' : 'open')
+            + ' -- no change needed');
+        return callback && callback();
+    }
+    _episodeAvailabilityLog('Q.Safecloud.Jets: ' + (offline ? 'CLOSING' : 'RE-OPENING') + ' episode ' + label
+        + ' (closedTime ' + (offline ? 'set' : 'cleared') + ')');
+    // Db.Row's tracked getter/setter for each column lives on `stream.fields`,
+    // not on the Row instance itself (see classes/Db/Row.js's constructor --
+    // Object.defineProperty(this.fields, k, {get, set}), never on `this`).
+    // `stream.closedTime = ...` silently creates an untracked, meaningless
+    // own-property that .save() never looks at (it only persists keys in
+    // row._fieldsModified, which only the fields.* setter populates) -- so
+    // the save would "succeed" having written nothing. Must go through
+    // stream.fields.closedTime for beforeSet_closedTime's Date conversion
+    // (see Base/Streams/Stream.js) and the dirty-tracking to both fire.
+    stream.fields.closedTime = offline ? new Date() : null;
+    stream.save(function (err) {
+        if (err) {
+            _episodeAvailabilityLog('Q.Safecloud.Jets: FAILED to update closedTime for ' + label + ': ' + err);
+        } else {
+            _episodeAvailabilityLog('Q.Safecloud.Jets: closedTime saved for ' + label);
+            if (offline) {
+                _notifyPublisherVideoOffline(stream);
+            }
+        }
+        callback && callback();
+    });
+}
+
+/**
+ * Emails the stream's publisher letting them know their video was just
+ * hidden from listings for lack of available Drops, with a link to
+ * reconnect one. Only ever called from _applyEpisodeClosedTime, right
+ * after a real offline transition is saved -- that function's own
+ * "already closed -- no change needed" guard (above) is what keeps this
+ * from re-firing on every sweep tick for a video that's already hidden.
+ * Best-effort: any failure here is only logged, never thrown -- losing
+ * a notification email isn't worth destabilizing the availability sweep.
+ * @method _notifyPublisherVideoOffline
+ * @private
+ * @param {Streams.Stream} stream
+ */
+function _notifyPublisherVideoOffline(stream) {
+    var label = stream.fields.publisherId + '/' + stream.fields.name;
+    var Users;
+    try {
+        Users = Q.require('Users');
+    } catch (e) {
+        _episodeAvailabilityLog('Q.Safecloud.Jets: _notifyPublisherVideoOffline(' + label + ') aborted -- '
+            + 'Q.require("Users") threw: ' + (e && e.message || e));
+        return;
+    }
+    Users.fetch(stream.fields.publisherId, function (err, result, fetched) {
+        // `this` is the retrieved Users.User row (Db.Row's retrieve()
+        // calls back as `callback.call(self, err, result, fetched)`).
+        var emailAddress = fetched && this.fields.emailAddress;
+        if (err || !emailAddress) {
+            _episodeAvailabilityLog('Q.Safecloud.Jets: _notifyPublisherVideoOffline(' + label + ') -- '
+                + 'no email address on file, skipping');
+            return;
+        }
+        Users.Email.sendMessage(
+            emailAddress,
+            ['Media/content', ['email', 'videoOffline', 'subject']],
+            'Media/email/videoOffline',
+            {
+                title: stream.fields.title,
+                dropUrl: Q.url('safecloud/drop')
+            },
+            { html: true },
+            function (err) {
+                if (err) {
+                    _episodeAvailabilityLog('Q.Safecloud.Jets: failed to email publisher for ' + label + ': ' + err);
+                } else {
+                    _episodeAvailabilityLog('Q.Safecloud.Jets: emailed publisher for ' + label);
+                }
+            }
+        );
+    });
+}
+
+/**
+ * Looks up the Media/episode stream(s) with this exact rootCid and applies
+ * the given availability. Event-driven fast path — see Router.js's
+ * 'available'/'unavailable' emits at each real coverage transition.
+ * @method _setEpisodesByRootCid
+ * @private
+ * @param {String} rootCid
+ * @param {Boolean} offline
+ */
+function _setEpisodesByRootCid(rootCid, offline) {
+    var Streams, Db;
+    try {
+        Streams = Q.require('Streams');
+        Db = Q.require('Db');
+    } catch (e) {
+        _episodeAvailabilityLog('Q.Safecloud.Jets: _setEpisodesByRootCid(' + rootCid + ') aborted -- '
+            + 'Q.require("Streams"/"Db") threw: ' + (e && e.message || e));
+        return;
+    }
+    Streams.Stream.SELECT('*').where({ type: 'Media/episode' }).where(new Db.Expression({
+        "JSON_EXTRACT(attributes, '$.video.rootCid') =": rootCid
+    })).execute(function (err, rows) {
+        if (err) {
+            _episodeAvailabilityLog('Q.Safecloud.Jets: _setEpisodesByRootCid(' + rootCid + ') query failed: ' + err);
+            return;
+        }
+        rows = rows || [];
+        _episodeAvailabilityLog('Q.Safecloud.Jets: _setEpisodesByRootCid(' + rootCid + ') -- '
+            + 'found ' + rows.length + ' matching episode(s)');
+        rows.forEach(function (stream) {
+            _applyEpisodeClosedTime(stream, offline);
+        });
+    });
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Socket event handlers  (private — called from listen())
