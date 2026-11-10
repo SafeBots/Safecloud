@@ -5,12 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Safecloud Suite — Collaborative Editors</title>
 
-<!-- Jspreadsheet (sheets) — local bundles -->
-<link rel="stylesheet" href="./js/jsuites.css">
-<link rel="stylesheet" href="./js/jspreadsheet.css">
 <!-- CodeMirror 5 (markdown) — local bundles -->
 <link rel="stylesheet" href="./js/codemirror.css">
 <link rel="stylesheet" href="./js/dracula.css">
+<!-- Univer CSS is bundled inline in univer-bundle.js (injected at runtime) -->
 
 <style>
 :root {
@@ -79,17 +77,12 @@ header h1 span { color: var(--accent); }
 .ProseMirror code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: .9em; }
 .ProseMirror blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--muted); }
 
-/* ── Sheets (Jspreadsheet overrides for dark theme) ── */
-.sheets-wrap { flex: 1; overflow: auto; background: #1a1d27; }
-.jexcel_container { background: #1a1d27 !important; }
-.jexcel > thead > tr > td { background: #252836 !important; color: var(--muted) !important; border-color: var(--border) !important; }
-.jexcel > tbody > tr > td { background: var(--editor-bg) !important; color: var(--text) !important; border-color: var(--border) !important; }
-.jexcel > tbody > tr > td.readonly { color: var(--muted) !important; }
-.jexcel > tbody > tr > td.highlight-top { border-top: 2px solid var(--accent) !important; }
-.jexcel > tbody > tr > td.highlight-left { border-left: 2px solid var(--accent) !important; }
-.jexcel > tbody > tr > td.highlight-right { border-right: 2px solid var(--accent) !important; }
-.jexcel > tbody > tr > td.highlight-bottom { border-bottom: 2px solid var(--accent) !important; }
-.jexcel > tbody > tr > td.selected { background: rgba(99,102,241,.18) !important; }
+/* ── Sheets (Univer container) ── */
+.sheets-wrap { flex: 1; overflow: hidden; background: #1a1d27; display: flex; flex-direction: column; }
+.univer-container { flex: 1; min-height: 0; position: relative; }
+/* Univer dark-mode overrides to match Safecloud palette */
+.univer-container .univer-toolbar-wrapper { background: var(--surface) !important; border-bottom: 1px solid var(--border) !important; }
+.univer-container .univer-formula-bar { background: var(--surface) !important; border-bottom: 1px solid var(--border) !important; }
 
 /* ── Markdown split pane ── */
 .md-split { flex: 1; display: flex; min-height: 0; overflow: hidden; }
@@ -223,8 +216,8 @@ header h1 span { color: var(--accent); }
 <script src="./js/yjs.min.js"></script>
 
 <!-- Local bundles (all CDN replaced) -->
-<script src="./js/tiptap.min.js"></script>
-<script src="./js/jspreadsheet.min.js"></script>
+<!-- Univer Docs + Sheets bundle (replaces TipTap + Jspreadsheet) -->
+<script src="./js/univer-bundle.js"></script>
 <script src="./js/codemirror.min.js"></script>
 <script src="./js/marked.min.js"></script>
 <script src="./js/pptxgenjs.min.js"></script>
@@ -332,170 +325,97 @@ function makeProvider(ydoc, userId, streamSuffix, logId, lastOrdinalId, badgeId)
 }
 
 /* ════════════════════════════════════════════════════════════════════
-   MODE 1 — DOCS (TipTap WYSIWYG)
+   MODE 1 — DOCS (Univer Docs + Y.Map snapshot)
 ═══════════════════════════════════════════════════════════════════════ */
-function buildDocsToolbar(container, editor) {
-    var btns = [
-        { label: 'B',    cmd: 'toggleBold',       mark: 'bold' },
-        { label: 'I',    cmd: 'toggleItalic',     mark: 'italic' },
-        { label: '`',    cmd: 'toggleCode',       mark: 'code' },
-        { label: 'H1',   cmd: 'toggleHeading',    opts: { level: 1 } },
-        { label: 'H2',   cmd: 'toggleHeading',    opts: { level: 2 } },
-        { label: 'H3',   cmd: 'toggleHeading',    opts: { level: 3 } },
-        { label: '• List', cmd: 'toggleBulletList', mark: 'bulletList' },
-        { label: '1. List', cmd: 'toggleOrderedList', mark: 'orderedList' },
-        { label: '❝',    cmd: 'toggleBlockquote', mark: 'blockquote' },
-        { label: '—',    cmd: 'setHorizontalRule' }
-    ];
-    container.innerHTML = '';
-    btns.forEach(function (b) {
-        var btn = document.createElement('button');
-        btn.textContent = b.label;
-        btn.addEventListener('click', function () {
-            if (b.opts) editor.chain().focus()[b.cmd](b.opts).run();
-            else editor.chain().focus()[b.cmd]().run();
-        });
-        container.appendChild(btn);
-    });
-    var refresh = function () {
-        var buttons = container.querySelectorAll('button');
-        btns.forEach(function (b, i) {
-            if (!buttons[i] || !b.mark) return;
-            buttons[i].classList.toggle('is-active', editor.isActive(b.mark, b.opts || {}));
-        });
-    };
-    editor.on('selectionUpdate', refresh);
-    editor.on('transaction', refresh);
-}
-
 function setupDocs(paneId, userId, logId, badgeId, lastOrdinalId, awarenessId, toolbarId) {
     var wrap = document.getElementById(paneId);
     wrap.innerHTML = '';
-    wrap.style.overflowY = 'auto';
+    wrap.style.overflow = 'hidden';
+    wrap.style.display = 'flex';
+    wrap.style.flexDirection = 'column';
+
+    // Univer needs a fixed-id container element inside the pane
+    var containerId = paneId + '-univer-docs';
+    var inner = document.createElement('div');
+    inner.id = containerId;
+    inner.className = 'univer-container';
+    wrap.appendChild(inner);
 
     var ydoc = new Y.Doc();
     var p = makeProvider(ydoc, userId, '', logId, lastOrdinalId, badgeId);
     p.onAwarenessChange = function () { updateAwarenessBar(awarenessId, p); };
 
-    // Local bundle exposes window.TipTap = { Editor, StarterKit, Collaboration }
-    var TT = window.TipTap || {};
-    var Editor     = TT.Editor;
-    var StarterKit = TT.StarterKit;
-    var Collab     = TT.Collaboration;
-    var CollabCursor = null;  // not bundled; awareness handled by SafecloudYjsProvider
-    var Placeholder  = null;
+    var toolbarEl = document.getElementById(toolbarId);
+    toolbarEl.innerHTML = '<span style="font-size:.7rem;color:var(--muted);padding:4px 8px">Univer Docs — use the built-in toolbar above</span>';
 
-    var exts = [];
-    if (StarterKit)   exts.push(StarterKit.configure({ history: false }));
-    if (Collab)       exts.push(Collab.configure({ document: ydoc }));
-    if (CollabCursor) exts.push(CollabCursor.configure({ provider: p, user: { name: userId, color: getColor(userId) } }));
-    if (Placeholder)  exts.push(Placeholder.configure({ placeholder: 'Start typing…' }));
+    if (typeof UniverBundle === 'undefined' || !UniverBundle.createUniverDocs) {
+        wrap.innerHTML = '<div style="padding:20px;color:var(--error)">Univer bundle not loaded</div>';
+        log(logId, 'UniverBundle not available', 'error');
+        return { provider: p, editor: null };
+    }
 
-    var editor;
-    if (Editor && exts.length) {
-        try { editor = new Editor({ element: wrap, extensions: exts }); } catch (e) { log(logId, 'TipTap error: ' + e.message, 'error'); }
+    var result;
+    try {
+        result = UniverBundle.createUniverDocs(containerId, ydoc, {
+            logFn: function(msg, level) { log(logId, msg, level); }
+        });
+    } catch(e) {
+        log(logId, 'Univer Docs error: ' + e.message, 'error');
+        return { provider: p, editor: null };
     }
-    if (editor) {
-        buildDocsToolbar(document.getElementById(toolbarId), editor);
-        log(logId, 'Docs editor ready (' + userId + ')', 'ok');
-    } else {
-        wrap.contentEditable = 'true';
-        log(logId, 'TipTap unavailable — contenteditable fallback', 'warn');
-    }
-    return { provider: p, editor: editor };
+
+    log(logId, 'Docs editor ready (' + userId + ')', 'ok');
+    return {
+        provider: p,
+        editor: result ? result.univerAPI : null,
+        _univerResult: result
+    };
 }
 
 /* ════════════════════════════════════════════════════════════════════
-   MODE 2 — SHEETS (Jspreadsheet CE + Y.Map)
+   MODE 2 — SHEETS (Univer Sheets + Y.Map cell-level sync)
 ═══════════════════════════════════════════════════════════════════════ */
-var SHEET_ROWS = 50, SHEET_COLS = 26;
-
-function colLetter(i) { return String.fromCharCode(65 + i); }
-
-function buildSheetsToolbar(container) {
-    container.innerHTML = '';
-    ['Bold','Italic','Align L','Align C','Align R','$ Format','% Format','Border','Merge'].forEach(function (label) {
-        var btn = document.createElement('button');
-        btn.textContent = label;
-        btn.style.opacity = '.55';
-        btn.title = 'Format controls — coming soon';
-        container.appendChild(btn);
-    });
-}
-
 function setupSheets(paneId, userId, logId, badgeId, lastOrdinalId, awarenessId, toolbarId) {
     var wrap = document.getElementById(paneId);
     wrap.innerHTML = '';
     wrap.className = 'sheets-wrap';
-    wrap.style.overflowY = 'auto';
 
-    var ydoc   = new Y.Doc();
-    var ycells = ydoc.getMap('cells');  // key = "row,col" (0-based), value = string
+    // Univer needs a fixed-id container element inside the pane
+    var containerId = paneId + '-univer-sheets';
+    var inner = document.createElement('div');
+    inner.id = containerId;
+    inner.className = 'univer-container';
+    wrap.appendChild(inner);
+
+    var ydoc = new Y.Doc();
     var p = makeProvider(ydoc, userId, '-sheets', logId, lastOrdinalId, badgeId);
     p.onAwarenessChange = function () { updateAwarenessBar(awarenessId, p); };
 
-    // Build initial data array for jspreadsheet
-    function getInitialData() {
-        var data = [];
-        for (var r = 0; r < SHEET_ROWS; r++) {
-            var row = [];
-            for (var c = 0; c < SHEET_COLS; c++) {
-                row.push(ycells.get(r + ',' + c) || '');
-            }
-            data.push(row);
-        }
-        return data;
-    }
+    var toolbarEl = document.getElementById(toolbarId);
+    toolbarEl.innerHTML = '<span style="font-size:.7rem;color:var(--muted);padding:4px 8px">Univer Sheets — use the built-in ribbon toolbar above</span>';
 
-    // Build columns config
-    var columns = [];
-    for (var c = 0; c < SHEET_COLS; c++) {
-        columns.push({ title: colLetter(c), width: 90 });
-    }
-
-    var container = document.createElement('div');
-    wrap.appendChild(container);
-
-    var _applying = false;
-    var sheet;
-
-    if (typeof jspreadsheet === 'undefined') {
-        log(logId, 'Jspreadsheet not loaded', 'error');
+    if (typeof UniverBundle === 'undefined' || !UniverBundle.createUniverSheets) {
+        wrap.innerHTML = '<div style="padding:20px;color:var(--error)">Univer bundle not loaded</div>';
+        log(logId, 'UniverBundle not available', 'error');
         return { provider: p, editor: null };
     }
 
-    sheet = jspreadsheet(container, {
-        data: getInitialData(),
-        columns: columns,
-        tableOverflow: true,
-        tableWidth: '100%',
-        tableHeight: '100%',
-        onchange: function (el, cell, x, y, value) {
-            if (_applying) return;
-            var key = y + ',' + x;
-            ydoc.transact(function () { ycells.set(key, value || ''); });
-            log(logId, 'cell [' + y + ',' + x + ']=' + value, 'info');
-        }
-    });
-
-    // Apply remote Y.Map changes to the spreadsheet
-    ycells.observe(function (event) {
-        if (event.transaction.local) return;
-        _applying = true;
-        event.changes.keys.forEach(function (change, key) {
-            var parts = key.split(',');
-            var row = parseInt(parts[0], 10);
-            var col = parseInt(parts[1], 10);
-            var val = change.action === 'delete' ? '' : ycells.get(key);
-            try { sheet.setValueFromCoords(col, row, val || '', false); } catch(e) {}
+    var result;
+    try {
+        result = UniverBundle.createUniverSheets(containerId, ydoc, {
+            logFn: function(msg, level) { log(logId, msg, level); }
         });
-        _applying = false;
-        log(logId, '← remote cells updated', 'info');
-    });
+    } catch(e) {
+        log(logId, 'Univer Sheets error: ' + e.message, 'error');
+        return { provider: p, editor: null };
+    }
 
-    buildSheetsToolbar(document.getElementById(toolbarId));
     log(logId, 'Sheets editor ready (' + userId + ')', 'ok');
-    return { provider: p, editor: sheet };
+    return {
+        provider: p,
+        editor: result ? result.univerAPI : null,
+        _univerResult: result
+    };
 }
 
 /* ════════════════════════════════════════════════════════════════════
@@ -935,14 +855,18 @@ function setupSlides(paneId, userId, logId, badgeId, lastOrdinalId, awarenessId,
 /* ════════════════════════════════════════════════════════════════════
    TAB SWITCHING & BOOTSTRAP
 ═══════════════════════════════════════════════════════════════════════ */
-var _currentMode = 'docs';
-var _providers   = [];
-var _editors     = [];
-var _inited      = false;
+var _currentMode    = 'docs';
+var _providers      = [];
+var _editors        = [];
+var _univerResults  = [];
+var _inited         = false;
 
 function teardown() {
     _providers.forEach(function (p) { try { p.disconnect(); } catch(e){} });
     _providers = [];
+    // Destroy editors — Univer instances are in _univerResults, others in _editors
+    _univerResults.forEach(function (r) { if (r && typeof r.destroy === 'function') try { r.destroy(); } catch(e){} });
+    _univerResults = [];
     _editors.forEach(function (e) { if (e && typeof e.destroy === 'function') try { e.destroy(); } catch(e2){} });
     _editors = [];
     ['a','b'].forEach(function (side) {
@@ -965,8 +889,9 @@ function connect() {
     var resB = setupFn('editor-b', 'bob',   'log-b', 'badge-b', 'last-ordinal-b', 'awareness-b', 'toolbar-b');
 
     var pA = resA.provider, pB = resB.provider;
-    _providers = [pA, pB];
-    _editors   = [resA.editor, resB.editor];
+    _providers     = [pA, pB];
+    _editors       = [resA.editor, resB.editor];
+    _univerResults = [resA._univerResult, resB._univerResult].filter(Boolean);
 
     // Cross-awareness: each provider update reflects in both bars
     pA.onAwarenessChange = function () { updateAwarenessBar('awareness-a', pA); updateAwarenessBar('awareness-b', pB); };

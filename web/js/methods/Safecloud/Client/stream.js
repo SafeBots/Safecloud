@@ -570,6 +570,55 @@ Q.exports(function (Q, _) {
                     navigator.serviceWorker.addEventListener('controllerchange', _onControllerChange);
                     navigator.serviceWorker.addEventListener('message', _onSWMessage);
 
+                    // ── Rolling-rewind: signal played position to SW ──────
+                    // As currentTime advances, tell the SW which segment has
+                    // been played so it can evict ciphertext beyond the rewind
+                    // window.  Runs on timeupdate (~4× per second) but only
+                    // posts when the segment index actually changes, so chatter
+                    // is minimal.  The SW evicts on every 'played' message, so
+                    // even a single missed event doesn't leave old keys around.
+                    var _lastPlayedSeg = -1;
+                    var _swUrl2 = Q.url('SafecloudServiceWorker.js');
+                    function _onTimeUpdate() {
+                        var sw2 = navigator.serviceWorker.controller;
+                        if (!sw2 || sw2.scriptURL !== _swUrl2) { return; }
+                        var video = options.videoElement;
+                        if (!video) { return; }
+                        var ct = video.currentTime;
+                        // Derive segment index from index track chapters if available,
+                        // else fall back to chunkDuration.
+                        var manifest2 = prefetchManifest;
+                        var active2   = (manifest2.versions && manifest2.versions[0])
+                            ? manifest2.versions[0].manifest : manifest2;
+                        var idx2      = active2 && active2._index;
+                        var chapters2 = idx2 && idx2.chapters;
+                        var segIdx2;
+                        if (chapters2 && chapters2.length) {
+                            // Binary-search for the chapter whose pts ≤ currentTime
+                            segIdx2 = 0;
+                            for (var ci = 0; ci < chapters2.length; ci++) {
+                                if (chapters2[ci].pts <= ct) { segIdx2 = ci; }
+                                else { break; }
+                            }
+                        } else {
+                            var chunkDur2 = (active2 && active2.chunkDuration) || 6;
+                            segIdx2 = Math.max(0, Math.floor(ct / chunkDur2) - 1);
+                        }
+                        if (segIdx2 !== _lastPlayedSeg) {
+                            _lastPlayedSeg = segIdx2;
+                            sw2.postMessage({
+                                type:     'Q.Safecloud.Client.played',
+                                videoId:  videoId,
+                                version:  startVersion || '',
+                                segIndex: segIdx2
+                            });
+                        }
+                    }
+                    if (options.videoElement) {
+                        options.videoElement.addEventListener('timeupdate', _onTimeUpdate);
+                    }
+                    // ─────────────────────────────────────────────────────
+
                     return {
                         url:    fakeUrl,
                         path:   'sw',
@@ -584,6 +633,9 @@ Q.exports(function (Q, _) {
                         stop:       function () {
                             navigator.serviceWorker.removeEventListener('controllerchange', _onControllerChange);
                             navigator.serviceWorker.removeEventListener('message', _onSWMessage);
+                            if (options.videoElement) {
+                                options.videoElement.removeEventListener('timeupdate', _onTimeUpdate);
+                            }
                             loop.stop();
                         },
                         stats:      loop.stats.bind(loop)

@@ -213,11 +213,30 @@ var _corsAllowed = (function () {
         : ['*'];
 }());
 
-/** Returns true if the given request origin should be allowed. */
+/**
+ * Returns true if the given request origin should be allowed.
+ * Supports exact matches and wildcard patterns:
+ *   '*'                → allow all origins
+ *   'https://example.com'  → exact match
+ *   '*.example.com'    → matches any subdomain (https://app.example.com, https://a.b.example.com)
+ *   'https://*.example.com' → matches any subdomain with https only
+ */
 function _corsOk(origin) {
     if (!origin) return true; // non-browser requests (curl, server-to-server)
-    if (_corsAllowed.indexOf('*') >= 0) return true;
-    return _corsAllowed.indexOf(origin) >= 0;
+    for (var i = 0; i < _corsAllowed.length; i++) {
+        var pattern = _corsAllowed[i];
+        if (pattern === '*') return true;
+        if (pattern === origin) return true;
+        // Wildcard: *.example.com or https://*.example.com
+        if (pattern.indexOf('*') >= 0) {
+            var re = new RegExp('^' + pattern
+                .replace(/[.+?^${}()|[\]\\]/g, '\\$&')  // escape regex chars except *
+                .replace(/\\\*/g, '.*')                   // * → .*
+            + '$', 'i');
+            if (re.test(origin)) return true;
+        }
+    }
+    return false;
 }
 
 /** Express CORS middleware — applied before all routes. */

@@ -571,11 +571,11 @@ function registerUDFs(db) {
     // NULLIF(a, b)
     db.function('NULLIF', function (a, b) { return a === b ? null : a; });
 
-    // IF(cond, a, b)
-    db.function('IF', function (cond, a, b) { return cond ? a : b; });
+    // IF(cond, a, b) — MySQL treats numeric 0 and string '0' as false
+    db.function('IF', function (cond, a, b) { return (cond && cond !== '0' && cond !== 0) ? a : b; });
 
-    // IIF(cond, a, b) — SQLite has this natively in 3.32+, but let's be safe
-    db.function('IIF', function (cond, a, b) { return cond ? a : b; });
+    // IIF(cond, a, b) — same MySQL falsy semantics
+    db.function('IIF', function (cond, a, b) { return (cond && cond !== '0' && cond !== 0) ? a : b; });
 
     // CONVERT(val, type) — basic: just return val
     db.function('CONVERT', function (val) { return val; });

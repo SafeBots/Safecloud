@@ -20,21 +20,58 @@ function Catalog(dbPath) {
 // ─── Persistence ─────────────────────────────────────────────────────────────
 
 Catalog.prototype.load = function () {
+    // Clean up any leftover temp file from a previously crashed save.
+    try { fs.unlinkSync(this._catalogPath + '.tmp'); } catch (e) {}
     if (!fs.existsSync(this._catalogPath)) return;
     try {
         var data = JSON.parse(fs.readFileSync(this._catalogPath, 'utf8'));
         this._tables  = data.tables  || Object.create(null);
         this._indexes = data.indexes || Object.create(null);
     } catch (e) { /* corrupt or missing → start empty */ }
+    // Assign stable slot IDs to any columns that pre-date this change.
+    this._migrateSlotIds();
 };
 
+/**
+ * Ensure every column in every table has a stable integer slotId.
+ * Tables created before columnar storage was introduced have no slotIds;
+ * we assign them sequentially and save so the next startup is a no-op.
+ */
+Catalog.prototype._migrateSlotIds = function () {
+    var dirty = false;
+    var self  = this;
+    Object.keys(this._tables).forEach(function (name) {
+        var t = self._tables[name];
+        var needsMigration = t.columns.some(function (c) { return !c.slotId; });
+        if (needsMigration) {
+            var nextId = 1;
+            t.columns.forEach(function (c) { c.slotId = nextId++; c.active = true; });
+            t._nextSlotId = nextId;
+            dirty = true;
+        } else if (!t._nextSlotId) {
+            var maxId = 0;
+            t.columns.forEach(function (c) { if ((c.slotId || 0) > maxId) maxId = c.slotId; });
+            t._nextSlotId = maxId + 1;
+        }
+    });
+    if (dirty) this.save();
+};
+
+/**
+ * Persist the catalog atomically via write-to-temp-then-rename.
+ * The catalog is always written last by Engine.flush(), making it
+ * the commit marker: a consistent catalog means all table data it
+ * references was successfully flushed before this save completed.
+ */
 Catalog.prototype.save = function () {
     fs.mkdirSync(this._dbPath, { recursive: true });
+    var tmp = this._catalogPath + '.tmp';
     fs.writeFileSync(
-        this._catalogPath,
+        tmp,
         JSON.stringify({ v: 1, tables: this._tables, indexes: this._indexes }),
         'utf8'
     );
+    fs.renameSync(tmp, this._catalogPath);
 };
 
 // ─── Tables ──────────────────────────────────────────────────────────────────
@@ -64,13 +101,20 @@ Catalog.prototype.createTable = function (name, columns, constraints) {
     var autoRowid = pk.length === 0;
     if (autoRowid) pk = ['__rowid__'];
 
+    // Assign stable slot IDs to each column so they can be persisted in separate files.
+    var nextSlotId = 1;
+    columns = columns.map(function (c) {
+        return Object.assign({}, c, { slotId: nextSlotId++, active: true });
+    });
+
     this._tables[name] = {
         name:        name,
         columns:     columns,
         primaryKey:  pk,
         autoRowid:   autoRowid,
         constraints: constraints,
-        _nextRowid:  1
+        _nextRowid:  1,
+        _nextSlotId: nextSlotId
     };
     this.save();
 };
@@ -157,6 +201,28 @@ Catalog.prototype.getTableIndexes = function (tableName) {
     return Object.keys(this._indexes)
         .filter(function (n) { return self._indexes[n].table === tableName; })
         .map(function (n) { return self._indexes[n]; });
+};
+
+/**
+ * Return the columnar schema for a table: the slot descriptor for every column.
+ * Used by ColumnarStore to know which column files to read/write.
+ *
+ * @param  {string} tableName
+ * @returns {{ slots: Array<{id:number, name:string, type:string, active:boolean}> }}
+ */
+Catalog.prototype.getSchema = function (tableName) {
+    var t = this._tables[tableName];
+    if (!t) return { slots: [] };
+    return {
+        slots: t.columns.map(function (c) {
+            return {
+                id:     c.slotId || 0,
+                name:   c.name,
+                type:   c.type,
+                active: c.active !== false
+            };
+        })
+    };
 };
 
 module.exports = Catalog;
