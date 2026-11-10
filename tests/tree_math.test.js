@@ -15,7 +15,7 @@ const Q = {
   Config:{ get:(k,d)=>{let o=configStore;for(const x of k){if(o==null)return d;o=o[x];}return o===undefined?d:o;}, set:()=>{} },
   log:()=>{}, extend:Object.assign, getObject:(k,f)=>{let o=f;for(const x of k){if(o==null)return undefined;o=o[x];}return o;},
   makeEventEmitter:(o)=>{o.on=()=>{};o.emit=()=>{};}, listen:()=>({attached:{express:{post:()=>{},get:()=>{},put:()=>{},use:()=>{}}}}),
-  require:()=>{throw new Error('no');}, app:{DIR:'/tmp/x'}, Crypto:{}, Data:{}, Assets:{}, Socket:{}, Safecloud:{}
+  require:()=>{throw new Error('no');}, app:{DIR:'/tmp/x'}, Crypto:{OpenClaim:{EVM:{}}}, Data:{}, Assets:{}, Socket:{}, Safecloud:{}
 };
 const Module = require('module');
 const origLoad = Module._load;

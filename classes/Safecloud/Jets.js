@@ -101,6 +101,27 @@ try {
         + 'swarm/peering disabled; single-Jet mode is unaffected', 'Safecloud');
 }
 
+// Safecloud 3.3 — IPFS/IPNS support (optional, default off)
+// Both modules are always required so they are available for listen() to
+// initialise; they no-op when Safecloud.ipfs.enabled is false.
+var Safecloud_Ipfs;
+var Safecloud_Ipns;
+try {
+    Safecloud_Ipfs = require('./Ipfs');
+    Safecloud_Ipns = require('./Ipns');
+} catch (e) {
+    Safecloud_Ipfs = null;
+    Safecloud_Ipns = null;
+    Q.log('Q.Safecloud.Jets: IPFS/IPNS modules unavailable (' + e.message + ') — '
+        + 'IPFS pinning disabled', 'Safecloud');
+}
+
+// Safecloud 3.4 — S3-compatible Drop storage backend (optional, default off)
+// Loaded lazily in listen() when Safecloud.storage.backend !== "indexeddb".
+// LOCAL_DROP_ID is the synthetic drop record used when the Jet itself stores
+// chunks via the configured backend instead of routing to browser Drop nodes.
+var LOCAL_DROP_ID = '__local_s3__';
+
 // Platform dependencies — loaded lazily where noted
 // var Streams = Q.require('Streams');  // lazy: only when streamId present
 
@@ -116,6 +137,38 @@ module.exports = Safecloud_Jets;
 // rootCid → hex string. Bounded so a long-running Jet doesn't accumulate
 // fragments from every video ever uploaded.
 var _serverFragments = new _bounded.BoundedMap({ max: 100000, ttlMs: 604800000 }); // 7d TTL
+
+// ── Root key store (pay-per-minute, Safecloud 3.5) ────────────────────────
+// For pay-per-minute / pay-per-second streams the Jet holds the stream root
+// encryption key server-side.  Unlike _serverFragments (which is HKDF input
+// only), this IS the full key — it must never leave the Jet.  The Jet issues
+// only per-chunk *derived* keys (see KeyIssuance.deriveChunkKey) to paying
+// clients, so individual chunk keys cannot reconstruct the root.
+// rootCid → { key: Buffer(32), accessModel: AccessModel }
+// ── Root key store: 3.7 in-memory fallback, 4.0 upgrades to SQLite ───────
+// _rightsManager is set to a RightsManagement instance during listen() when
+// Safecloud 4.0 mode is active.  When null the in-memory BoundedMap is used.
+var _rootKeyStore   = new _bounded.BoundedMap({ max: 50000, ttlMs: 2592000000 }); // 30d TTL
+var _rightsManager  = null; // set in listen() for 4.0
+
+// ── Pay-per-minute modules (Safecloud 3.5) ────────────────────────────────
+var SafecloudAccess       = require('./Access');
+var SafecloudKeyIssuance  = require('./KeyIssuance');
+
+// ── Rights management (Safecloud 4.0) ────────────────────────────────────
+var RightsManagement;
+try { RightsManagement = require('./RightsManagement'); }
+catch (e) { RightsManagement = null; }
+
+// ── Admin control panel (Safecloud 3.8) ──────────────────────────────────
+var ControlPanel;
+try { ControlPanel = require('./ControlPanel'); }
+catch (e) { ControlPanel = null; }
+
+// ── Author control panel (Safecloud 4.1) ─────────────────────────────────
+var AuthorPanel;
+try { AuthorPanel = require('./AuthorPanel'); }
+catch (e) { AuthorPanel = null; }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constructor / namespace object
@@ -580,6 +633,47 @@ Safecloud_Jets._checkPayerBalance = function (payer, token, amount, chainId, lin
  */
 Safecloud_Jets.callDrop = function (drop, method, payload, timeoutMs) {
     timeoutMs = timeoutMs || CALL_DROP_TIMEOUT_DEFAULT;
+
+    // Safecloud 3.4 — local storage bypass: when the drop record has no socket
+    // but is marked as a local drop (storage.backend is "s3" or similar), route
+    // the chunk I/O directly through Drops._store instead of socket.io.
+    if (drop && drop._local && Safecloud_Drops._store) {
+        if (method === 'Safecloud/drop/put') {
+            return Safecloud_Drops.putChunks((payload && Array.isArray(payload.chunks))
+                ? payload.chunks : []);
+        }
+        if (method === 'Safecloud/drop/get') {
+            return Safecloud_Drops.getChunks((payload && Array.isArray(payload.cids))
+                ? payload.cids : []);
+        }
+        if (method === 'Safecloud/drop/challenge') {
+            var challengeCid = payload && payload.cid;
+            if (!challengeCid) {
+                return Promise.resolve(null);
+            }
+            return Safecloud_Drops._store.get(challengeCid).then(function (buf) {
+                if (!buf) { return null; }
+                // Deserialise just enough for the challenge response
+                try {
+                    // Wire format: IV_LEN(4) | IV | TAG_LEN(4) | TAG | CIPHERTEXT
+                    if (buf.length < 8) { return null; }
+                    var off = 0;
+                    var ivLen  = buf.readUInt32BE(off); off += 4 + ivLen;
+                    var tagLen = buf.readUInt32BE(off); off += 4;
+                    var tagBuf = buf.slice(off, off + tagLen); off += tagLen;
+                    var ctBuf  = buf.slice(off);
+                    return {
+                        cid:        challengeCid,
+                        ciphertext: ctBuf.toString('base64'),
+                        tag:        tagBuf.toString('base64')
+                    };
+                } catch (e) { return null; }
+            });
+        }
+        return Promise.reject(new Error(
+            'Q.Safecloud.Jets.callDrop: unsupported method for local drop: ' + method));
+    }
+
     if (!drop || !drop.socket) {
         return Promise.reject(new Error('Q.Safecloud.Jets.callDrop: drop has no socket (disconnected?)'));
     }
@@ -785,6 +879,12 @@ Safecloud_Jets.verifySubtreeGrant = function (grants, rootCid, requestedLink, ma
 };
 
 // ── Server-side tree helpers ──────────────────────────────────────────────────
+
+/** Capitalise the first letter of a string (used for storage backend class names). */
+function _capitalise(s) {
+    if (!s || typeof s !== 'string') { return ''; }
+    return s.charAt(0).toUpperCase() + s.slice(1);
+}
 
 function _isAncestorOrEqual(pathA, pathB) {
     if (!pathA || pathA.length > pathB.length) { return false; }
@@ -1515,6 +1615,47 @@ Safecloud_Jets.listen = function (options) {
             ack && ack(null, { registered: true });
         });
 
+        // ── Root key registration (pay-per-minute, Safecloud 3.5) ───────────
+        // Content authors register the stream root key when publishing a
+        // pay-per-minute stream.  The Jet stores it server-side and derives
+        // per-chunk keys on demand — the root key NEVER leaves the Jet.
+        // Payload: { rootCid, rootKey (base64), accessModel? }
+        on('Safecloud/content/registerRootKey', function (payload, ack) {
+            if (!payload || !payload.rootCid || !payload.rootKey) {
+                return ack && ack({ error: { code: 'BadRequest',
+                    message: 'rootCid and rootKey required' } });
+            }
+            var keyBuf;
+            try { keyBuf = Buffer.from(payload.rootKey, 'base64'); } catch (e) {
+                return ack && ack({ error: { code: 'BadRequest', message: 'rootKey must be base64' } });
+            }
+            if (keyBuf.length !== 32) {
+                return ack && ack({ error: { code: 'BadRequest', message: 'rootKey must be 32 bytes' } });
+            }
+            var accessModel = payload.accessModel
+                ? SafecloudAccess.parseAccessModel(payload.accessModel)
+                : SafecloudAccess.DEFAULT_MODEL;
+            // ── 4.0: persist via RightsManagement when enabled ──────────────
+            if (_rightsManager) {
+                try {
+                    _rightsManager.registerRootKey({
+                        rootCid:         payload.rootCid,
+                        rootKey:         keyBuf,
+                        accessModel:     accessModel,
+                        creatorId:       userId,
+                        creatorAuth:     payload.creatorAuth || null,
+                        creatorPubKeyHex: payload.creatorPubKeyHex || null,
+                    });
+                } catch (err) {
+                    return ack && ack({ error: { code: err.statusCode === 403 ? 'Forbidden' : 'BadRequest',
+                        message: err.message } });
+                }
+            } else {
+                _rootKeyStore.set(payload.rootCid, { key: keyBuf, accessModel: accessModel });
+            }
+            ack && ack(null, { registered: true });
+        });
+
         // ── Cloud: subtree upload ─────────────────────────────────────────────
         on('Safecloud/subtree/put', function (payload, ack) {
             _handleSubtreePut(client, userId, payload, ack);
@@ -1666,6 +1807,71 @@ Safecloud_Jets.listen = function (options) {
     // (health, dashboard, and the /Safecloud/cloud/chunk + /subtree GETs the
     // embed player's HTTP-based chunk fetch depends on) were registering
     // successfully and then 404ing for every real browser request.
+    // ── 3.5. IPFS/IPNS (Safecloud 3.3) — init BEFORE HTTP route registration ───
+    // Must run before _registerHttpRoutes so _registerIpfsRoutes can check
+    // Safecloud_Ipfs.isEnabled() and Safecloud_Ipfs.getMode() synchronously.
+    if (Safecloud_Ipfs) {
+        try {
+            Safecloud_Ipfs.init({ Q: Q });
+        } catch (e) {
+            Q.log('Q.Safecloud.Jets: Safecloud_Ipfs.init failed: ' + e.message, 'Safecloud');
+        }
+    }
+    if (Safecloud_Ipns) {
+        try {
+            Safecloud_Ipns.init({ Q: Q });
+        } catch (e) {
+            Q.log('Q.Safecloud.Jets: Safecloud_Ipns.init failed: ' + e.message, 'Safecloud');
+        }
+    }
+
+    // ── 3.6. Storage backend (Safecloud 3.4) ────────────────────────────────────
+    // When Safecloud.storage.backend is "s3" (or any future non-indexeddb value),
+    // initialise the configured backend and register a synthetic local Drop record.
+    // The local drop is selected alongside (or instead of) browser Drop nodes by
+    // Router.selectForPut / selectForGet — callDrop handles it without socket.io.
+    var _storageBackend = Q.Config.get(['Safecloud', 'storage', 'backend'], 'indexeddb');
+    if (_storageBackend && _storageBackend !== 'indexeddb') {
+        try {
+            var _StorageClass = require('./Storage/' + _capitalise(_storageBackend));
+            var _s3Config     = Q.Config.get(['Safecloud', 'storage', _storageBackend], {});
+            _StorageClass.init(_s3Config);
+            Safecloud_Drops.initStorage(_StorageClass);
+
+            // Register the local synthetic drop so Router can route to it
+            var _localStorageGB = Q.Config.get(['Safecloud', 'storage', 'localGB'], 1000);
+            Safecloud_Jets.drops[LOCAL_DROP_ID] = {
+                dropId:           LOCAL_DROP_ID,
+                socketId:         null,
+                socket:           null,
+                _local:           true,           // sentinel for callDrop bypass
+                clientId:         null,
+                userId:           null,
+                evmAddress:       null,
+                delegation:       null,
+                publicKey:        null,
+                storage:          { GB: _localStorageGB },
+                used:             0,
+                prollyRoot:       null,
+                bloomFilter:      null,
+                reliabilityScore: 1.0,
+                offlineSince:     null,
+                registeredAt:     Date.now(),
+                reconnectedAt:    Date.now(),
+                minPerChunkWei:   '0'
+            };
+            if (Q.Safecloud && Q.Safecloud.Router
+                    && typeof Q.Safecloud.Router.onDropRegistered === 'function') {
+                Q.Safecloud.Router.onDropRegistered(Safecloud_Jets.drops[LOCAL_DROP_ID], null);
+            }
+            Q.log('Q.Safecloud.Jets: storage backend "' + _storageBackend
+                + '" initialised (local drop ' + LOCAL_DROP_ID + ')', 'Safecloud');
+        } catch (e) {
+            Q.log('Q.Safecloud.Jets: storage backend "' + _storageBackend
+                + '" init failed: ' + e.message + ' — falling back to browser Drops', 'Safecloud');
+        }
+    }
+
     var pubServer = Q.listen({
         host:  pubHost,
         port:  pubPort,
@@ -1745,6 +1951,73 @@ Safecloud_Jets.listen = function (options) {
     });
 
     Q.log('Q.Safecloud.Jets: WasmRunner initialized', 'Safecloud');
+
+    // ── 8. Rights management (Safecloud 4.0) ─────────────────────────────────
+    var rightsEnabled = Q.Config.get(['Safecloud', 'rights', 'enabled'], false);
+    if (rightsEnabled && RightsManagement) {
+        var rightsDbPath = Q.Config.get(
+            ['Safecloud', 'rights', 'dbPath'],
+            require('path').join(Q.app.DIR, 'local', 'rights.db')
+        );
+        _rightsManager = new RightsManagement({
+            rateLimitCapacity:   Q.Config.get(['Safecloud', 'rights', 'rateLimitCapacity'],   20),
+            rateLimitRefillRate: Q.Config.get(['Safecloud', 'rights', 'rateLimitRefillRate'], 20 / 60000),
+            publisherAuthMaxAgeMs: Q.Config.get(['Safecloud', 'rights', 'publisherAuthMaxAgeMs'], 86400000),
+        });
+        _rightsManager.open(rightsDbPath);
+        RightsManagement.registerRoutes(app, _rightsManager);
+        Q.log('Q.Safecloud.Jets: rights management (4.0) enabled — db: ' + rightsDbPath, 'Safecloud');
+
+        // ── 3.8: admin control panel ──────────────────────────────────────
+        if (ControlPanel) {
+            var adminToken = Q.Config.get(['Safecloud', 'admin', 'token'], null);
+            ControlPanel.registerRoutes(app, _rightsManager, { adminToken: adminToken });
+            Q.log('Q.Safecloud.Jets: admin control panel enabled at /Safecloud/admin/' +
+                (adminToken ? ' (token-protected)' : ' (open — set Safecloud.admin.token to restrict)'),
+                'Safecloud');
+        }
+
+        // ── 4.1: author control panel ─────────────────────────────────────
+        if (AuthorPanel) {
+            AuthorPanel.registerRoutes(app, _rightsManager);
+            Q.log('Q.Safecloud.Jets: author control panel enabled at /Safecloud/author/panel', 'Safecloud');
+        }
+    }
+
+    // ── 9. MySQL protocol server for the DB engine (Safecloud 3.7) ───────────
+    // Any app that speaks MySQL — PHP, Python, Ruby — can query Safecloud/DB
+    // over TCP without code changes.  Disabled by default; enable via config:
+    //   Q.Config.set(['Safecloud', 'db', 'mysql', 'port'], 3306);
+    var mysqlCfg = Q.Config.get(['Safecloud', 'db', 'mysql'], null);
+    if (mysqlCfg && mysqlCfg.port) {
+        try {
+            var MySQLServer = require('./DB/MySQLServer');
+            var Database    = require('./DB');
+            var mysqlDbPath = mysqlCfg.dbPath
+                || (rightsEnabled && _rightsManager
+                    ? _rightsManager._db._dbPath    // reuse rights DB if open
+                    : require('path').join(Q.app.DIR, 'local', 'safecloud.sc'));
+            var mysqlDb = (rightsEnabled && _rightsManager)
+                ? _rightsManager._db                // share the open DB instance
+                : new Database(mysqlDbPath);
+            var _mysqlSrv = new MySQLServer(mysqlDb, {
+                host:     mysqlCfg.host     || '127.0.0.1',
+                port:     mysqlCfg.port,
+                password: mysqlCfg.password,  // required — MySQLServer throws if missing or weak
+                dbName:   mysqlCfg.dbName   || 'safecloud'
+            });
+            _mysqlSrv.listen(function (err) {
+                if (err) {
+                    Q.log('Q.Safecloud.Jets: MySQL server error — ' + err.message, 'Safecloud');
+                } else {
+                    Q.log('Q.Safecloud.Jets: MySQL server listening on '
+                        + (mysqlCfg.host || '127.0.0.1') + ':' + mysqlCfg.port, 'Safecloud');
+                }
+            });
+        } catch (e) {
+            Q.log('Q.Safecloud.Jets: could not start MySQL server — ' + e.message, 'Safecloud');
+        }
+    }
 
     _listenResult = { internal: server, socket: socket };
     return _listenResult;
@@ -2756,6 +3029,235 @@ function _registerHttpRoutes(app) {
         res.json({ fragment: frag });
     });
 
+    // ── Per-chunk key issuance (pay-per-minute, Safecloud 3.5) ───────────
+    //
+    // POST /Safecloud/key
+    // Body: {
+    //   rootCid:      string,            // CID of the root manifest
+    //   chunkIndices: number[],          // which chunks to get keys for
+    //   paymentSig:   string (base64),   // OCP/EIP-712 payment envelope
+    //   attestation?: string (base64)    // Safebox attestation token (required
+    //                                    // when stream.requireAttestation=true)
+    // }
+    // Response 200: { keys: { "<index>": "<base64Key>" } }
+    // Response 402: payment required / insufficient balance
+    // Response 403: attestation required or build hash not blessed
+    // Response 404: rootCid not registered on this Jet
+    app.use('/Safecloud/key', function (req, res, next) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Payment-Signature');
+        if (req.method === 'OPTIONS') { return res.status(204).end(); }
+        next();
+    });
+
+    app.post('/Safecloud/key', function (req, res) {
+        var body = req.body || {};
+        var rootCid      = body.rootCid;
+        var chunkIndices = body.chunkIndices;
+        var paymentSig   = body.paymentSig;
+        var attestation  = body.attestation;
+
+        if (!rootCid) {
+            return res.status(400).json({ error: { code: 'BadRequest', message: 'rootCid required' } });
+        }
+        if (!Array.isArray(chunkIndices) || !chunkIndices.length) {
+            return res.status(400).json({ error: { code: 'BadRequest', message: 'chunkIndices required' } });
+        }
+
+        // ── 4.0: publisherAuth token verification + Origin check ────────────
+        var publisherAuth = body.publisherAuth || null;
+        if (_rightsManager && publisherAuth) {
+            var requestOrigin = req.headers['origin'] || null;
+            try {
+                _rightsManager.verifyPublisherAuth(publisherAuth, rootCid, requestOrigin);
+            } catch (pae) {
+                return res.status(pae.statusCode || 403).json(
+                    { error: { code: 'PublisherAuthError', message: pae.message } });
+            }
+        }
+
+        // ── 4.0: rate limiting per (publisher, userId) ───────────────────────
+        if (_rightsManager && body.publisherId && body.userId) {
+            if (!_rightsManager.checkRateLimit(body.publisherId, body.userId)) {
+                return res.status(429).json({ error: { code: 'RateLimited',
+                    message: 'Key issuance rate limit exceeded — retry after 1 minute' } });
+            }
+        }
+
+        // Look up the registered root key for this stream.
+        var entry = _rightsManager ? _rightsManager.getRootKey(rootCid) : _rootKeyStore.get(rootCid);
+        if (!entry) {
+            return res.status(404).json({ error: { code: 'NotFound',
+                message: 'No root key registered for this rootCid on this Jet' } });
+        }
+        var rootKey     = entry.key;
+        var accessModel = entry.accessModel;
+
+        // Blessed build list (configured per-Jet; empty list = any attested build accepted).
+        var blessedBuilds = Q.Config.get(['Safecloud', 'attestation', 'blessedBuilds'], []);
+
+        // Build a checkPayment function that delegates to the existing OCP infrastructure.
+        function checkPayment(sig, model, rcid) {
+            if (!sig) {
+                // Build 402 requirements payload so the client can construct a payment.
+                var perChunkWei = Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], PER_CHUNK_WEI_DEFAULT);
+                var walletAddr  = Q.Config.get(['Safecloud', 'jet', 'address'], '0x0000000000000000000000000000000000000000');
+                var safebuxAddr = Q.Config.get(['Safecloud', 'safebux', 'address'], '0x0000000000000000000000000000000000000000');
+                return Promise.resolve({
+                    ok: false,
+                    error: 'Payment required',
+                    paymentDetails: {
+                        scheme:            'exact',
+                        network:           SAFEBUX_CHAIN,
+                        maxAmountRequired: perChunkWei,
+                        resource:          'https://' + req.hostname + req.originalUrl,
+                        description:       'Safecloud key issuance',
+                        mimeType:          'application/json',
+                        payTo:             walletAddr,
+                        token:             safebuxAddr,
+                        extra:             { name: 'Safecloud', version: '1' }
+                    }
+                });
+            }
+
+            var ocpEnvelope;
+            try {
+                ocpEnvelope = JSON.parse(Buffer.from(sig, 'base64').toString('utf8'));
+            } catch (e) {
+                return Promise.resolve({ ok: false, error: 'Invalid payment signature encoding' });
+            }
+
+            var payment  = ocpEnvelope.stm || {};
+            var chainId  = payment.chainId || SAFEBUX_CHAIN;
+            var perChunk = Q.Config.get(['Safecloud', 'safebux', 'perChunkWei'], PER_CHUNK_WEI_DEFAULT);
+
+            // Reuse the EIP-712 verification path from _handleHttpChunkGet.
+            var sigVerifyPromise =
+                (ocpEnvelope.sig && ocpEnvelope.sig.length &&
+                 Q.Crypto && Q.Crypto.OpenClaim && Q.Crypto.OpenClaim.EVM &&
+                 typeof Q.Crypto.OpenClaim.EVM.verify === 'function')
+                ? Q.Crypto.OpenClaim.EVM.verify(
+                    Object.assign({}, payment, {
+                        contract: payment.contract ||
+                            Q.Config.get(['Users', 'web3', 'contracts', 'Safecloud/openclaiming',
+                                _chainIdToHex(payment.chainId || SAFEBUX_CHAIN)], OC_ADDRESS)
+                    }),
+                    ocpEnvelope.sig[0],
+                    payment.payer
+                  ).catch(function () { return false; })
+                : (ocpEnvelope.sig && ocpEnvelope.sig.length && typeof ethers !== 'undefined'
+                    ? (function () {
+                        try {
+                            var stm      = ocpEnvelope.stm || {};
+                            var chainN   = typeof stm.chainId === 'number'
+                                ? stm.chainId
+                                : parseInt((stm.chainId || SAFEBUX_CHAIN).replace('eip155:',''), 10);
+                            var ocAddr   = stm.contract || OC_ADDRESS;
+                            var domain   = { name:'OpenClaiming', version:'1',
+                                             chainId: chainN, verifyingContract: ocAddr };
+                            var types    = { Payment: [
+                                { name:'payer', type:'address' }, { name:'token', type:'address' },
+                                { name:'recipientsHash', type:'bytes32' },
+                                { name:'max',   type:'uint256' }, { name:'line',  type:'uint256' },
+                                { name:'nbf',   type:'uint256' }, { name:'exp',   type:'uint256' },
+                                { name:'contract', type:'address' }
+                            ]};
+                            var value    = {
+                                payer:          stm.payer,
+                                token:          stm.token          || ethers.ZeroAddress,
+                                recipientsHash: stm.recipientsHash || ethers.ZeroHash,
+                                max:            BigInt(stm.max     || '0'),
+                                line:           BigInt(stm.line    || '0'),
+                                nbf:            BigInt(stm.nbf     || '0'),
+                                exp:            BigInt(stm.exp     || '0'),
+                                contract:       ocAddr
+                            };
+                            var sighex   = ocpEnvelope.sig[0].signature || ocpEnvelope.sig[0];
+                            var recovered = ethers.verifyTypedData(domain, types, value, sighex);
+                            return Promise.resolve(
+                                recovered.toLowerCase() === (stm.payer || '').toLowerCase()
+                            );
+                        } catch (e) { return Promise.resolve(false); }
+                      })()
+                    : Promise.resolve(!Q.Config.get(['Safecloud', 'requirePayment'], false)));
+
+            return sigVerifyPromise.then(function (sigOk) {
+                if (!sigOk) return { ok: false, error: 'Invalid payment signature' };
+                return Safecloud_Jets._checkPayerBalance(
+                    payment.payer, payment.token, perChunk, chainId,
+                    payment.line || 0, String(payment.max || 0)
+                ).then(function (balOk) {
+                    if (!balOk) return { ok: false, error: 'Insufficient balance',
+                        paymentDetails: { payer: payment.payer, required: perChunk } };
+                    return { ok: true };
+                });
+            });
+        }
+
+        SafecloudKeyIssuance.issueKeys({
+            rootCid:          rootCid,
+            chunkIndices:     chunkIndices,
+            rootKey:          rootKey,
+            accessModel:      accessModel,
+            paymentSig:       paymentSig,
+            attestation:      attestation,
+            blessedBuilds:    blessedBuilds,
+            checkPayment:     checkPayment
+        }).then(function (result) {
+            res.status(200).json(result);
+        }).catch(function (err) {
+            var status = err.statusCode || 500;
+            var body   = { error: { code: err.code || 'InternalError', message: err.message } };
+            if (err.paymentDetails) {
+                res.set('PAYMENT-REQUIRED',
+                    Buffer.from(JSON.stringify(err.paymentDetails)).toString('base64'));
+            }
+            res.status(status).json(body);
+        });
+    });
+
+    // ── Root key registration via HTTP (browser-only publish flow) ───────
+    // Counterpart to the socket.io Safecloud/content/registerRootKey event.
+    // Body: { rootCid, rootKey (base64), accessModel? }
+    // Only reachable from a trusted author session; no CORS wildcard.
+    app.post('/Safecloud/registerRootKey', function (req, res) {
+        var body = req.body || {};
+        if (!body.rootCid || !body.rootKey) {
+            return res.status(400).json({ error: { code: 'BadRequest',
+                message: 'rootCid and rootKey required' } });
+        }
+        var keyBuf;
+        try { keyBuf = Buffer.from(body.rootKey, 'base64'); } catch (e) {
+            return res.status(400).json({ error: { code: 'BadRequest', message: 'rootKey must be base64' } });
+        }
+        if (keyBuf.length !== 32) {
+            return res.status(400).json({ error: { code: 'BadRequest', message: 'rootKey must be 32 bytes' } });
+        }
+        var accessModel = body.accessModel
+            ? SafecloudAccess.parseAccessModel(body.accessModel)
+            : SafecloudAccess.DEFAULT_MODEL;
+        // ── 4.0: persist via RightsManagement when enabled ──────────────────
+        if (_rightsManager) {
+            try {
+                _rightsManager.registerRootKey({
+                    rootCid:         body.rootCid,
+                    rootKey:         keyBuf,
+                    accessModel:     accessModel,
+                    creatorId:       body.creatorId || null,
+                    creatorAuth:     body.creatorAuth || null,
+                    creatorPubKeyHex: body.creatorPubKeyHex || null,
+                });
+            } catch (err) {
+                return res.status(err.statusCode || 400).json(
+                    { error: { code: 'RegistrationError', message: err.message } });
+            }
+        } else {
+            _rootKeyStore.set(body.rootCid, { key: keyBuf, accessModel: accessModel });
+        }
+        res.json({ registered: true });
+    });
+
     // ── Author upload pipeline (Safecloud 3.3) ────────────────────────────
     // Browsers posting file chunks from author.html hit these routes.
     // CORS is open because authors may self-host their dashboard on any origin.
@@ -2820,6 +3322,332 @@ function _registerHttpRoutes(app) {
     });
     app.all('/Safecloud/app/:appCid', function (req, res) {
         _handleHttpAppRoute(req, res);
+    });
+
+    // ── Safecloud 3.3: IPFS/IPNS routes ──────────────────────────────────
+    // Registered only when Safecloud.ipfs.enabled is true.
+    if (Safecloud_Ipfs && Safecloud_Ipfs.isEnabled()) {
+        _registerIpfsRoutes(app);
+    }
+}
+
+/* ── IPFS / IPNS HTTP routes (Safecloud 3.3) ────────────────────────────── */
+
+/**
+ * Register IPFS-related HTTP routes on the public Express app.
+ *
+ * Called from _registerHttpRoutes() only when Safecloud.ipfs.enabled is true.
+ *
+ * Exposes two complementary APIs:
+ *
+ *   1. IPFS Pinning Services API v1.0.0 at /ipfs/pins
+ *      Standard REST endpoint so tools like ipfs-car, IPFS Desktop, and
+ *      Pinata-compatible clients can pin content to this Jet's IPFS node.
+ *      Auth: optional Bearer token (Safecloud.ipfs.pinningService.exposedKey).
+ *
+ *   2. Kubo HTTP RPC proxy at /api/v0/ (mode: "external" only)
+ *      Makes this Jet appear as a Kubo node to existing IPFS tooling.
+ *
+ *   3. /Safecloud/ipfs/status — operational health of the IPFS integration.
+ *
+ * @param {Object} app   Express application instance
+ * @private
+ */
+function _registerIpfsRoutes(app) {
+    // ── CORS for IPFS routes (same pattern as /Safecloud/cloud) ──────────────
+    app.use(['/ipfs', '/api/v0'], function (req, res, next) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        if (req.method === 'OPTIONS') { return res.status(204).end(); }
+        next();
+    });
+
+    // ── Bearer-token auth guard (Pinning Services API) ────────────────────────
+    // If exposedKey is null the endpoint is open — suitable for trusted networks
+    // or when the Jet is behind an authenticated reverse proxy.
+    function _pinsAuth(req, res, next) {
+        var exposedKey = Safecloud_Ipfs && Safecloud_Ipfs.getExposedKey();
+        if (!exposedKey) { return next(); }
+        var auth  = req.headers.authorization || '';
+        var token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+        if (token !== exposedKey) {
+            return res.status(401).json({ error: { reason: 'UNAUTHORIZED', details: 'Invalid bearer token' } });
+        }
+        next();
+    }
+
+    // ── PSA: GET /ipfs/pins — list pins ─────────────────────────────────────
+    // PSA query params: cid[], status, name, before, after, limit, meta[key]
+    app.get('/ipfs/pins', _pinsAuth, function (req, res) {
+        var q = req.query || {};
+        var filters = {};
+        if (q.cid)    { filters.cid    = Array.isArray(q.cid) ? q.cid : [q.cid]; }
+        if (q.status) { filters.status = Array.isArray(q.status) ? q.status : q.status.split(','); }
+        if (q.name)   { filters.name   = q.name; }
+        if (q.limit)  { filters.limit  = q.limit; }
+
+        Safecloud_Ipfs.listPins(filters).then(function (result) {
+            res.json({ count: result.count, results: result.results });
+        }).catch(function (err) {
+            Q.log('Safecloud.Ipfs: listPins error: ' + err.message, 'Safecloud');
+            res.status(500).json({ error: { reason: 'INTERNAL_SERVER_ERROR', details: err.message } });
+        });
+    });
+
+    // ── PSA: POST /ipfs/pins — create pin request ────────────────────────────
+    // Body: { cid, name?, origins?, meta? }
+    app.post('/ipfs/pins', _pinsAuth, function (req, res) {
+        var body = req.body || {};
+        var cid  = typeof body.cid === 'string' ? body.cid.trim() : null;
+        if (!cid) {
+            return res.status(400).json({ error: { reason: 'BAD_REQUEST', details: 'cid required' } });
+        }
+        // Basic CID sanity (must start with Qm, bafy, bafk, bafkz, etc.)
+        if (!/^[A-Za-z0-9]{7,}/.test(cid)) {
+            return res.status(400).json({ error: { reason: 'BAD_REQUEST', details: 'invalid CID' } });
+        }
+
+        var opts = {};
+        if (body.name    && typeof body.name    === 'string') { opts.name    = body.name; }
+        if (body.origins && Array.isArray(body.origins))      { opts.origins = body.origins; }
+        if (body.meta    && typeof body.meta    === 'object') { opts.meta    = body.meta; }
+
+        Safecloud_Ipfs.pin(cid, opts).then(function (pinRecord) {
+            res.status(202).json(pinRecord);
+        }).catch(function (err) {
+            Q.log('Safecloud.Ipfs: pin error: ' + err.message, 'Safecloud');
+            res.status(500).json({ error: { reason: 'INTERNAL_SERVER_ERROR', details: err.message } });
+        });
+    });
+
+    // ── PSA: GET /ipfs/pins/:requestid — pin status ──────────────────────────
+    app.get('/ipfs/pins/:requestid', _pinsAuth, function (req, res) {
+        var requestid = req.params.requestid;
+        if (!requestid || !/^[a-f0-9]{32}([a-f0-9-]{4,})?$/.test(requestid)) {
+            return res.status(400).json({ error: { reason: 'BAD_REQUEST', details: 'invalid requestid' } });
+        }
+        var rec = Safecloud_Ipfs.getPinByRequestid(requestid);
+        if (!rec) {
+            return res.status(404).json({
+                error: { reason: 'NOT_FOUND', details: 'pin not found: ' + requestid }
+            });
+        }
+        res.json(rec);
+    });
+
+    // ── PSA: DELETE /ipfs/pins/:requestid — remove pin ───────────────────────
+    app.delete('/ipfs/pins/:requestid', _pinsAuth, function (req, res) {
+        var requestid = req.params.requestid;
+        if (!requestid) {
+            return res.status(400).json({ error: { reason: 'BAD_REQUEST', details: 'requestid required' } });
+        }
+        Safecloud_Ipfs.unpin(requestid).then(function () {
+            res.status(202).end();
+        }).catch(function (err) {
+            var notFound = err.message && err.message.indexOf('Pin not found') !== -1;
+            if (notFound) {
+                return res.status(404).json({
+                    error: { reason: 'NOT_FOUND', details: err.message }
+                });
+            }
+            Q.log('Safecloud.Ipfs: unpin error: ' + err.message, 'Safecloud');
+            res.status(500).json({ error: { reason: 'INTERNAL_SERVER_ERROR', details: err.message } });
+        });
+    });
+
+    // ── Status: GET /Safecloud/ipfs/status ───────────────────────────────────
+    app.get('/Safecloud/ipfs/status', function (req, res) {
+        Safecloud_Ipfs.status().then(function (st) {
+            res.json(st);
+        }).catch(function (err) {
+            res.status(500).json({ error: err.message });
+        });
+    });
+
+    // ── Kubo API proxy: only in mode: "external" ──────────────────────────────
+    // Makes the Jet look like a Kubo node to existing tooling.
+    // All Kubo RPC calls are POST (even reads like pin/ls).
+    if (Safecloud_Ipfs.getMode() === 'external') {
+        _registerKuboProxy(app);
+    }
+
+    // ── IPNS routes (requires mode: "external") ───────────────────────────────
+    if (Safecloud_Ipns && Safecloud_Ipns.isEnabled()) {
+        _registerIpnsRoutes(app);
+    }
+
+    Q.log('Q.Safecloud.Jets: IPFS routes registered (mode=' + Safecloud_Ipfs.getMode() + ')', 'Safecloud');
+}
+
+/**
+ * Register /api/v0/* Kubo HTTP RPC proxy routes.
+ * These make the Jet appear as a local Kubo node to IPFS CLI tools,
+ * IPFS Desktop, and other Kubo-compatible clients.
+ *
+ * @param {Object} app  Express application instance
+ * @private
+ */
+function _registerKuboProxy(app) {
+    // Helper: proxy POST to Kubo, return its response verbatim
+    function _proxy(apiPath) {
+        return function (req, res) {
+            // Merge URL query params from the incoming request and forward as-is
+            var qs   = req.query || {};
+            var body = null;
+
+            // For /api/v0/add the body is multipart — pass through raw bytes
+            var contentType = req.headers['content-type'] || '';
+            if (contentType.indexOf('multipart') !== -1) {
+                var chunks = [];
+                req.on('data', function (c) { chunks.push(c); });
+                req.on('end', function () {
+                    body = Buffer.concat(chunks);
+                    Safecloud_Ipfs.kuboRaw('POST', apiPath, qs, body, contentType)
+                        .then(function (r) {
+                            res.status(r.status);
+                            Object.keys(r.headers).forEach(function (h) {
+                                // Skip hop-by-hop headers
+                                if (['transfer-encoding', 'connection'].indexOf(h) === -1) {
+                                    res.setHeader(h, r.headers[h]);
+                                }
+                            });
+                            res.end(r.body);
+                        })
+                        .catch(function (err) {
+                            res.status(500).json({ Message: err.message, Code: 0 });
+                        });
+                });
+                return;
+            }
+
+            Safecloud_Ipfs.kuboRaw('POST', apiPath, qs).then(function (r) {
+                res.status(r.status);
+                Object.keys(r.headers).forEach(function (h) {
+                    if (['transfer-encoding', 'connection'].indexOf(h) === -1) {
+                        res.setHeader(h, r.headers[h]);
+                    }
+                });
+                // Update local pin store for pin/add and pin/rm
+                var raw  = r.body.toString('utf8');
+                var json = null;
+                try { json = JSON.parse(raw); } catch (_) {}
+
+                if (apiPath === '/api/v0/pin/add' && r.status === 200 && json && json.Pins) {
+                    json.Pins.forEach(function (cid) {
+                        // Update existing or create new pin record with status "pinned"
+                        var existing = Safecloud_Ipfs.getPinByCid(cid);
+                        if (!existing) {
+                            Safecloud_Ipfs.pin(cid).catch(function () {});
+                        } else {
+                            // promote status
+                            existing.status = 'pinned';
+                        }
+                    });
+                }
+                if (apiPath === '/api/v0/pin/rm' && r.status === 200 && json && json.Pins) {
+                    json.Pins.forEach(function (cid) {
+                        var existing = Safecloud_Ipfs.getPinByCid(cid);
+                        if (existing) {
+                            Safecloud_Ipfs.unpin(existing.requestid).catch(function () {});
+                        }
+                    });
+                }
+
+                res.end(r.body);
+            }).catch(function (err) {
+                res.status(500).json({ Message: err.message, Code: 0, Type: 'error' });
+            });
+        };
+    }
+
+    // Standard Kubo RPC endpoints
+    app.post('/api/v0/add',          _proxy('/api/v0/add'));
+    app.post('/api/v0/pin/add',      _proxy('/api/v0/pin/add'));
+    app.post('/api/v0/pin/rm',       _proxy('/api/v0/pin/rm'));
+    app.post('/api/v0/pin/ls',       _proxy('/api/v0/pin/ls'));
+    app.post('/api/v0/cat',          _proxy('/api/v0/cat'));
+    app.post('/api/v0/id',           _proxy('/api/v0/id'));
+    app.post('/api/v0/swarm/peers',  _proxy('/api/v0/swarm/peers'));
+    app.post('/api/v0/version',      _proxy('/api/v0/version'));
+}
+
+/**
+ * Register /api/v0/key/* and /api/v0/name/* Kubo RPC routes for IPNS.
+ *
+ * @param {Object} app  Express application instance
+ * @private
+ */
+function _registerIpnsRoutes(app) {
+    // POST /api/v0/key/gen?arg=<name>&type=ed25519
+    app.post('/api/v0/key/gen', function (req, res) {
+        var name = req.query.arg;
+        var type = req.query.type || 'ed25519';
+        if (!name) {
+            return res.status(400).json({ Message: 'Argument "arg" is required', Code: 1 });
+        }
+        Safecloud_Ipns.createKey(name, type).then(function (r) {
+            res.json(r);
+        }).catch(function (err) {
+            res.status(500).json({ Message: err.message, Code: 0 });
+        });
+    });
+
+    // POST /api/v0/key/list
+    app.post('/api/v0/key/list', function (req, res) {
+        Safecloud_Ipns.listKeys().then(function (r) {
+            res.json(r);
+        }).catch(function (err) {
+            res.status(500).json({ Message: err.message, Code: 0 });
+        });
+    });
+
+    // POST /api/v0/key/rm?arg=<name>
+    app.post('/api/v0/key/rm', function (req, res) {
+        var name = req.query.arg;
+        if (!name) {
+            return res.status(400).json({ Message: 'Argument "arg" is required', Code: 1 });
+        }
+        Safecloud_Ipns.removeKey(name).then(function (r) {
+            res.json(r);
+        }).catch(function (err) {
+            res.status(500).json({ Message: err.message, Code: 0 });
+        });
+    });
+
+    // POST /api/v0/name/publish?arg=<cid>&key=<name>&lifetime=24h&ttl=1m
+    app.post('/api/v0/name/publish', function (req, res) {
+        var arg = req.query.arg;
+        if (!arg) {
+            return res.status(400).json({ Message: 'Argument "arg" is required', Code: 1 });
+        }
+        // Strip /ipfs/ prefix if the caller includes it
+        var cid = arg.startsWith('/ipfs/') ? arg.slice(6) : arg;
+        Safecloud_Ipns.publish(cid, {
+            key:      req.query.key      || 'self',
+            lifetime: req.query.lifetime || '24h',
+            ttl:      req.query.ttl      || '1m'
+        }).then(function (r) {
+            res.json(r);
+        }).catch(function (err) {
+            res.status(500).json({ Message: err.message, Code: 0 });
+        });
+    });
+
+    // POST /api/v0/name/resolve?arg=<name>&recursive=true&nocache=false
+    app.post('/api/v0/name/resolve', function (req, res) {
+        var arg = req.query.arg;
+        if (!arg) {
+            return res.status(400).json({ Message: 'Argument "arg" is required', Code: 1 });
+        }
+        Safecloud_Ipns.resolve(arg, {
+            recursive: req.query.recursive !== 'false',
+            nocache:   req.query.nocache   === 'true'
+        }).then(function (r) {
+            res.json(r);
+        }).catch(function (err) {
+            res.status(500).json({ Message: err.message, Code: 0 });
+        });
     });
 }
 
@@ -2938,7 +3766,8 @@ function _handleHttpChunkGet(req, res) {
 
     // Verify EIP-712 payment signature before checking balance
     var sigPromise = (ocpEnvelope.sig && ocpEnvelope.sig.length &&
-                      Q.Crypto && Q.Crypto.OpenClaim && Q.Crypto.OpenClaim.EVM)
+                      Q.Crypto && Q.Crypto.OpenClaim && Q.Crypto.OpenClaim.EVM &&
+                      typeof Q.Crypto.OpenClaim.EVM.verify === 'function')
         ? Q.Crypto.OpenClaim.EVM.verify(
             Object.assign({}, payment, {
                 contract: payment.contract ||
@@ -3362,7 +4191,8 @@ function _checkPayments(payments, chunkCount) {
 
         // 1. Verify the EIP-712 payment signature — proves payer authorized the payment
         var sigVerifyPromise;
-        if (p.sig && p.sig.length && Q.Crypto && Q.Crypto.OpenClaim && Q.Crypto.OpenClaim.EVM) {
+        if (p.sig && p.sig.length && Q.Crypto && Q.Crypto.OpenClaim && Q.Crypto.OpenClaim.EVM &&
+                typeof Q.Crypto.OpenClaim.EVM.verify === 'function') {
             var EVM = Q.Crypto.OpenClaim.EVM;
             var sig = p.sig[0];
             sigVerifyPromise = EVM.verify(

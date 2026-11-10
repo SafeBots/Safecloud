@@ -1,5 +1,278 @@
 # Changelog
 
+## 3.8.0 — 2026-11-05
+
+### Payment replay protection
+
+`RightsManagement.verifyPublisherAuth()` now rejects replay attacks.  Every
+`publisherAuth` token carries a `nonce`; on first successful verification the
+nonce is recorded in the new `used_nonces` SQLite table.  A second request with
+the same token returns **409 Conflict**.  Expired nonces are cleaned up
+automatically at most once per minute so the table stays compact.
+
+**Changes to `classes/Safecloud/RightsManagement.js`:**
+
+- New `used_nonces` table (`nonce TEXT PRIMARY KEY`, `publisher TEXT`, `exp
+  INTEGER`) with an index on `exp` for fast expiry cleanup — added to the
+  SCHEMA array and created on `open()`.
+- `verifyPublisherAuth()` — after signature verification, checks for a known
+  nonce and throws 409 if found; otherwise inserts the nonce so the token
+  cannot be replayed.
+- `_cleanupNonces()` — deletes rows where `exp < now`; rate-limited to one
+  invocation per 60 s via `this._lastNonceCleanup`.
+
+### Admin control panel (new file: `classes/Safecloud/ControlPanel.js`)
+
+A single-page HTML admin UI + JSON API under `/Safecloud/admin/`.  Gives
+operators a live dashboard for every piece of rights-management state without
+touching the database directly.
+
+**New admin methods on `RightsManagement`:**
+
+| Method | Returns |
+|---|---|
+| `listRoots(opts)` | All registered rootCids (paginated, key excluded) |
+| `listPublishers(opts)` | All registered publishers |
+| `deregisterPublisher(id)` | Removes a publisher; returns `true` on success |
+| `listRateLimits(opts)` | All active token-bucket entries |
+| `resetRateLimit(bucketKey)` | Deletes one bucket; returns `true` on success |
+| `listUsedNonces(opts)` | Active (non-expired) nonces |
+
+**HTTP routes (`ControlPanel.registerRoutes(app, rm, opts)`):**
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/Safecloud/admin/` | HTML SPA |
+| GET | `/Safecloud/admin/api/stats` | Aggregate counts (roots / publishers / grants / buckets / nonces) |
+| GET | `/Safecloud/admin/api/roots` | Root list |
+| GET | `/Safecloud/admin/api/roots/:cid` | Root detail + full grant chain |
+| GET | `/Safecloud/admin/api/publishers` | Publisher list |
+| DELETE | `/Safecloud/admin/api/publishers/:id` | Deregister a publisher |
+| GET | `/Safecloud/admin/api/chain/:cid` | Grant chain for a rootCid |
+| POST | `/Safecloud/admin/api/chain/:cid` | Append a grant entry |
+| GET | `/Safecloud/admin/api/rate-limits` | Rate-limit bucket list |
+| DELETE | `/Safecloud/admin/api/rate-limits/:bucket` | Reset one bucket |
+| GET | `/Safecloud/admin/api/nonces` | Active nonces |
+
+Optional bearer-token auth: set `Safecloud.admin.token` in `Q.Config`; every
+request then requires `Authorization: Bearer <token>`.  Omit the config key to
+leave the panel open (suitable for internal/loopback-only deployments).
+
+### Jets.js integration
+
+`listen()` wires the control panel automatically whenever rights management is
+enabled.  No new config key is required beyond `Safecloud.admin.token` for
+auth.
+
+### Tests
+
+- **`tests/control_panel.test.js`** (24 tests) — covers payment replay
+  protection (5 tests) and all HTTP routes including token auth.
+- All 27 existing `tests/rights_management.test.js` tests continue to pass.
+
+---
+
+## 3.7.0 — 2026-11-03
+
+### Engine.js / DB — pure-JS in-process SQL engine (drop-in better-sqlite3)
+
+Safecloud/DB is a zero-native-dependency SQL engine that exposes the full
+`better-sqlite3` synchronous API (`new Database(path)`, `.prepare()`,
+`.run()`, `.get()`, `.all()`, `.iterate()`, `.transaction()`, `.exec()`,
+`.pragma()`). It parses MySQL-dialect SQL via `node-sql-parser` and executes
+with SQLite semantics — `INTEGER PRIMARY KEY` auto-increment, `AUTOINCREMENT`
+keyword, `LIKE` with `ESCAPE`, `COALESCE`/`NULLIF`/`IIF`, `REPLACE INTO`,
+`INSERT OR REPLACE`, `ON CONFLICT` clauses, `RETURNING`, `WITH` CTEs, window
+functions, aggregate functions, and expression correctness per the SQLite spec.
+
+Because it contains no native bindings it bundles cleanly through esbuild into
+a Node SEA (Single Executable Application) binary — all five platform binaries
+now ship with full SQL support out of the box.
+
+**New files:**
+
+- **`classes/Safecloud/DB/index.js`** — package entry; exports `Database` as
+  default with sub-exports `Engine`, `Catalog`, `TableStore`, `KeyCodec`,
+  `Statement`. Drop-in import path for better-sqlite3 consumers:
+  ```js
+  const Database = require('./classes/Safecloud/DB');
+  const db = new Database(':memory:');
+  ```
+- **`classes/Safecloud/DB/Database.js`** — top-level `Database` class.
+  Constructor accepts a path string (currently operates in-memory; WAL
+  persistence to Drops is planned for 4.0). Implements the complete
+  better-sqlite3 synchronous interface including `transaction()` wrappers,
+  `exec()` for multi-statement scripts, `pragma()` passthrough, and
+  `aggregate()` / `function()` extension hooks.
+- **`classes/Safecloud/DB/Engine.js`** — SQL parser + executor (1 377 lines).
+  Accepts AST output from `node-sql-parser` (`MySQL` dialect) and executes
+  against in-memory `TableStore` rows. Handles DDL (`CREATE TABLE`,
+  `DROP TABLE`, `ALTER TABLE`, `CREATE INDEX`), DML (`INSERT`, `UPDATE`,
+  `DELETE`, `REPLACE`), queries (`SELECT` with `WHERE`, `GROUP BY`, `HAVING`,
+  `ORDER BY`, `LIMIT`/`OFFSET`, `DISTINCT`, joins, subqueries, CTEs), and
+  expressions (arithmetic, string ops, `CAST`, `CASE/WHEN`, all standard
+  SQL functions, `IN`/`NOT IN`, `BETWEEN`, `EXISTS`).
+- **`classes/Safecloud/DB/Statement.js`** — prepared statement handle.
+  Stores the parsed AST and bound parameter array; exposes `.run()`, `.get()`,
+  `.all()`, `.iterate()` mirroring better-sqlite3's `Statement` class exactly.
+- **`classes/Safecloud/DB/Catalog.js`** — schema registry. Holds table
+  definitions (column list, types, constraints, indexes) and generates
+  auto-increment sequences.
+- **`classes/Safecloud/DB/TableStore.js`** — in-memory row storage with
+  ordered-key indexing. Supports range scans, index lookups, and the rowid
+  model (`INTEGER PRIMARY KEY` alias).
+- **`classes/Safecloud/DB/KeyCodec.js`** — binary key encoding for ordered
+  storage. Encodes `NULL`, integers, reals, and text into a comparable byte
+  sequence so range queries return rows in the correct sort order without a
+  full-table scan.
+
+**Test suite (`tests/db/`, 192 tests, 100 % passing):**
+
+| File | Tests | Coverage |
+|---|---|---|
+| `01_ddl.test.js` | 18 | CREATE TABLE, column types, PRIMARY KEY, AUTOINCREMENT, DROP, ALTER |
+| `02_insert.test.js` | 16 | plain insert, multi-row, named params, REPLACE, INSERT OR REPLACE |
+| `03_select.test.js` | 20 | projections, WHERE, DISTINCT, ORDER BY, LIMIT/OFFSET |
+| `04_update_delete.test.js` | 14 | UPDATE SET, WHERE filter, DELETE, RETURNING |
+| `05_transactions.test.js` | 12 | commit, rollback, nested savepoints, `.transaction()` wrapper |
+| `06_indexes.test.js` | 10 | CREATE INDEX, UNIQUE constraint, index-based lookup |
+| `07_joins.test.js` | 16 | INNER JOIN, LEFT JOIN, multiple tables, join + aggregate |
+| `08_aggregates.test.js` | 14 | COUNT, SUM, MIN, MAX, AVG, GROUP BY, HAVING |
+| `09_subqueries.test.js` | 12 | scalar subquery, IN subquery, correlated subquery, EXISTS |
+| `10_window_functions.test.js` | 14 | ROW_NUMBER, RANK, DENSE_RANK, LAG, LEAD, SUM OVER, PARTITION BY |
+| `11_cte.test.js` | 12 | WITH, recursive CTE, CTE + join |
+| `12_pragmas_and_api.test.js` | 16 | pragma passthrough, `.exec()`, `.function()`, `.aggregate()`, WAL |
+| `13_expr_correctness.test.js` | 18 | CAST, COALESCE, NULLIF, IIF, LIKE ESCAPE, arithmetic edge cases |
+
+**Binary release fix (backported from 3.6 bug report):**
+
+`.github/workflows/release.yml` esbuild step now includes
+`--external:Q --external:"Q/*" --external:@aws-sdk/client-s3`.
+The `Q` namespace is resolved at runtime by the Module._load hook in
+`bin/jet.js`; without marking it external esbuild would fail to bundle.
+`@aws-sdk/client-s3` is an optional S3 dependency loaded lazily; bundling it
+unconditionally added 6 MB and broke in environments without S3 config.
+The same externals are added to the `build:bundle` npm script for local builds.
+
+**Motivation — why Engine.js instead of native better-sqlite3:**
+Node SEA (Single Executable Application, stable in Node 22) injects a
+pre-built blob into the node binary at postject time. Native addons (`.node`
+files) cannot be included in the blob — they require a separate
+platform-specific `.node` on disk and a matching Node ABI. Engine.js is pure
+JS and therefore bundles cleanly through esbuild, producing a single
+self-contained binary per platform with no runtime dependencies.
+
+**Planned for 4.0:** WAL checkpointing to Drops (Safecloud content-addressed
+storage), giving Engine.js crash recovery and replication semantics on top of
+the in-memory store.
+
+## 3.6.0 — 2026-11-02
+
+### Binary releases via GitHub Actions (Node SEA)
+
+Introduces a CI/CD pipeline that builds five self-contained platform binaries
+and publishes them as a GitHub Release on every `v*.*.*` tag push. No Node.js
+or npm required to run the server.
+
+**New files:**
+
+- **`.github/workflows/release.yml`** — GitHub Actions workflow. Build matrix:
+  `linux-x64` (ubuntu-latest), `linux-arm64` (ubuntu-24.04-arm),
+  `macos-x64` (macos-13), `macos-arm64` (macos-latest),
+  `windows-x64` (windows-latest). Each job: installs Node 22, runs
+  `npm ci --omit=dev`, installs esbuild as a build-only dep, bundles
+  `bin/jet.js` to `bin/jet-bundle.cjs`, generates the SEA blob via
+  `node --experimental-sea-config sea-config.json`, copies the node binary,
+  strips the macOS signature, injects the blob with `npx postject`, re-signs
+  on macOS, smoke-tests with `--version`, attests provenance via
+  `actions/attest-build-provenance`, uploads artifact. The release job
+  downloads all five artifacts, flattens the directory, generates a
+  `sha256sum`-based `checksums.txt`, and publishes a GitHub Release with all
+  binaries and the checksum file.
+- **`sea-config.json`** — SEA configuration:
+  `{"main":"bin/jet-bundle.cjs","output":"sea-prep.blob","disableExperimentalSEAWarning":true,"useSnapshot":false,"useCodeCache":true}`.
+
+**OIDC provenance attestation:** each binary is attested with
+`actions/attest-build-provenance@v1`; consumers can verify with
+`gh attestation verify safecloud-jet-linux-x64 --repo Safebots/Safecloud`.
+
+**Known issue (fixed in 3.7.0):** the esbuild step was missing
+`--external:Q`, `--external:"Q/*"`, and `--external:@aws-sdk/client-s3`,
+causing CI bundle failures. Fixed in 3.7.0.
+
+## 3.5.0 — 2026-11-01
+
+### Five additional storage backends
+
+Extends the storage backend system with five new adapters alongside the
+existing IPFS (3.3) and S3 (3.4) backends. All adapters conform to the
+same internal interface (`put`, `get`, `delete`, `list`, `exists`, `head`).
+
+**New files:**
+
+- **`classes/Safecloud/Storage/Arweave.js`** (13 KB) — permanent storage on
+  the Arweave network via `arweave-js`. Uploads are bundled with Bundlr/Irys
+  for cheap layer-2 posting; direct AR transactions available for large blobs.
+  `put` returns the transaction ID as the content address.
+- **`classes/Safecloud/Storage/Filecoin.js`** (10 KB) — Filecoin storage via
+  web3.storage (`@web3-storage/w3up-client`). Uploads to IPFS/Filecoin
+  dual-storage; returns CID. Includes deal tracking and retrieval via the
+  Filecoin retrieval market.
+- **`classes/Safecloud/Storage/Filesystem.js`** (7.7 KB) — local filesystem
+  backend for development and single-node deployments. Stores blobs as flat
+  files under a configurable base directory. Supports streaming reads and
+  atomic writes via temp-file rename.
+- **`classes/Safecloud/Storage/Rclone.js`** (11 KB) — rclone subprocess
+  backend. Delegates to any rclone-supported provider (Google Drive, Azure
+  Blob, Backblaze B2, Dropbox, and 40+ others) by spawning `rclone` with the
+  appropriate subcommand. Config path and remote name are configurable.
+- **`classes/Safecloud/Storage/Webdav.js`** (11 KB) — WebDAV backend via the
+  `webdav` npm package. Compatible with Nextcloud, ownCloud, Seafile,
+  Box, and any WebDAV server. Supports PROPFIND-based listing, chunked
+  uploads, and bearer-token / basic auth.
+
+## 3.4.0 — 2026-10-31
+
+### S3-compatible storage backend
+
+Adds an S3 adapter for Drops storage, enabling content-addressed chunks to be
+persisted in any S3-compatible object store (AWS S3, Cloudflare R2, MinIO,
+Backblaze B2, DigitalOcean Spaces, Wasabi, etc.).
+
+**New files:**
+
+- **`classes/Safecloud/Storage/S3.js`** (10.9 KB) — S3 storage adapter using
+  `@aws-sdk/client-s3` (`^3.x`). Constructor accepts `{ bucket, region,
+  endpoint, credentials: { accessKeyId, secretAccessKey } }`. Implements the
+  standard backend interface: `put(key, data)`, `get(key)`, `delete(key)`,
+  `list(prefix)`, `exists(key)`, `head(key)`. Uses presigned URLs for
+  large-object streaming. Endpoint override supports path-style addressing for
+  MinIO and Cloudflare R2.
+- **`@aws-sdk/client-s3`** added as an optional dependency (lazy-required;
+  throws a clear error if missing and S3 backend is configured).
+
+## 3.3.0 — 2026-10-31
+
+### IPFS/IPNS storage backends
+
+Adds native IPFS content-addressed storage and IPNS mutable-name support,
+enabling Drops (content-addressed chunks) to be persisted on and retrieved
+from the IPFS network via the Kubo RPC API (PSA v1.0.0).
+
+**New files:**
+
+- **`classes/Safecloud/Ipfs.js`** (25.6 KB) — IPFS storage adapter. Connects
+  to a local or remote Kubo node via the `/api/v0/*` RPC endpoints. Implements
+  `add` (multipart/form-data upload with chunking options), `cat` (streaming
+  download), `pin add/rm/ls`, `dag get/put/resolve`, `files` MFS operations,
+  `bitswap stat`, and `swarm peers`. Handles CIDv0/v1 normalization, multipart
+  streaming, and timeout/retry logic.
+- **`classes/Safecloud/Ipns.js`** (5.9 KB) — IPNS name operations. Wraps the
+  Kubo `/api/v0/name/publish` and `/api/v0/name/resolve` endpoints. Manages
+  key generation and listing (`/api/v0/key/*`) so Drops can be addressed under
+  a stable human-readable or key-derived name that resolves to the latest root
+  CID. Supports TTL and lifetime options for publish.
+
 ## 3.2.0 — 2026-10-31
 
 ### ML-DSA-65 hybrid governance attestation and Safebox liveness check

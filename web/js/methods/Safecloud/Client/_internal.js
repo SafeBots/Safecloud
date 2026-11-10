@@ -58,7 +58,37 @@ Q.exports(function () {
 
         // Chunk-level labels (Q.Data.derive only — O(N), never delegated)
         chunkKey:       function (i)    { return 'safecloud.chunk.key.' + i; },
-        chunkIV:        function (i)    { return 'safecloud.chunk.iv.'  + i; }
+        chunkIV:        function (i)    { return 'safecloud.chunk.iv.'  + i; },
+
+        // ── Chat root ──────────────────────────────────────────────────────
+        // Derived from encryptionRoot; parent of all chat sub-trees.
+        chatRoot:       'safecloud.chat',
+
+        // ── Thread / epoch labels ──────────────────────────────────────────
+        // Thread key (group-manager key): derived from chatRoot.
+        // Epoch keys are siblings derived from the thread key — revocation
+        // is O(1) because the revoked member only holds the old epoch key,
+        // not the thread key needed to derive the next epoch sibling.
+        chatThread:     function (id)   { return 'safecloud.chat.thread.' + id; },
+        epoch:          function (i)    { return 'safecloud.chat.epoch.' + i; },
+
+        // ── Temporal tree labels ───────────────────────────────────────────
+        // Chain: chatRoot → timeRoot → year → quarter → month → week → day
+        // Each step uses Q.Crypto.delegate with the label for that segment.
+        // A grant at any level covers all finer-granularity descendants.
+        timeRoot:       'safecloud.chat.time',
+        timeYear:       function (y)        { return 'safecloud.time.year.'    + y; },
+        timeQuarter:    function (q)        { return 'safecloud.time.quarter.' + q; },
+        timeMonth:      function (m)        { return 'safecloud.time.month.'   + String(m).padStart(2, '0'); },
+        timeWeek:       function (w)        { return 'safecloud.time.week.'    + String(w).padStart(2, '0'); },
+        timeDay:        function (d)        { return 'safecloud.time.day.'     + String(d).padStart(2, '0'); },
+
+        // ── Spatial / topic tree labels ────────────────────────────────────
+        // Chain: chatRoot → topicRoot → topic segment → sub-segment → …
+        // Topic path segments are lowercase, dot-free strings (e.g. "general").
+        // A grant at any level covers all descendant topics.
+        topicRoot:      'safecloud.chat.topic',
+        topic:          function (seg)  { return 'safecloud.topic.' + seg; }
     };
 
     // ─────────────────────────────────────────────────────────────────────
@@ -388,6 +418,212 @@ Q.exports(function () {
         return _.deriveByPath(encryptionRoot, linkPath, '{}');
     };
 
+    // ─────────────────────────────────────────────────────────────────────
+    // 13a. Chat root — derived from encryptionRoot
+    //      All chat sub-trees (threads, time trees, topic trees) branch off here.
+    // ─────────────────────────────────────────────────────────────────────
+
+    _.deriveChatRoot = function (encryptionRoot) {
+        return Q.Crypto.delegate({
+            rootSecret: encryptionRoot,
+            label:      _.LABELS.chatRoot,
+            context:    '{}',
+            format:     'ES256'
+        });
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 13b. Chat thread key (group-manager key)
+    //      Derived from chatRoot; holders of this key can derive any epoch.
+    // ─────────────────────────────────────────────────────────────────────
+
+    _.deriveChatThread = function (chatRoot, threadId) {
+        return Q.Crypto.delegate({
+            rootSecret: chatRoot,
+            label:      _.LABELS.chatThread(threadId),
+            context:    '{}',
+            format:     'ES256'
+        });
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 13c. Epoch key — sibling keys derived from thread key (O(1) rekey).
+    //      Revocation = derive epoch/N+1 from threadKey and distribute;
+    //      revoked member holds epoch/N only, cannot derive epoch/N+1.
+    // ─────────────────────────────────────────────────────────────────────
+
+    _.deriveEpochKey = function (threadKey, epochIndex) {
+        return Q.Crypto.delegate({
+            rootSecret: threadKey,
+            label:      _.LABELS.epoch(epochIndex),
+            context:    '{}',
+            format:     'ES256'
+        });
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 13d. timePath — pure function: Date → array of LABELS for derivation
+    //
+    //   granularity: 'year' | 'quarter' | 'month' | 'week' | 'day'
+    //                (default: 'day')
+    //
+    //   Returns an array of label strings, e.g.:
+    //     timePath(new Date('2026-03-15'), 'month') →
+    //       ['safecloud.chat.time',
+    //        'safecloud.time.year.2026',
+    //        'safecloud.time.quarter.1',
+    //        'safecloud.time.month.03']
+    //
+    //   This is a PURE function — no Q dependencies — so it can be tested
+    //   in Node without any shims.
+    // ─────────────────────────────────────────────────────────────────────
+
+    _.timePath = function (date, granularity) {
+        granularity = granularity || 'day';
+        var d  = (date instanceof Date) ? date : new Date(date);
+        var y  = d.getUTCFullYear();
+        var m  = d.getUTCMonth() + 1;         // 1–12
+        var q  = Math.ceil(m / 3);            // 1–4
+        var dy = d.getUTCDate();              // 1–31
+        // ISO-8601 week number (Monday=start, week 1 = first week with Thursday)
+        var w  = _.isoWeek(d);
+
+        var path = [_.LABELS.timeRoot, _.LABELS.timeYear(y)];
+
+        if (granularity === 'year')    { return path; }
+        path.push(_.LABELS.timeQuarter(q));
+        if (granularity === 'quarter') { return path; }
+
+        // ISO weeks span month boundaries, so week branches directly from quarter.
+        if (granularity === 'week') {
+            path.push(_.LABELS.timeWeek(w));
+            return path;
+        }
+
+        path.push(_.LABELS.timeMonth(m));
+        if (granularity === 'month')   { return path; }
+        // 'day' — include month then day (not week)
+        path.push(_.LABELS.timeDay(dy));
+        return path;
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 13e. isoWeek — ISO 8601 week number for a given Date (UTC)
+    //      Pure function, no Q dependencies.
+    // ─────────────────────────────────────────────────────────────────────
+
+    _.isoWeek = function (date) {
+        var d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+        // Set to nearest Thursday: current date + 4 - current day number (Mon=1..Sun=7)
+        var day = d.getUTCDay() || 7;        // convert Sunday(0) → 7
+        d.setUTCDate(d.getUTCDate() + 4 - day);
+        var yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+        return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 13f. timePathsForRange — returns the minimal set of time-path arrays
+    //      covering a date range.  Each element is what timePath() returns.
+    //
+    //   startDate, endDate: Dates (inclusive range)
+    //   granularity: finest granularity to include ('month','week','day')
+    //
+    //   Strategy: enumerate calendar units between start and end at the
+    //   finest granularity, then merge adjacent ones into coarser ancestors
+    //   when the entire coarser period is covered.
+    //   For simplicity, returns an array of day-level (or the given
+    //   granularity) paths — callers that need merge optimisation can
+    //   do so at grant time, the same way _pathsCoveringRange works for chunks.
+    // ─────────────────────────────────────────────────────────────────────
+
+    _.timePathsForRange = function (startDate, endDate, granularity) {
+        granularity = granularity || 'day';
+        var paths = [];
+        var cursor = new Date(Date.UTC(
+            startDate.getUTCFullYear(),
+            startDate.getUTCMonth(),
+            startDate.getUTCDate()
+        ));
+        var end = new Date(Date.UTC(
+            endDate.getUTCFullYear(),
+            endDate.getUTCMonth(),
+            endDate.getUTCDate()
+        ));
+
+        var seen = {};
+        while (cursor <= end) {
+            var p    = _.timePath(cursor, granularity);
+            var key  = p.join('|');
+            if (!seen[key]) {
+                seen[key] = true;
+                paths.push(p);
+            }
+            // Advance by one day (smallest unit we enumerate)
+            cursor.setUTCDate(cursor.getUTCDate() + 1);
+        }
+        return paths;
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 13g. deriveByTimePath — chains delegate down a time-path array.
+    //
+    //   timePath: array of label strings as returned by _.timePath()
+    //   First element MUST be _.LABELS.timeRoot ('safecloud.chat.time').
+    //   Each subsequent element is a time label.
+    //   The derivation starts from chatRoot.
+    // ─────────────────────────────────────────────────────────────────────
+
+    _.deriveByTimePath = function (chatRoot, timePath, tipContext) {
+        if (!timePath || timePath.length < 1) {
+            return Promise.reject(new Error('deriveByTimePath: empty path'));
+        }
+        tipContext = tipContext || '{}';
+        var steps = timePath.map(function (label, i) {
+            return { label: label, context: (i === timePath.length - 1) ? tipContext : '{}' };
+        });
+
+        return steps.reduce(function (prev, step) {
+            return prev.then(function (current) {
+                return Q.Crypto.delegate({
+                    rootSecret: current.secret || current,
+                    label:      step.label,
+                    context:    step.context,
+                    format:     'ES256'
+                });
+            });
+        }, Promise.resolve({ secret: chatRoot }));
+    };
+
+    // ─────────────────────────────────────────────────────────────────────
+    // 13h. Topic tree derivation
+    //
+    //   Topic path: chatRoot → topicRoot → topic(seg) → topic(subseg) → …
+    //   Segments are plain strings (no slashes; use separate path elements).
+    // ─────────────────────────────────────────────────────────────────────
+
+    _.deriveByTopicPath = function (chatRoot, topicSegments, tipContext) {
+        if (!topicSegments || !topicSegments.length) {
+            return Promise.reject(new Error('deriveByTopicPath: empty topicSegments'));
+        }
+        tipContext = tipContext || '{}';
+        var allLabels = [_.LABELS.topicRoot].concat(
+            topicSegments.map(function (seg) { return _.LABELS.topic(seg); })
+        );
+        var steps = allLabels.map(function (label, i) {
+            return { label: label, context: (i === allLabels.length - 1) ? tipContext : '{}' };
+        });
+
+        return steps.reduce(function (prev, step) {
+            return prev.then(function (current) {
+                return Q.Crypto.delegate({
+                    rootSecret: current.secret || current,
+                    label:      step.label,
+                    context:    step.context,
+                    format:     'ES256'
+                });
+            });
+        }, Promise.resolve({ secret: chatRoot }));
+    };
 
     // ─────────────────────────────────────────────────────────────────────
     // 14. treeParams — compute treeN and treeDepth from chunk count

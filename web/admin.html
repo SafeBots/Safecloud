@@ -1,0 +1,532 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Safecloud Jet — Admin</title>
+<style>
+:root {
+  --bg:       #0d1117;
+  --surface:  #161b22;
+  --border:   #30363d;
+  --accent:   #58a6ff;
+  --danger:   #f85149;
+  --success:  #3fb950;
+  --text:     #c9d1d9;
+  --muted:    #8b949e;
+  --radius:   8px;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 'Segoe UI', system-ui, sans-serif; min-height: 100vh; }
+
+/* ── Layout ── */
+header { background: var(--surface); border-bottom: 1px solid var(--border); padding: 12px 24px; display: flex; align-items: center; gap: 12px; }
+header h1 { font-size: 18px; font-weight: 600; }
+header .badge { font-size: 11px; background: var(--border); color: var(--muted); padding: 2px 8px; border-radius: 20px; }
+header .spacer { flex: 1; }
+header .logout-btn { background: none; border: 1px solid var(--border); color: var(--muted); padding: 4px 12px; border-radius: var(--radius); cursor: pointer; font-size: 13px; }
+header .logout-btn:hover { border-color: var(--danger); color: var(--danger); }
+
+main { max-width: 900px; margin: 32px auto; padding: 0 16px; }
+
+/* ── Login card ── */
+#login-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 40px; text-align: center; max-width: 420px; margin: 80px auto; }
+#login-card .logo { font-size: 40px; margin-bottom: 16px; }
+#login-card h2 { font-size: 20px; margin-bottom: 8px; }
+#login-card p { color: var(--muted); margin-bottom: 24px; font-size: 13px; line-height: 1.6; }
+#login-card .err { color: var(--danger); font-size: 13px; margin-top: 12px; min-height: 20px; }
+
+/* ── Tabs ── */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+.tab { padding: 8px 16px; cursor: pointer; color: var(--muted); border-radius: var(--radius) var(--radius) 0 0; border: 1px solid transparent; border-bottom: none; font-size: 13px; background: none; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); background: var(--surface); border-color: var(--border); position: relative; bottom: -1px; }
+
+/* ── Section cards ── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; margin-bottom: 20px; }
+.card h3 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.card p.desc { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+
+/* ── Buttons ── */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 16px; border-radius: var(--radius); border: none; cursor: pointer; font-size: 13px; font-weight: 500; transition: opacity .15s; }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn-primary { background: var(--accent); color: #0d1117; }
+.btn-primary:hover:not(:disabled) { opacity: .85; }
+.btn-danger  { background: var(--danger); color: #fff; }
+.btn-ghost   { background: var(--border); color: var(--text); }
+.btn-ghost:hover:not(:disabled) { background: #3c4349; }
+.btn-sm { padding: 3px 10px; font-size: 12px; }
+
+/* ── Origin tags ── */
+.origin-list { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.origin-tag { display: inline-flex; align-items: center; gap: 6px; background: #1c2128; border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; font-size: 12px; font-family: monospace; }
+.origin-tag .rm { background: none; border: none; color: var(--muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+.origin-tag .rm:hover { color: var(--danger); }
+.add-row { display: flex; gap: 8px; align-items: center; }
+.add-row input { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: var(--radius); padding: 6px 12px; font-size: 13px; font-family: monospace; flex: 1; outline: none; }
+.add-row input:focus { border-color: var(--accent); }
+
+/* ── Streams table ── */
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; padding: 8px 12px; color: var(--muted); border-bottom: 1px solid var(--border); font-weight: 500; }
+td { padding: 8px 12px; border-bottom: 1px solid #21262d; vertical-align: middle; }
+tr:hover td { background: #1c2128; }
+.level-badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; font-weight: 600; }
+.level-40 { background: #1f4b2a; color: var(--success); }
+.level-30 { background: #3b2a0a; color: #f0883e; }
+.level-20 { background: #2a1f4b; color: #d2a8ff; }
+.level-10 { background: #1c2128; color: var(--muted); }
+.level-0  { background: #3b1a1a; color: var(--danger); }
+
+/* ── Status banner ── */
+.banner { padding: 10px 16px; border-radius: var(--radius); font-size: 13px; margin-bottom: 16px; }
+.banner-info  { background: #1c2b3a; border: 1px solid #1f6feb; color: #58a6ff; }
+.banner-ok    { background: #122a1b; border: 1px solid #238636; color: var(--success); }
+.banner-err   { background: #2a1419; border: 1px solid #da3633; color: var(--danger); }
+
+/* ── ACL editor modal ── */
+.modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.7); z-index: 100; align-items: center; justify-content: center; }
+.modal-bg.open { display: flex; }
+.modal { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 24px; width: 420px; max-width: 95vw; }
+.modal h3 { margin-bottom: 16px; }
+.field-row { display: flex; gap: 12px; margin-bottom: 12px; }
+.field-row label { width: 90px; font-size: 12px; color: var(--muted); display: flex; align-items: center; }
+.field-row input { background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 6px; padding: 5px 10px; font-size: 13px; width: 80px; outline: none; }
+.field-row input:focus { border-color: var(--accent); }
+.modal-hint { color: var(--muted); font-size: 12px; margin-bottom: 16px; line-height: 1.6; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; }
+</style>
+</head>
+<body>
+
+<!-- ── Header (hidden until logged in) ── -->
+<header id="header" style="display:none">
+  <span>☁</span>
+  <h1>Safecloud Jet Admin</h1>
+  <span class="badge" id="jet-origin"></span>
+  <div class="spacer"></div>
+  <button class="logout-btn" onclick="logout()">Log out</button>
+</header>
+
+<!-- ── Login card ── -->
+<div id="login-card">
+  <div class="logo">☁️</div>
+  <h2>Safecloud Jet Admin</h2>
+  <p id="login-desc">Loading…</p>
+  <button class="btn btn-primary" id="login-btn" onclick="authAction()" style="display:none">
+    <span>🔑</span> <span id="login-label">Register Passkey</span>
+  </button>
+  <div class="err" id="login-err"></div>
+</div>
+
+<!-- ── Admin panel (hidden until logged in) ── -->
+<main id="admin-panel" style="display:none">
+
+  <div id="banner-area"></div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('cors')">CORS</button>
+    <button class="tab" onclick="showTab('streams')">Streams</button>
+    <button class="tab" onclick="showTab('info')">Info</button>
+  </div>
+
+  <!-- CORS tab -->
+  <div id="tab-cors">
+    <div class="card">
+      <h3>Allowed Origins</h3>
+      <p class="desc">Only these origins may connect to this Jet via WebSocket and REST. <code>*</code> means any origin is permitted (dev mode).</p>
+      <div class="origin-list" id="origin-list"></div>
+      <div class="add-row">
+        <input id="origin-input" type="text" placeholder="https://your-app.com" onkeydown="if(event.key==='Enter')addOrigin()">
+        <button class="btn btn-ghost" onclick="addOrigin()">+ Add</button>
+        <button class="btn btn-primary" onclick="saveCors()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Streams tab -->
+  <div id="tab-streams" style="display:none">
+    <div class="card">
+      <h3>All Streams</h3>
+      <p class="desc">Click a row to edit its access levels. Levels: 0 = nobody · 10 = members · 20 = manager · 30 = admin · 40 = public.</p>
+      <table>
+        <thead><tr><th>Publisher</th><th>Stream</th><th>Read</th><th>Write</th><th>Admin</th><th>Messages</th></tr></thead>
+        <tbody id="streams-tbody"></tbody>
+      </table>
+      <p id="streams-empty" style="color:var(--muted);font-size:13px;margin-top:12px;display:none">No streams yet.</p>
+    </div>
+  </div>
+
+  <!-- Info tab -->
+  <div id="tab-info" style="display:none">
+    <div class="card">
+      <h3>Jet Info</h3>
+      <p class="desc">Runtime information about this Safecloud Jet instance.</p>
+      <table>
+        <tbody id="info-tbody"></tbody>
+      </table>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3>Embedding</h3>
+      <p class="desc">Drop this snippet into any page to embed a Safecloud stream:</p>
+      <pre id="embed-snippet" style="background:var(--bg);padding:12px;border-radius:6px;font-size:12px;overflow-x:auto;white-space:pre-wrap;color:var(--muted)">loading…</pre>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h3>Remove Admin Passkey</h3>
+      <p class="desc">Deletes the stored passkey. You will need to re-register on the next visit.</p>
+      <button class="btn btn-danger" onclick="confirmResetPasskey()">Reset Passkey</button>
+    </div>
+  </div>
+
+</main>
+
+<!-- ── ACL edit modal ── -->
+<div class="modal-bg" id="acl-modal">
+  <div class="modal">
+    <h3>Edit Stream Access</h3>
+    <p class="modal-hint" id="acl-modal-name">…</p>
+    <div class="field-row"><label>Read level</label><input id="acl-read"  type="number" min="0" max="40"></div>
+    <div class="field-row"><label>Write level</label><input id="acl-write" type="number" min="0" max="40"></div>
+    <div class="field-row"><label>Admin level</label><input id="acl-admin" type="number" min="0" max="40"></div>
+    <p class="modal-hint">0 = closed · 10 = members · 20 = manager · 30 = admin · 40 = public (open)</p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveAcl()">Save</button>
+    </div>
+  </div>
+</div>
+
+<script>
+var JET = location.origin;  // admin runs on the same origin as the Jet
+var _token = sessionStorage.getItem('sc_admin_token') || '';
+var _corsOrigins = [];
+var _editingStream = null;
+
+// ── Bootstrap ────────────────────────────────────────────────────────────────
+
+async function boot() {
+    var r = await api('GET', '/Streams/admin/status', null, true);
+    if (!r) return;
+
+    var registered = r.slots && r.slots.registered;
+    var loginLabel = document.getElementById('login-label');
+    var loginDesc  = document.getElementById('login-desc');
+    var loginBtn   = document.getElementById('login-btn');
+
+    if (!registered) {
+        loginDesc.textContent = 'No admin passkey registered. Click below to register your device as the Jet admin.';
+        loginLabel.textContent = 'Register Passkey';
+    } else {
+        loginDesc.textContent = 'Log in with your registered passkey to manage this Jet.';
+        loginLabel.textContent = 'Login with Passkey';
+    }
+    loginBtn.style.display = 'inline-flex';
+
+    // If we already have a token, try to use it
+    if (_token) {
+        var check = await api('GET', '/Streams/admin/cors');
+        if (check && check.slots) { showPanel(); return; }
+        // token expired — clear it
+        _token = '';
+        sessionStorage.removeItem('sc_admin_token');
+    }
+}
+
+// ── Auth ─────────────────────────────────────────────────────────────────────
+
+async function authAction() {
+    var r = await api('GET', '/Streams/admin/status', null, true);
+    if (!r) return;
+    if (r.slots && !r.slots.registered) await registerPasskey();
+    else await loginPasskey();
+}
+
+async function registerPasskey() {
+    setLoginErr('');
+    var opts = await api('GET', '/Streams/admin/register-options', null, true);
+    if (!opts || !opts.slots) return;
+    var s = opts.slots;
+    try {
+        var cred = await navigator.credentials.create({ publicKey: {
+            challenge:              b64uToArr(s.challenge),
+            rp:                     s.rp,
+            user:                   { id: Uint8Array.from(atob(s.user.id.replace(/-/g,'+').replace(/_/g,'/')), c=>c.charCodeAt(0)), name: s.user.name, displayName: s.user.displayName },
+            pubKeyCredParams:       s.pubKeyCredParams,
+            authenticatorSelection: s.authenticatorSelection,
+            timeout:                s.timeout
+        }});
+        var body = credToJson(cred);
+        var res = await api('POST', '/Streams/admin/register', body, true);
+        if (res && res.slots && res.slots.ok) {
+            showBanner('Passkey registered! Log in to continue.', 'ok');
+            setTimeout(loginPasskey, 800);
+        }
+    } catch (e) {
+        setLoginErr('Registration failed: ' + e.message);
+    }
+}
+
+async function loginPasskey() {
+    setLoginErr('');
+    var opts = await api('GET', '/Streams/admin/login-options', null, true);
+    if (!opts || !opts.slots) return;
+    var challenge = opts.slots.challenge;
+    try {
+        var assertion = await navigator.credentials.get({ publicKey: {
+            challenge: b64uToArr(challenge),
+            timeout:   60000,
+            userVerification: 'preferred'
+        }});
+        var body = credToJson(assertion);
+        var res  = await api('POST', '/Streams/admin/login', body, true);
+        if (res && res.slots && res.slots.token) {
+            _token = res.slots.token;
+            sessionStorage.setItem('sc_admin_token', _token);
+            showPanel();
+        } else {
+            setLoginErr('Login failed: ' + (res && res.slots && res.slots.error ? res.slots.error : 'Unknown error'));
+        }
+    } catch (e) {
+        setLoginErr('Login failed: ' + e.message);
+    }
+}
+
+function logout() {
+    _token = '';
+    sessionStorage.removeItem('sc_admin_token');
+    location.reload();
+}
+
+// ── Panel ────────────────────────────────────────────────────────────────────
+
+function showPanel() {
+    document.getElementById('login-card').style.display = 'none';
+    document.getElementById('header').style.display = 'flex';
+    document.getElementById('admin-panel').style.display = 'block';
+    document.getElementById('jet-origin').textContent = JET;
+    loadCors();
+    loadStreams();
+    loadInfo();
+}
+
+// ── Tabs ─────────────────────────────────────────────────────────────────────
+
+function showTab(name) {
+    ['cors','streams','info'].forEach(function(t) {
+        document.getElementById('tab-' + t).style.display = t === name ? '' : 'none';
+    });
+    document.querySelectorAll('.tab').forEach(function(el, i) {
+        el.classList.toggle('active', ['cors','streams','info'][i] === name);
+    });
+}
+
+// ── CORS management ───────────────────────────────────────────────────────────
+
+async function loadCors() {
+    var r = await api('GET', '/Streams/admin/cors');
+    if (!r || !r.slots) return;
+    _corsOrigins = r.slots.allowedOrigins || ['*'];
+    renderOrigins();
+}
+
+function renderOrigins() {
+    var list = document.getElementById('origin-list');
+    list.innerHTML = '';
+    _corsOrigins.forEach(function(o, i) {
+        var tag = document.createElement('span');
+        tag.className = 'origin-tag';
+        tag.innerHTML = '<span>' + esc(o) + '</span><button class="rm" title="Remove" onclick="removeOrigin(' + i + ')">×</button>';
+        list.appendChild(tag);
+    });
+}
+
+function addOrigin() {
+    var val = document.getElementById('origin-input').value.trim();
+    if (!val) return;
+    if (val !== '*') {
+        try { new URL(val); } catch (e) { showBanner('Invalid origin: ' + val, 'err'); return; }
+    }
+    if (!_corsOrigins.includes(val)) { _corsOrigins.push(val); renderOrigins(); }
+    document.getElementById('origin-input').value = '';
+}
+
+function removeOrigin(i) { _corsOrigins.splice(i, 1); renderOrigins(); }
+
+async function saveCors() {
+    var r = await api('PUT', '/Streams/admin/cors', { allowedOrigins: _corsOrigins });
+    if (r && r.slots && r.slots.ok) showBanner('CORS origins saved and applied.', 'ok');
+    else showBanner('Failed to save CORS: ' + (r && r.slots ? r.slots.error : 'unknown'), 'err');
+}
+
+// ── Streams management ────────────────────────────────────────────────────────
+
+async function loadStreams() {
+    var r = await api('GET', '/Streams/admin/streams');
+    if (!r || !r.slots) return;
+    var streams = r.slots.streams || [];
+    var tbody   = document.getElementById('streams-tbody');
+    var empty   = document.getElementById('streams-empty');
+    tbody.innerHTML = '';
+    if (!streams.length) { empty.style.display = ''; return; }
+    empty.style.display = 'none';
+    streams.forEach(function(s) {
+        var tr = document.createElement('tr');
+        tr.style.cursor = 'pointer';
+        tr.onclick = function() { openAclModal(s); };
+        tr.innerHTML =
+            '<td style="font-family:monospace">' + esc(s.publisherId) + '</td>' +
+            '<td style="font-family:monospace;color:var(--accent)">' + esc(s.name) + '</td>' +
+            '<td>' + levelBadge(s.readLevel) + '</td>' +
+            '<td>' + levelBadge(s.writeLevel) + '</td>' +
+            '<td>' + levelBadge(s.adminLevel) + '</td>' +
+            '<td style="color:var(--muted)">' + (s.messageCount || 0) + '</td>';
+        tbody.appendChild(tr);
+    });
+}
+
+function levelBadge(lvl) {
+    var label = { 0:'closed', 10:'member', 20:'manager', 30:'admin', 40:'public' }[lvl] || lvl;
+    return '<span class="level-badge level-' + (lvl || 0) + '">' + label + '</span>';
+}
+
+function openAclModal(s) {
+    _editingStream = s;
+    document.getElementById('acl-modal-name').textContent = s.publisherId + ' / ' + s.name;
+    document.getElementById('acl-read').value  = s.readLevel;
+    document.getElementById('acl-write').value = s.writeLevel;
+    document.getElementById('acl-admin').value = s.adminLevel;
+    document.getElementById('acl-modal').classList.add('open');
+}
+
+function closeModal() {
+    document.getElementById('acl-modal').classList.remove('open');
+    _editingStream = null;
+}
+
+async function saveAcl() {
+    if (!_editingStream) return;
+    var r = await api('PUT', '/Streams/admin/stream-access', {
+        publisherId: _editingStream.publisherId,
+        streamName:  _editingStream.name,
+        readLevel:   parseInt(document.getElementById('acl-read').value,  10),
+        writeLevel:  parseInt(document.getElementById('acl-write').value, 10),
+        adminLevel:  parseInt(document.getElementById('acl-admin').value, 10)
+    });
+    closeModal();
+    if (r && r.slots && r.slots.ok) { showBanner('Stream access levels updated.', 'ok'); loadStreams(); }
+    else showBanner('Failed: ' + (r && r.slots ? r.slots.error : 'unknown'), 'err');
+}
+
+// ── Info tab ─────────────────────────────────────────────────────────────────
+
+async function loadInfo() {
+    var tbody = document.getElementById('info-tbody');
+    var rows  = [
+        ['Jet URL',    JET],
+        ['Version',    '3.7.0'],
+        ['Auth',       'WebAuthn passkey (P-256 ECDSA)'],
+        ['Session',    '8 hours']
+    ];
+    tbody.innerHTML = rows.map(function(r) {
+        return '<tr><td style="color:var(--muted);width:140px">' + r[0] + '</td><td style="font-family:monospace;font-size:12px">' + esc(String(r[1])) + '</td></tr>';
+    }).join('');
+
+    // Embed snippet
+    document.getElementById('embed-snippet').textContent =
+        '<script src="' + JET + '/safecloud-embed.js"><\/script>\n' +
+        '<script>\n' +
+        '  var sc = Safecloud.connect({\n' +
+        '    jetUrl:      "' + JET + '",\n' +
+        '    publisherId: "alice",\n' +
+        '    streamName:  "docs/my-doc",\n' +
+        '    onMessage:   function(msg) { console.log(msg); }\n' +
+        '  });\n' +
+        '<\/script>';
+}
+
+async function confirmResetPasskey() {
+    if (!confirm('Delete the admin passkey? You will need to re-register.')) return;
+    var r = await api('DELETE', '/Streams/admin/passkey');
+    if (r && r.slots && r.slots.ok) { showBanner('Passkey removed. Logging out.', 'ok'); setTimeout(logout, 1200); }
+    else showBanner('Could not remove passkey (not implemented yet — delete local/admin-cred.json manually)', 'err');
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+async function api(method, url, body, noAuth) {
+    var opts = { method: method, headers: { 'Content-Type': 'application/json' } };
+    if (!noAuth && _token) opts.headers['Authorization'] = 'Bearer ' + _token;
+    if (body) opts.body = JSON.stringify(body);
+    try {
+        var res  = await fetch(JET + url, opts);
+        var json = await res.json();
+        if (res.status === 401 && !noAuth) {
+            // Session expired
+            _token = '';
+            sessionStorage.removeItem('sc_admin_token');
+            showBanner('Session expired — please log in again.', 'err');
+            setTimeout(function() { location.reload(); }, 1500);
+            return null;
+        }
+        if (!res.ok && json.slots && json.slots.error) {
+            if (!noAuth) showBanner(json.slots.error, 'err');
+        }
+        return json;
+    } catch (e) {
+        if (!noAuth) showBanner('Network error: ' + e.message, 'err');
+        return null;
+    }
+}
+
+function showBanner(msg, type) {
+    var area = document.getElementById('banner-area');
+    var el   = document.createElement('div');
+    el.className = 'banner banner-' + (type || 'info');
+    el.textContent = msg;
+    area.innerHTML = '';
+    area.appendChild(el);
+    setTimeout(function() { el.style.opacity = '0'; el.style.transition = 'opacity .4s'; setTimeout(function() { el.remove(); }, 450); }, 4000);
+}
+
+function setLoginErr(msg) { document.getElementById('login-err').textContent = msg; }
+
+function esc(str) {
+    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// Convert base64url string to Uint8Array
+function b64uToArr(b64u) {
+    var s = b64u.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    var bin = atob(s);
+    return Uint8Array.from(bin, function(c) { return c.charCodeAt(0); });
+}
+
+// Serialise a PublicKeyCredential for JSON POST
+function credToJson(cred) {
+    function b64u(buf) {
+        var bytes = new Uint8Array(buf);
+        var bin = '';
+        bytes.forEach(function(b) { bin += String.fromCharCode(b); });
+        return btoa(bin).replace(/\+/g,'-').replace(/\//g,'_').replace(/=/g,'');
+    }
+    var obj = { id: cred.id, type: cred.type, response: {} };
+    var r = cred.response;
+    if (r.clientDataJSON)    obj.response.clientDataJSON    = b64u(r.clientDataJSON);
+    if (r.attestationObject) obj.response.attestationObject = b64u(r.attestationObject);
+    if (r.authenticatorData) obj.response.authenticatorData = b64u(r.authenticatorData);
+    if (r.signature)         obj.response.signature         = b64u(r.signature);
+    if (r.userHandle)        obj.response.userHandle        = b64u(r.userHandle);
+    return obj;
+}
+
+// Close modal on background click
+document.getElementById('acl-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeModal();
+});
+
+// Boot
+boot();
+</script>
+</body>
+</html>

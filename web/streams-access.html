@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Streams Access Model</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* ── Tokens ── */
+:root {
+  --bg:       #0d1117;
+  --surface:  #161b22;
+  --border:   #30363d;
+  --fg:       #e6edf3;
+  --muted:    #8b949e;
+  --accent:   #58a6ff;
+  --green:    #3fb950;
+  --yellow:   #d29922;
+  --red:      #f85149;
+  --purple:   #bc8cff;
+  --r:        #1a2436;  /* read chip bg  */
+  --w:        #1b2a1b;  /* write chip bg */
+  --a:        #261a35;  /* admin chip bg */
+  color-scheme: dark;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  --bg:      #f6f8fa;
+  --surface: #ffffff;
+  --border:  #d0d7de;
+  --fg:      #1f2328;
+  --muted:   #656d76;
+  --accent:  #0969da;
+  --green:   #1a7f37;
+  --yellow:  #9a6700;
+  --red:     #cf222e;
+  --purple:  #8250df;
+  --r:       #dbeafe;
+  --w:       #dcfce7;
+  --a:       #f3e8ff;
+  color-scheme: light;
+}}
+:root[data-theme="light"] {
+  --bg:#f6f8fa;--surface:#fff;--border:#d0d7de;--fg:#1f2328;--muted:#656d76;
+  --accent:#0969da;--green:#1a7f37;--yellow:#9a6700;--red:#cf222e;--purple:#8250df;
+  --r:#dbeafe;--w:#dcfce7;--a:#f3e8ff;color-scheme:light;
+}
+html, body { overflow-x: hidden; max-width: 100vw; margin: 0; }
+*, *::before, *::after { box-sizing: border-box; }
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.65;
+  background: var(--bg);
+  color: var(--fg);
+  display: flex;
+  min-height: 100vh;
+}
+
+/* ── Layout ── */
+#sidebar {
+  width: 240px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  padding: 28px 16px;
+  font-size: 13px;
+}
+#sidebar h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 0 0 8px; }
+#toc { list-style: none; margin: 0; padding: 0; }
+#toc li { margin: 2px 0; }
+#toc a {
+  display: block;
+  padding: 4px 8px;
+  border-radius: 4px;
+  color: var(--muted);
+  text-decoration: none;
+  transition: color .15s, background .15s;
+}
+#toc a:hover, #toc a.active { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+#toc a.active { font-weight: 600; }
+#toc .sub { padding-left: 20px; }
+
+main {
+  flex: 1;
+  min-width: 0;
+  padding: max(32px, env(safe-area-inset-top, 0px)) max(32px, env(safe-area-inset-right, 0px))
+           max(48px, env(safe-area-inset-bottom, 0px)) max(32px, env(safe-area-inset-left, 0px));
+  max-width: 860px;
+}
+h1 { font-size: 2rem; font-weight: 700; margin: 0 0 4px; }
+.byline { color: var(--muted); font-size: 13px; margin-bottom: 40px; }
+
+section { margin-bottom: 56px; scroll-margin-top: 24px; }
+h2 { font-size: 1.25rem; font-weight: 600; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin: 0 0 20px; }
+h3 { font-size: 1rem; font-weight: 600; margin: 24px 0 10px; }
+p { margin: 0 0 14px; }
+ul, ol { margin: 0 0 14px; padding-left: 24px; }
+li { margin-bottom: 4px; }
+
+/* ── Level tables ── */
+.level-table { width: 100%; border-collapse: collapse; margin-bottom: 20px; font-size: 13.5px; }
+.level-table th, .level-table td { padding: 7px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+.level-table th { font-size: 11px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); background: var(--surface); }
+.level-table tr:last-child td { border-bottom: none; }
+.lv { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+.chip-r { background: var(--r); color: var(--accent);  font-size:12px; padding:1px 7px; border-radius:999px; font-weight:500; white-space:nowrap; }
+.chip-w { background: var(--w); color: var(--green);   font-size:12px; padding:1px 7px; border-radius:999px; font-weight:500; white-space:nowrap; }
+.chip-a { background: var(--a); color: var(--purple);  font-size:12px; padding:1px 7px; border-radius:999px; font-weight:500; white-space:nowrap; }
+
+/* ── Code ── */
+pre, code { font-family: 'JetBrains Mono', monospace; }
+pre {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 20px;
+  overflow-x: auto;
+  font-size: 13px;
+  line-height: 1.6;
+  margin: 0 0 20px;
+}
+code { font-size: .9em; background: color-mix(in srgb, var(--muted) 15%, transparent); padding: 1px 5px; border-radius: 3px; }
+
+/* ── Route blocks ── */
+.route-block { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 20px; overflow: hidden; }
+.route-block header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-family: 'JetBrains Mono', monospace; font-size: 13px;
+}
+.method { font-weight: 700; min-width: 54px; }
+.method.get    { color: var(--accent); }
+.method.post   { color: var(--green); }
+.method.patch  { color: var(--yellow); }
+.method.delete { color: var(--red); }
+.route-path { flex: 1; }
+.guard-pill {
+  font-family: 'Inter', sans-serif; font-size: 11px;
+  padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+}
+.guard-r { background: var(--r); color: var(--accent); }
+.guard-w { background: var(--w); color: var(--green); }
+.guard-a { background: var(--a); color: var(--purple); }
+.route-block section { padding: 12px 16px; margin: 0; border-bottom: none; }
+.route-block section p:last-child { margin-bottom: 0; }
+.route-block pre { margin: 10px 0 0; border-radius: 0; border: none; border-top: 1px solid var(--border); }
+
+/* ── Diagram ── */
+.diagram-wrap { overflow-x: auto; margin-bottom: 20px; }
+svg text { font-family: 'JetBrains Mono', monospace; }
+
+/* ── Callout ── */
+.callout { border-left: 3px solid var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); padding: 12px 16px; border-radius: 0 6px 6px 0; margin-bottom: 20px; font-size: 14px; }
+.callout.warn { border-color: var(--yellow); background: color-mix(in srgb, var(--yellow) 8%, transparent); }
+
+/* ── Mobile ── */
+@media (max-width: 700px) {
+  body { flex-direction: column; }
+  #sidebar {
+    position: sticky; top: 0; width: 100%; height: auto; z-index: 10;
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    overflow-x: auto; overflow-y: visible;
+    border-right: none; border-bottom: 1px solid var(--border);
+    padding: 10px 16px; white-space: nowrap;
+  }
+  #sidebar h2 { margin: 0; }
+  #toc { display: flex; flex-wrap: wrap; gap: 4px; }
+  #toc li { margin: 0; }
+  #toc a { padding: 3px 8px; }
+  #toc .sub { padding-left: 8px; }
+  main { padding: 20px 16px 40px; }
+}
+</style>
+</head>
+<body>
+
+<nav id="sidebar">
+  <h2>Contents</h2>
+  <ul id="toc">
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#levels" class="sub">Level constants</a></li>
+    <li><a href="#calculation" class="sub">Access calculation</a></li>
+    <li><a href="#inherit" class="sub">inheritAccess</a></li>
+    <li><a href="#routes">Routes</a></li>
+    <li><a href="#routes-core" class="sub">Core routes</a></li>
+    <li><a href="#routes-access" class="sub">Access management</a></li>
+    <li><a href="#routes-relate" class="sub">Relate / folders</a></li>
+    <li><a href="#examples">Examples</a></li>
+    <li><a href="#defaults">Default values</a></li>
+  </ul>
+</nav>
+
+<main>
+  <h1>Streams Access Model</h1>
+  <p class="byline">Safecloud 4.0 · <code>classes/Safecloud/Streams.js</code></p>
+
+  <section id="overview">
+    <h2>Overview</h2>
+    <p>Every stream carries three integer thresholds — <strong>readLevel</strong>, <strong>writeLevel</strong>, <strong>adminLevel</strong> — that define what the general public can do without a specific grant. Per-user grants in the <code>access</code> table layer on top. For folder hierarchies, a stream can inherit its parent's access via the <code>inheritAccess</code> JSON field, optionally capped per axis.</p>
+    <p>All three systems compose by taking the maximum: a user's effective level on any axis is the highest level granted by any applicable source.</p>
+
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 700 160" width="700" height="160" role="img" aria-label="Access source priority diagram">
+        <!-- boxes -->
+        <rect x="10"  y="40" width="140" height="80" rx="6" fill="none" stroke="#30363d"/>
+        <rect x="180" y="40" width="140" height="80" rx="6" fill="none" stroke="#30363d"/>
+        <rect x="350" y="40" width="140" height="80" rx="6" fill="none" stroke="#30363d"/>
+        <rect x="520" y="40" width="160" height="80" rx="6" fill="none" stroke="#58a6ff" stroke-width="1.5"/>
+        <!-- labels -->
+        <text x="80"  y="78"  text-anchor="middle" font-size="12" fill="#8b949e">Stream defaults</text>
+        <text x="80"  y="96"  text-anchor="middle" font-size="10" fill="#8b949e">readLevel / writeLevel</text>
+        <text x="80"  y="110" text-anchor="middle" font-size="10" fill="#8b949e">adminLevel on stream row</text>
+        <text x="250" y="78"  text-anchor="middle" font-size="12" fill="#8b949e">inheritAccess chain</text>
+        <text x="250" y="96"  text-anchor="middle" font-size="10" fill="#8b949e">parent streams, capped</text>
+        <text x="250" y="110" text-anchor="middle" font-size="10" fill="#8b949e">per axis, recursive</text>
+        <text x="420" y="78"  text-anchor="middle" font-size="12" fill="#8b949e">access table row</text>
+        <text x="420" y="96"  text-anchor="middle" font-size="10" fill="#8b949e">direct grant for</text>
+        <text x="420" y="110" text-anchor="middle" font-size="10" fill="#8b949e">ofUserId</text>
+        <text x="600" y="74"  text-anchor="middle" font-size="12" fill="#58a6ff" font-weight="600">Publisher</text>
+        <text x="600" y="92"  text-anchor="middle" font-size="10" fill="#58a6ff">full ownership</text>
+        <text x="600" y="106" text-anchor="middle" font-size="10" fill="#58a6ff">40 / 40 / 40</text>
+        <!-- arrows -->
+        <path d="M150 80 L178 80" fill="none" stroke="#30363d" stroke-width="1.5" marker-end="url(#arr)"/>
+        <path d="M320 80 L348 80" fill="none" stroke="#30363d" stroke-width="1.5" marker-end="url(#arr)"/>
+        <path d="M490 80 L518 80" fill="none" stroke="#30363d" stroke-width="1.5" marker-end="url(#arr)"/>
+        <!-- MAX labels -->
+        <text x="162" y="74" text-anchor="middle" font-size="9" fill="#3fb950">MAX</text>
+        <text x="332" y="74" text-anchor="middle" font-size="9" fill="#3fb950">MAX</text>
+        <text x="502" y="74" text-anchor="middle" font-size="9" fill="#3fb950">MAX</text>
+        <defs>
+          <marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <path d="M0,0 L0,6 L6,3 z" fill="#30363d"/>
+          </marker>
+        </defs>
+        <text x="350" y="150" text-anchor="middle" font-size="11" fill="#8b949e">← lower priority · · · · · · · · higher priority →</text>
+      </svg>
+    </div>
+  </section>
+
+  <section id="levels">
+    <h2>Level constants</h2>
+
+    <h3><span class="chip-r">READ_LEVEL</span></h3>
+    <table class="level-table">
+      <thead><tr><th>Name</th><th>Value</th><th>What it allows</th></tr></thead>
+      <tbody>
+        <tr><td><code>none</code></td><td class="lv">0</td><td>No access; stream existence is not revealed.</td></tr>
+        <tr><td><code>see</code></td><td class="lv">10</td><td>Knows the stream exists (title visible in search).</td></tr>
+        <tr><td><code>teaser</code></td><td class="lv">15</td><td>Title and thumbnail; content not visible. Useful for "request access" flows.</td></tr>
+        <tr><td><code>relations</code></td><td class="lv">20</td><td>Which other streams this one relates to.</td></tr>
+        <tr><td><code>content</code></td><td class="lv">23</td><td>Full stream content (the document body / sheet data).</td></tr>
+        <tr><td><code>fields</code></td><td class="lv">25</td><td>Extra attribute fields.</td></tr>
+        <tr><td><code>participants</code></td><td class="lv">30</td><td>Participant list and counts.</td></tr>
+        <tr><td><code>messages</code></td><td class="lv">35</td><td>Full message history.</td></tr>
+        <tr><td><code>max</code></td><td class="lv">40</td><td>Alias for 40; used in caps and grants to mean "no restriction".</td></tr>
+      </tbody>
+    </table>
+
+    <h3><span class="chip-w">WRITE_LEVEL</span></h3>
+    <table class="level-table">
+      <thead><tr><th>Name</th><th>Value</th><th>What it allows</th></tr></thead>
+      <tbody>
+        <tr><td><code>none</code></td><td class="lv">0</td><td>No write access.</td></tr>
+        <tr><td><code>join</code></td><td class="lv">10</td><td>Subscribe / become a participant.</td></tr>
+        <tr><td><code>vote</code></td><td class="lv">13</td><td>Cast a vote.</td></tr>
+        <tr><td><code>suggest</code></td><td class="lv">15</td><td>Suggest edits (not yet committed).</td></tr>
+        <tr><td><code>ephemeral</code></td><td class="lv">16</td><td>Post transient messages (not persisted).</td></tr>
+        <tr><td><code>contribute</code></td><td class="lv">18</td><td>Comment / contribute (persisted but not full post).</td></tr>
+        <tr><td><code>fork</code></td><td class="lv">19</td><td>Fork the stream.</td></tr>
+        <tr><td><code>post</code></td><td class="lv">20</td><td>Append a message. The standard "can write here" gate.</td></tr>
+        <tr><td><code>relate</code></td><td class="lv">23</td><td>Relate this stream to another (put a file in a folder).</td></tr>
+        <tr><td><code>relations</code></td><td class="lv">25</td><td>Manage the stream's relation list.</td></tr>
+        <tr><td><code>edit</code></td><td class="lv">30</td><td>Edit stream content, title, attributes via PATCH /stream.</td></tr>
+        <tr><td><code>closePending</code></td><td class="lv">35</td><td>Mark stream as close-pending.</td></tr>
+        <tr><td><code>close</code></td><td class="lv">40</td><td>Close / archive the stream.</td></tr>
+      </tbody>
+    </table>
+
+    <h3><span class="chip-a">ADMIN_LEVEL</span></h3>
+    <table class="level-table">
+      <thead><tr><th>Name</th><th>Value</th><th>What it allows</th></tr></thead>
+      <tbody>
+        <tr><td><code>none</code></td><td class="lv">0</td><td>No admin access.</td></tr>
+        <tr><td><code>tell</code></td><td class="lv">10</td><td>Tell others about the stream.</td></tr>
+        <tr><td><code>share</code></td><td class="lv">15</td><td>Generate share links.</td></tr>
+        <tr><td><code>invite</code></td><td class="lv">20</td><td>Invite specific users / issue access rows via POST /access.</td></tr>
+        <tr><td><code>manage</code></td><td class="lv">30</td><td>Change ACL defaults, inheritAccess, rename via PATCH /stream.</td></tr>
+        <tr><td><code>own</code></td><td class="lv">40</td><td>Full ownership; can grant up to adminLevel 40.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="calculation">
+    <h2>Access calculation</h2>
+    <p><code>calculateAccess(byUserId, stream)</code> is the single source of truth. It runs synchronously (better-sqlite3) and returns <code>{ readLevel, writeLevel, adminLevel }</code>.</p>
+
+    <h3>Algorithm</h3>
+    <ol>
+      <li><strong>Publisher shortcut.</strong> If <code>byUserId === stream.publisherId</code>, return <code>{ 40, 40, 40 }</code> immediately.</li>
+      <li><strong>Stream defaults.</strong> Start with <code>rl = stream.readLevel</code>, <code>wl = stream.writeLevel</code>, <code>al = stream.adminLevel</code>.</li>
+      <li><strong>Direct access row.</strong> Query <code>access</code> table for <code>ofUserId = byUserId</code>. For each matching row, <code>rl = max(rl, row.readLevel)</code>, and so on per axis.</li>
+      <li><strong>inheritAccess chain.</strong> Parse <code>stream.inheritAccess</code> (JSON array). For each entry <code>[parentPub, parentName, [rlCap, wlCap, alCap]]</code>, recursively call <code>calculateAccess</code> on the parent stream, apply the caps, then <code>rl = max(rl, min(parent.readLevel, rlCap))</code>, etc. Caps default to 40 when omitted.</li>
+    </ol>
+    <p>Cycle detection: a visited-key map (by <code>publisherId + streamName</code>) ensures circular inheritance returns <code>{ 0, 0, 0 }</code> for the cycle node rather than looping.</p>
+
+    <pre>// Example — compute effective access for a user on a doc stream
+var Streams = require('./Safecloud/Streams');
+var stream  = /* stream row from DB */;
+var access  = Streams.calculateAccess('user-alice', stream);
+// access = { readLevel: 35, writeLevel: 20, adminLevel: 15 }</pre>
+  </section>
+
+  <section id="inherit">
+    <h2>inheritAccess — folder → file access cascade</h2>
+    <p>When a file stream is put into a folder, the client may request that access on the folder cascade into the file. This is stored as an array of entries in the file stream's <code>inheritAccess</code> JSON column.</p>
+
+    <h3>Schema of an inheritAccess entry</h3>
+    <pre>[parentPublisherId, parentStreamName]
+// or with per-axis caps:
+[parentPublisherId, parentStreamName, [readLevelCap, writeLevelCap, adminLevelCap]]</pre>
+    <p>A cap of <code>40</code> (or omitting the caps array entirely) imposes no restriction. A cap of <code>23</code> on the write axis means: even if the caller has <code>edit(30)</code> on the parent folder, they only inherit up to <code>content(23)</code> on this file.</p>
+
+    <h3>How it works in practice</h3>
+    <p>Alice has <code>readLevel=35, writeLevel=20</code> on the folder <code>docs/files-finance</code>. The file <code>docs/file-q3-report</code> has <code>inheritAccess = [["pub", "docs/files-finance"]]</code>. When <code>calculateAccess("alice", fileStream)</code> runs, it fetches the folder stream, calls <code>calculateAccess</code> on it (getting 35/20/0), applies default caps (40/40/40), and takes the max with the file's own defaults. Alice ends up with read=35, write=20 on the file without needing a direct access row on it.</p>
+
+    <div class="callout">
+      <strong>Direct rows always win over inheritance.</strong> If Alice has a direct access row on the file granting her <code>readLevel=10</code> (teaser only), the max of 10 and 35 (inherited) gives 35 — inheritance still wins here because we MAX. The only way to restrict a user below what inheritance would give is to remove them from the parent's access entirely and not add an inheritAccess entry.
+    </div>
+
+    <h3>Multiple parents</h3>
+    <p>A file can inherit from multiple folders simultaneously (e.g. it's bookmarked in two places). Each entry in the array is resolved independently and the per-axis maxes are accumulated.</p>
+
+    <h3>Capping inherited write access</h3>
+    <p>A common pattern: a folder grants editors <code>writeLevel=30 (edit)</code>, but you want folder members to have only <code>post(20)</code> on a pinned file they should comment on but not restructure:</p>
+    <pre>inheritAccess = [["pub", "docs/files-finance", [40, 20, 0]]]
+// read: uncapped (40) → inherits up to folder's readLevel
+// write: capped at post(20)
+// admin: capped at 0 → no admin inheritance at all</pre>
+  </section>
+
+  <section id="routes">
+    <h2>Routes</h2>
+    <p>All routes are mounted at both <code>/Streams/…</code> and <code>/action.php/Streams/…</code>. <code>byUserId</code> is taken from the <code>X-User-Id</code> header, <code>?byUserId=</code> query param, or POST body — in that priority order.</p>
+
+    <section id="routes-core">
+      <h3>Core routes</h3>
+
+      <div class="route-block">
+        <header>
+          <span class="method get">GET</span>
+          <span class="route-path">/Streams/stream</span>
+          <span class="guard-pill guard-r">readLevel ≥ see (10)</span>
+        </header>
+        <section>
+          <p>Returns stream metadata. Fields are stripped above the caller's read level: <code>content</code> requires <code>content(23)</code>; <code>attributes</code> requires <code>fields(25)</code>; participant counts require <code>participants(30)</code>. Returns 404 (not 403) when <code>readLevel &lt; see(10)</code> to avoid leaking stream existence.</p>
+          <p>Response includes an <code>access</code> object with the caller's computed <code>{ readLevel, writeLevel, adminLevel }</code>.</p>
+        </section>
+      </div>
+
+      <div class="route-block">
+        <header>
+          <span class="method post">POST</span>
+          <span class="route-path">/Streams/stream</span>
+          <span class="guard-pill guard-w">open (any authenticated user)</span>
+        </header>
+        <section>
+          <p>Creates a stream. The creator (<code>byUserId</code>) is automatically granted a direct access row of <code>40/40/40</code> in the <code>access</code> table, unless they are already the stream's <code>publisherId</code> (which grants full access implicitly).</p>
+          <p>Body fields: <code>publisherId</code>, <code>name</code>, <code>type</code>, <code>title</code>, <code>content</code>, <code>attributes</code>, <code>readLevel</code>, <code>writeLevel</code>, <code>adminLevel</code>. ACL defaults follow the values in <strong>Default values</strong> below when omitted.</p>
+        </section>
+      </div>
+
+      <div class="route-block">
+        <header>
+          <span class="method post">POST</span>
+          <span class="route-path">/Streams/message</span>
+          <span class="guard-pill guard-w">writeLevel ≥ post (20)</span>
+        </header>
+        <section>
+          <p>Appends a message. Requires <code>writeLevel ≥ 20</code> on the target stream. Body: <code>publisherId</code>, <code>streamName</code>, <code>type</code>, <code>content</code>, <code>idempotencyKey</code> (optional UUID for exactly-once delivery).</p>
+        </section>
+      </div>
+
+      <div class="route-block">
+        <header>
+          <span class="method get">GET</span>
+          <span class="route-path">/Streams/message</span>
+          <span class="guard-pill guard-r">readLevel ≥ messages (35)</span>
+        </header>
+        <section>
+          <p>Fetch a single message (<code>?ordinal=N</code>) or a range (<code>?min=&max=&limit=&ascending=</code>). Requires <code>readLevel ≥ 35</code>.</p>
+        </section>
+      </div>
+
+      <div class="route-block">
+        <header>
+          <span class="method get">GET</span>
+          <span class="route-path">/Streams/messages</span>
+          <span class="guard-pill guard-r">readLevel ≥ messages (35)</span>
+        </header>
+        <section>
+          <p>Pull-replication alias. Accepts <code>?after=N&limit=L</code>. Same access gate as <code>/message</code>.</p>
+        </section>
+      </div>
+
+      <div class="route-block">
+        <header>
+          <span class="method post">POST</span>
+          <span class="route-path">/Streams/subscribe</span>
+          <span class="guard-pill guard-w">writeLevel ≥ join (10)</span>
+        </header>
+        <section>
+          <p>Become a participant and subscribe to push notifications. Requires <code>writeLevel ≥ 10</code>.</p>
+        </section>
+      </div>
+
+      <div class="route-block">
+        <header>
+          <span class="method patch">PATCH</span>
+          <span class="route-path">/Streams/stream</span>
+          <span class="guard-pill guard-w">writeLevel ≥ edit (30) for content</span>
+          <span class="guard-pill guard-a">adminLevel ≥ manage (30) for ACLs</span>
+        </header>
+        <section>
+          <p>Update a stream in place. Content fields (<code>title</code>, <code>content</code>, <code>attributes</code>) require <code>writeLevel ≥ 30</code>. ACL fields (<code>readLevel</code>, <code>writeLevel</code>, <code>adminLevel</code>, <code>inheritAccess</code>) require <code>adminLevel ≥ 30</code>. Both checks run if both kinds of fields are present.</p>
+        </section>
+      </div>
+    </section>
+
+    <section id="routes-access">
+      <h3>Access management</h3>
+
+      <div class="route-block">
+        <header>
+          <span class="method get">GET</span>
+          <span class="route-path">/Streams/access</span>
+          <span class="guard-pill guard-a">adminLevel ≥ invite (20)</span>
+        </header>
+        <section>
+          <p>List all direct access rows for a stream. Query: <code>?publisherId=&streamName=</code>.</p>
+        </section>
+      </div>
+
+      <div class="route-block">
+        <header>
+          <span class="method post">POST</span>
+          <span class="route-path">/Streams/access</span>
+          <span class="guard-pill guard-a">adminLevel ≥ invite (20)</span>
+        </header>
+        <section>
+          <p>Grant a direct access row to <code>ofUserId</code>. The granting user cannot issue a level higher than their own on any axis — the server takes <code>min(requested, grantor's level)</code> silently.</p>
+          <p>Body: <code>{ publisherId, streamName, ofUserId, readLevel, writeLevel, adminLevel }</code>. Upserts (updates if row already exists).</p>
+        </section>
+      </div>
+
+      <div class="route-block">
+        <header>
+          <span class="method delete">DELETE</span>
+          <span class="route-path">/Streams/access</span>
+          <span class="guard-pill guard-a">adminLevel ≥ invite (20)</span>
+        </header>
+        <section>
+          <p>Revoke a user's direct access row. Body: <code>{ publisherId, streamName, ofUserId }</code>. Returns 404 if no row exists. After revocation, the user falls back to public stream defaults and any inheritAccess cascade.</p>
+        </section>
+      </div>
+    </section>
+
+    <section id="routes-relate">
+      <h3>Relate — putting files in folders</h3>
+
+      <div class="route-block">
+        <header>
+          <span class="method post">POST</span>
+          <span class="route-path">/Streams/relate</span>
+          <span class="guard-pill guard-w">writeLevel ≥ relate (23) on child</span>
+        </header>
+        <section>
+          <p>Relates a child stream (the file) to a parent stream (the folder). The key optional field is <code>inheritAccess</code> — when truthy, the parent's coordinates are appended to the child's <code>inheritAccess</code> JSON array, so anyone with access to the folder automatically cascades that access down to this file.</p>
+          <p>Body:</p>
+<pre>{
+  "publisherId":   "alice",           // child stream's publisher
+  "streamName":    "docs/file-q3",    // child stream
+  "toPublisherId": "alice",           // parent (folder) publisher
+  "toStreamName":  "docs/files-finance",
+  "inheritAccess": true,              // checkbox — cascade parent access
+  "caps":          [40, 20, 0]        // optional per-axis caps [read, write, admin]
+                                      // 40 = uncapped; 0 = no inheritance on that axis
+}</pre>
+          <p>Also posts a <code>Streams/relate</code> message on the child stream so the relation appears in the message log and can be subscribed to. If the same parent is already listed in <code>inheritAccess</code>, the entry is replaced (not duplicated).</p>
+        </section>
+      </div>
+
+      <div class="route-block">
+        <header>
+          <span class="method delete">DELETE</span>
+          <span class="route-path">/Streams/relate</span>
+          <span class="guard-pill guard-a">adminLevel ≥ manage (30) on child</span>
+        </header>
+        <section>
+          <p>Removes a specific entry from the child stream's <code>inheritAccess</code> array. Body: <code>{ publisherId, streamName, toPublisherId, toStreamName }</code>. Returns 404 if the entry does not exist.</p>
+        </section>
+      </div>
+    </section>
+  </section>
+
+  <section id="examples">
+    <h2>Examples</h2>
+
+    <h3>Google Suite parity — doc sharing</h3>
+    <p>Bob wants to share a doc with Carol as an editor and Dave as a viewer.</p>
+    <pre>// 1. Grant Carol edit access
+POST /Streams/access
+{ "publisherId": "bob", "streamName": "docs/file-proposal",
+  "ofUserId": "carol", "readLevel": 35, "writeLevel": 30, "adminLevel": 0 }
+
+// 2. Grant Dave read access
+POST /Streams/access
+{ "publisherId": "bob", "streamName": "docs/file-proposal",
+  "ofUserId": "dave", "readLevel": 35, "writeLevel": 0, "adminLevel": 0 }
+
+// 3. Revoke Dave later
+DELETE /Streams/access
+{ "publisherId": "bob", "streamName": "docs/file-proposal", "ofUserId": "dave" }</pre>
+
+    <h3>Folder access cascade</h3>
+    <p>Bob creates a finance folder and puts the Q3 report into it, inheriting access.</p>
+    <pre>// 1. Grant Carol editor access on the folder
+POST /Streams/access
+{ "publisherId": "bob", "streamName": "docs/files-finance",
+  "ofUserId": "carol", "readLevel": 35, "writeLevel": 30, "adminLevel": 15 }
+
+// 2. Put the file in the folder and inherit access (the checkbox)
+POST /Streams/relate
+{ "publisherId":   "bob",
+  "streamName":    "docs/file-q3",
+  "toPublisherId": "bob",
+  "toStreamName":  "docs/files-finance",
+  "inheritAccess": true }
+
+// Carol can now read and edit docs/file-q3 without an explicit row on it.
+// If Bob later removes the relate entry, Carol loses that cascaded access.</pre>
+
+    <h3>Read access on a private stream</h3>
+    <pre>// Create a private doc (no public read)
+POST /Streams/stream
+{ "publisherId": "alice", "name": "docs/diary",
+  "readLevel": 0, "writeLevel": 0, "adminLevel": 0 }
+
+// GET /Streams/stream?publisherId=alice&streamName=docs/diary
+// → 404 for everyone except alice (the publisher)
+// alice gets 40/40/40 from the publisher shortcut, sees the stream normally.</pre>
+  </section>
+
+  <section id="defaults">
+    <h2>Default values</h2>
+    <p>When creating a stream without specifying ACL levels, the server applies these defaults. They match the convention in Qbix Streams:</p>
+    <table class="level-table">
+      <thead><tr><th>Field</th><th>Default</th><th>Meaning</th></tr></thead>
+      <tbody>
+        <tr><td><code>readLevel</code></td><td class="lv">40</td><td>Public read — anyone can read messages.</td></tr>
+        <tr><td><code>writeLevel</code></td><td class="lv">10</td><td>Public join — anyone can subscribe/join.</td></tr>
+        <tr><td><code>adminLevel</code></td><td class="lv">20</td><td>Invite only — only people with an access row at invite(20)+ can manage invites.</td></tr>
+      </tbody>
+    </table>
+    <p>For a private document (a draft, a private folder), set <code>readLevel=0, writeLevel=0, adminLevel=0</code> at creation. The creating user gets a direct access row of 40/40/40 regardless.</p>
+
+    <div class="callout warn">
+      <strong>Migration note.</strong> Existing streams created before this access layer was enforced have <code>readLevel=40</code> (public) by default and will continue to behave as before — they are open to anyone. No migration is needed; the enforcement is additive.
+    </div>
+  </section>
+</main>
+
+<script>
+// Scroll-spy TOC
+(function () {
+  var links = document.querySelectorAll('#toc a');
+  var sections = [];
+  links.forEach(function (a) {
+    var id = a.getAttribute('href').slice(1);
+    var el = document.getElementById(id);
+    if (el) sections.push({ el: el, a: a });
+  });
+  function update() {
+    var best = null;
+    var bestTop = -Infinity;
+    sections.forEach(function (s) {
+      var top = s.el.getBoundingClientRect().top;
+      if (top <= 60 && top > bestTop) { bestTop = top; best = s; }
+    });
+    if (!best && sections.length) best = sections[0];
+    links.forEach(function (a) { a.classList.remove('active'); });
+    if (best) best.a.classList.add('active');
+  }
+  window.addEventListener('scroll', update, { passive: true });
+  update();
+})();
+</script>
+</body>
+</html>

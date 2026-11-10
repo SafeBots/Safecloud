@@ -32,7 +32,7 @@ const Q={Config:{get:(k,d)=>{let o=configStore;for(const x of k){if(o==null)retu
                 if(n==='Streams') throw new Error('no Streams');
                 throw new Error('no '+n); },
  app:{DIR:'/tmp/sc'},
- Crypto:{ OpenClaim:{ verify: async()=>true } },
+ Crypto:{ OpenClaim:{ verify: async()=>true, EVM:{} } },
  Data:{}, Assets:{}, Socket:{}, Safecloud:{}};
 const M=require('module'); const ol=M._load;
 M._load=function(r){ if(r==='Q')return Q;

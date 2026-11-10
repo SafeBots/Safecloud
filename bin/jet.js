@@ -62,10 +62,9 @@ try {
 // Then overlay local/app.json (highest priority)
 try {
     var rawText = fs.readFileSync(configPath, 'utf8');
-    // Strip // line comments and /* block comments (jsonc style)
-    var cleaned = rawText
-        .replace(/\/\/[^\n]*/g, '')
-        .replace(/\/\*[\s\S]*?\*\//g, '');
+    // Strip // line comments and /* block comments (jsonc style),
+    // correctly skipping occurrences inside quoted strings.
+    var cleaned = stripJsonComments(rawText);
     var appJson = JSON.parse(cleaned);
     // Deep-merge appJson over configStore
     deepMerge(configStore, appJson);
@@ -76,6 +75,55 @@ try {
     } else {
         console.log('[Safecloud] No config at ' + configPath + ' — using defaults');
     }
+}
+
+/**
+ * Strip // line comments and /* block comments from a JSON string,
+ * honouring single- and double-quoted string literals so that
+ * "http://example.com" is never trimmed.
+ */
+function stripJsonComments(text) {
+    var out   = '';
+    var i     = 0;
+    var len   = text.length;
+    while (i < len) {
+        var ch = text[i];
+        // Double-quoted string — copy verbatim, handle \" escapes
+        if (ch === '"') {
+            out += ch; i++;
+            while (i < len) {
+                var sc = text[i];
+                out += sc; i++;
+                if (sc === '\\') { if (i < len) { out += text[i++]; } }
+                else if (sc === '"') { break; }
+            }
+        }
+        // Single-quoted string (not standard JSON but tolerate it)
+        else if (ch === "'") {
+            out += ch; i++;
+            while (i < len) {
+                var sc2 = text[i];
+                out += sc2; i++;
+                if (sc2 === '\\') { if (i < len) { out += text[i++]; } }
+                else if (sc2 === "'") { break; }
+            }
+        }
+        // Block comment /* ... */
+        else if (ch === '/' && text[i + 1] === '*') {
+            i += 2;
+            while (i < len && !(text[i] === '*' && text[i + 1] === '/')) { i++; }
+            i += 2; // skip */
+        }
+        // Line comment // ...
+        else if (ch === '/' && text[i + 1] === '/') {
+            i += 2;
+            while (i < len && text[i] !== '\n') { i++; }
+        }
+        else {
+            out += ch; i++;
+        }
+    }
+    return out;
 }
 
 /** Recursively merge src into dst (mutates dst). */
@@ -157,9 +205,56 @@ if (httpsCfg && httpsCfg.key && httpsCfg.cert) {
     rawServer = http.createServer(app);
 }
 
-var io = new socketIo.Server(rawServer, {
-    cors: { origin: '*', methods: ['GET', 'POST'] }
+// ─── CORS: config-driven allowlist, updatable at runtime ─────────────────────
+var _corsAllowed = (function () {
+    var sc = configStore.Safecloud;
+    return (sc && sc.cors && Array.isArray(sc.cors.allowedOrigins))
+        ? sc.cors.allowedOrigins.slice()
+        : ['*'];
+}());
+
+/** Returns true if the given request origin should be allowed. */
+function _corsOk(origin) {
+    if (!origin) return true; // non-browser requests (curl, server-to-server)
+    if (_corsAllowed.indexOf('*') >= 0) return true;
+    return _corsAllowed.indexOf(origin) >= 0;
+}
+
+/** Express CORS middleware — applied before all routes. */
+app.use(function (req, res, next) {
+    var origin = req.headers.origin;
+    if (_corsOk(origin)) {
+        if (origin) {
+            res.setHeader('Access-Control-Allow-Origin', origin);
+            res.setHeader('Vary', 'Origin');
+        }
+        res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-User-Id');
+        res.setHeader('Access-Control-Max-Age', '86400');
+    }
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    next();
 });
+
+/** Update CORS at runtime (called by admin panel via AdminRoutes). */
+function _updateAllowedOrigins(origins) {
+    _corsAllowed = Array.isArray(origins) ? origins.slice() : ['*'];
+    console.log('[Safecloud] CORS origins updated:', _corsAllowed);
+}
+
+function _corsOriginFn(origin, cb) {
+    if (_corsOk(origin)) return cb(null, true);
+    cb(new Error('CORS: origin not allowed: ' + origin));
+}
+
+var io = new socketIo.Server(rawServer, {
+    cors: { origin: _corsOriginFn, methods: ['GET', 'POST'] }
+});
+
+// Serve web/ directory at the root so collab.html, sheets.html etc. are on the
+// same origin as the Jet and socket.io can connect without CORS issues.
+// e.g. http://localhost:9091/collab.html, http://localhost:9091/sheets.html
+app.use(express.static(path.join(__dirname, '..', 'web')));
 
 // Shared server object returned by Q.listen() — cached so repeated calls get same instance
 var serverResult = {
@@ -209,27 +304,28 @@ function getObject(keys, from) {
     return o;
 }
 
-// ─── Q.Crypto stubs (real openssl is used by Jets itself via ethers/crypto) ──
-// These stubs satisfy the self-attachment checks in Jets.js.
-// The real crypto work in Jets.js is done directly by ethers.js / Node crypto.
-var QCrypto = {
-    OpenClaim: {
-        verify: async function () { return { ok: false, reason: 'not implemented in standalone mode' }; },
-        EVM: {
-            verify: async function () { return { ok: false, reason: 'not implemented in standalone mode' }; }
-        }
-    }
-};
-
-// ─── Q.Data stub ─────────────────────────────────────────────────────────────
-// Q.Data.canonicalize is used by OpenClaim; provide a minimal implementation.
-var QData = {
-    canonicalize: function (obj) {
-        return JSON.stringify(obj);
-    },
-    // Prolly tree — used for inventory reconciliation; stub returns empty store
-    Prolly: {}
-};
+// ─── Module resolution: standalone vs. Qbix-plugin paths ────────────────────
+//
+// STANDALONE (this file as entry point):
+//   require('Q')                      → this shim, via Module._load intercept
+//   require('Q/Data')                 → classes/Q/Data.js  (vendored copy)
+//   require('Q/Crypto')               → classes/Q/Crypto.js (vendored copy)
+//   require('Q/Crypto/OpenClaim')     → classes/Q/Crypto/OpenClaim.js
+//   require('Q/Crypto/OpenClaim/EVM') → classes/Q/Crypto/OpenClaim/EVM.js
+//
+// AS QBIX PLUGIN (NODE_PATH includes Qbix platform's classes/ directory):
+//   require('Q')      → Qbix's real Q object, resolved via NODE_PATH
+//   require('Q/Data') → Qbix's own Q/Data.js, resolved via NODE_PATH
+//   … etc.
+//   This file is NOT the entry point; jets.js's "if (!Q.Data) Q.Data = …"
+//   guards naturally use Qbix's files. The vendored classes/Q/ copies exist
+//   only for standalone mode and are never touched in plugin mode.
+//
+// Vendored module paths used in the Module._load switch below.
+var _qDataPath      = path.join(__dirname, '..', 'classes', 'Q', 'Data');
+var _qCryptoPath    = path.join(__dirname, '..', 'classes', 'Q', 'Crypto');
+var _qOpenClaimPath = path.join(__dirname, '..', 'classes', 'Q', 'Crypto', 'OpenClaim');
+var _qEVMPath       = path.join(__dirname, '..', 'classes', 'Q', 'Crypto', 'OpenClaim', 'EVM');
 
 // ─── Q shim object ───────────────────────────────────────────────────────────
 var Q = {
@@ -272,8 +368,11 @@ var Q = {
     // Populated by Jets.js itself (var Safecloud_Jets = Q.Safecloud.Jets = ...)
     Safecloud: {},
 
-    Crypto: QCrypto,
-    Data:   QData,
+    // Q.Data and Q.Crypto are set lazily: Jets.js's "if (!Q.Data)" guards call
+    // require('Q/Data') etc., which our Module._load intercept handles by loading
+    // the vendored copies from classes/Q/ and attaching them here.
+    Crypto: null,
+    Data:   null,
     Assets: {},
     Socket: {},
 
@@ -295,21 +394,38 @@ Module._load = function (request, parent, isMain) {
             return Q;
 
         case 'Q/Data':
-            // Self-attach to Q.Data and return the object
-            Q.Data = QData;
-            return QData;
+            // Load the vendored copy and self-attach to Q.Data
+            if (!Q.Data) {
+                Q.Data = _origLoad.call(this, _qDataPath, parent, isMain);
+            }
+            return Q.Data;
 
         case 'Q/Crypto':
-            Q.Crypto = QCrypto;
-            return QCrypto;
+            if (!Q.Crypto) {
+                Q.Crypto = _origLoad.call(this, _qCryptoPath, parent, isMain);
+            }
+            return Q.Crypto;
 
         case 'Q/Crypto/OpenClaim':
-            Q.Crypto.OpenClaim = QCrypto.OpenClaim;
-            return QCrypto.OpenClaim;
+            if (!Q.Crypto) {
+                Q.Crypto = _origLoad.call(this, _qCryptoPath, parent, isMain);
+            }
+            if (!Q.Crypto.OpenClaim) {
+                Q.Crypto.OpenClaim = _origLoad.call(this, _qOpenClaimPath, parent, isMain);
+            }
+            return Q.Crypto.OpenClaim;
 
         case 'Q/Crypto/OpenClaim/EVM':
-            Q.Crypto.OpenClaim.EVM = QCrypto.OpenClaim.EVM;
-            return QCrypto.OpenClaim.EVM;
+            if (!Q.Crypto) {
+                Q.Crypto = _origLoad.call(this, _qCryptoPath, parent, isMain);
+            }
+            if (!Q.Crypto.OpenClaim) {
+                Q.Crypto.OpenClaim = _origLoad.call(this, _qOpenClaimPath, parent, isMain);
+            }
+            if (!Q.Crypto.OpenClaim.EVM) {
+                Q.Crypto.OpenClaim.EVM = _origLoad.call(this, _qEVMPath, parent, isMain);
+            }
+            return Q.Crypto.OpenClaim.EVM;
 
         default:
             return _origLoad.call(this, request, parent, isMain);
@@ -336,6 +452,41 @@ rawServer.listen(listenPort, listenHost, function () {
         console.error('[Safecloud] Failed to start Jets:', e.message);
         console.error(e.stack);
         process.exit(1);
+    }
+
+    // Load Streams Jet — SQLite-backed Streams protocol (Tier 1)
+    try {
+        // Boot AdminAuth before Streams so admin routes can be registered together
+        var AdminAuth;
+        try {
+            AdminAuth = require('../classes/Safecloud/AdminAuth');
+            var JetKey = require('../classes/Safecloud/JetKey');
+            AdminAuth.init(JetKey, APP_DIR,
+                configStore.Safecloud && configStore.Safecloud.admin
+                    ? configStore.Safecloud.admin.sessionDurationHours
+                    : 8,
+                _updateAllowedOrigins
+            );
+            console.log('[Safecloud] AdminAuth ready');
+        } catch (authErr) {
+            console.warn('[Safecloud] AdminAuth not loaded:', authErr.message);
+        }
+
+        var Streams = require('../classes/Safecloud/Streams');
+        Streams.listen(app, io, configStore, AdminAuth);
+
+        // Register Safecloud-specific before:post hook (encrypted stream enforcement)
+        try {
+            var StreamsHook = require('../classes/Safecloud/StreamsHook');
+            StreamsHook.register(Streams);
+        } catch (hookErr) {
+            console.error('[Safecloud] Failed to register StreamsHook:', hookErr.message);
+            // Non-fatal: Streams still works, encrypted-stream enforcement is skipped
+        }
+    } catch (e) {
+        console.error('[Safecloud] Failed to start Streams Jet:', e.message);
+        console.error(e.stack);
+        // Non-fatal: Jet continues without Streams routes
     }
 });
 

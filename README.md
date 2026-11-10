@@ -13,6 +13,11 @@ Role-based guides in **`GetStarted/`**:
 
 This document is an overview of the internals of the Safecloud ecosystem. It can serve as the canonical context file for new LLM sessions working on the Safecloud project. It covers architecture, cryptographic design, all method signatures, and the role of OpenClaiming (OCP) in the system.
 
+**Release notes:**
+
+- **[RELEASE_4.0.md](RELEASE_4.0.md)** — **Safecloud 4.0**: collaborative editors (Univer Docs/Sheets, CodeMirror, Slides), Streams access enforcement (readLevel/writeLevel/adminLevel), inheritAccess for folder→file cascade, SafeDB migration (no more native dependencies), DocStore Google-Suite layer.
+- **[CHANGELOG.md](CHANGELOG.md)** — **Safecloud 3.8**: payment replay protection, admin control panel with WebAuthn passkey auth.
+
 **Companion documents** — this README covers the storage and compute primitives. The broader ecosystem is documented across several companion files:
 
 - **[Architecture.md](Architecture.md)** — top-level architecture: the unified triangle (Safecloud pull, Intercloud push, Safebox trust), three-tier WASM execution model, tree API, chat and messaging, SafecloudApp deployment, and comparison with related systems.
@@ -23,6 +28,8 @@ This document is an overview of the internals of the Safecloud ecosystem. It can
 - **[Attacks.md](Attacks.md)** — threat model: 150+ attack entries across storage, compute, payments, epoch protocol, and chat. Sections 10–11 cover epoch protocol and E2E chat specifically.
 - **[AdaptiveStreamer.md](AdaptiveStreamer.md)** — adaptive drop selection for striped downloads: probe algorithm, EMA ranking, drop-side serving policy, micropayment ramping.
 - **[LLM.md](LLM.md)** — compact LLM-context primer: all APIs, architecture layers, epoch protocol, keychains, chat, content safety, organizations.
+- **[docs/ACCESS.md](docs/ACCESS.md)** — **access control system**: roles (Creator, Publisher, Jet Operator, Viewer), identity (Qbix PRF keys + Ed25519 publisher tokens), the cryptographic grant chain (append-only Merkle log of signed grants/negotiations/revocations), grant lifecycle, embed origin enforcement (Origin header + publisher-signed viewer auth tokens), teaser policy, rate limits, price floors, payment modes (Safebux direct vs. website-sponsored), and full API reference.
+- **[docs/PayPerMinute.md](docs/PayPerMinute.md)** — pay-per-minute / pay-per-second streaming: access models, per-chunk key derivation (HKDF), the `POST /Safecloud/key` API, rolling-rewind enforcement, and Safebox build attestation to prevent distributed client hacks.
 
 ---
 

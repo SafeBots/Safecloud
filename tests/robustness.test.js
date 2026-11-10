@@ -16,7 +16,7 @@ const Q = {
   getObject:(k,f)=>{let o=f;for(const x of k){if(o==null)return undefined;o=o[x];}return o;},
   makeEventEmitter:(o)=>{o.on=()=>{};o.emit=()=>{};},
   listen:()=>({attached:{express:{post:()=>{},get:()=>{},put:()=>{},use:()=>{}}}}),
-  require:()=>{throw new Error('no');}, app:{DIR:'/tmp/x'}, Crypto:{}, Data:{}, Assets:{}, Socket:{}, Safecloud:{}
+  require:()=>{throw new Error('no');}, app:{DIR:'/tmp/x'}, Crypto:{OpenClaim:{EVM:{}}}, Data:{}, Assets:{}, Socket:{}, Safecloud:{}
 };
 const Module=require('module'); const origLoad=Module._load;
 Module._load=function(r){ if(r==='Q')return Q; if(r==='./Client')return{verifyGrant:async()=>false};

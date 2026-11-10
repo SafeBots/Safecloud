@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>OpenClaiming Protocol</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* ── Tokens ─────────────────────────────────────────────────────────────── */
+:root {
+    --bg:       #ffffff;
+    --surface:  #f8f9fa;
+    --border:   #e1e4e8;
+    --text:     #24292f;
+    --muted:    #57606a;
+    --accent:   #1a7f37;
+    --accent2:  #0969da;
+    --code-bg:  #f6f8fa;
+    --mark-bg:  #fff8c5;
+    color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+        --bg:       #0d1117;
+        --surface:  #161b22;
+        --border:   #30363d;
+        --text:     #e6edf3;
+        --muted:    #8b949e;
+        --accent:   #3fb950;
+        --accent2:  #58a6ff;
+        --code-bg:  #161b22;
+        --mark-bg:  rgba(187,128,9,.15);
+        color-scheme: dark;
+    }
+}
+:root[data-theme="dark"] {
+    --bg:#0d1117;--surface:#161b22;--border:#30363d;--text:#e6edf3;
+    --muted:#8b949e;--accent:#3fb950;--accent2:#58a6ff;
+    --code-bg:#161b22;--mark-bg:rgba(187,128,9,.15);color-scheme:dark;
+}
+
+/* ── Reset & base ────────────────────────────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:'Inter',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.65;font-size:15px}
+
+/* ── Layout ──────────────────────────────────────────────────────────────── */
+.site-header{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:1px solid var(--border);padding:12px max(16px,env(safe-area-inset-left,0px));display:flex;align-items:center;gap:14px}
+.site-header .logo{font-weight:600;font-size:.95rem;color:var(--text);text-decoration:none;display:flex;align-items:center;gap:8px}
+.site-header .logo svg{opacity:.7}
+.site-header nav{margin-left:auto;display:flex;gap:18px;align-items:center}
+.site-header nav a{font-size:.85rem;color:var(--muted);text-decoration:none;font-weight:500}
+.site-header nav a:hover{color:var(--text)}
+
+.container{max-width:860px;margin:0 auto;padding:48px max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+
+/* ── Hero ────────────────────────────────────────────────────────────────── */
+.hero{padding-block:56px 40px;border-bottom:1px solid var(--border);margin-bottom:48px}
+.hero .kicker{font-size:.8rem;font-weight:600;letter-spacing:.08em;color:var(--accent);margin-bottom:14px;text-transform:uppercase}
+.hero h1{font-size:clamp(1.75rem,5vw,2.75rem);font-weight:600;line-height:1.2;text-wrap:balance;max-width:720px;margin-bottom:16px}
+.hero p{font-size:1.05rem;color:var(--muted);max-width:640px;line-height:1.75}
+.hero .badges{margin-top:20px;display:flex;gap:10px;flex-wrap:wrap}
+.badge{display:inline-block;padding:4px 12px;border-radius:9999px;font-size:.78rem;font-weight:600;border:1px solid var(--border);color:var(--muted);background:var(--surface)}
+.badge.green{border-color:rgba(31,136,61,.3);color:var(--accent);background:rgba(31,136,61,.06)}
+
+/* ── TOC ─────────────────────────────────────────────────────────────────── */
+.toc{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:20px 24px;margin-bottom:40px}
+.toc h2{font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:12px}
+.toc ol{list-style:none;counter-reset:toc;padding:0}
+.toc li{counter-increment:toc;padding:4px 0;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:baseline}
+.toc li:last-child{border-bottom:none}
+.toc li::before{content:counter(toc)".";color:var(--muted);font-size:.8rem;min-width:20px}
+.toc a{color:var(--accent2);text-decoration:none;font-size:.9rem}
+.toc a:hover{text-decoration:underline}
+
+/* ── Sections ────────────────────────────────────────────────────────────── */
+section{margin-bottom:56px}
+section h2{font-size:1.3rem;font-weight:600;padding-bottom:10px;border-bottom:2px solid var(--accent);margin-bottom:20px;display:flex;align-items:center;gap:10px}
+section h2 .num{color:var(--accent);font-family:'JetBrains Mono',monospace;font-size:1rem}
+section h3{font-size:1rem;font-weight:600;margin:24px 0 10px}
+section p{color:var(--text);max-width:720px;line-height:1.75;margin-bottom:12px}
+section ul,section ol{padding-left:20px;margin-bottom:12px;max-width:720px}
+section li{line-height:1.75;margin-bottom:4px}
+section li p{margin-bottom:0}
+
+/* ── Code blocks ─────────────────────────────────────────────────────────── */
+pre{background:var(--code-bg);border:1px solid var(--border);border-radius:6px;padding:16px 20px;overflow-x:auto;font-family:'JetBrains Mono',monospace;font-size:.82rem;line-height:1.6;margin:16px 0;max-width:100%}
+code{font-family:'JetBrains Mono',monospace;font-size:.88em;background:var(--code-bg);border:1px solid var(--border);border-radius:4px;padding:1px 5px}
+pre code{background:none;border:none;padding:0;font-size:inherit}
+
+/* ── Tables ──────────────────────────────────────────────────────────────── */
+.table-wrap{overflow-x:auto;margin:16px 0}
+table{width:100%;border-collapse:collapse;font-size:.875rem}
+th{text-align:left;padding:8px 12px;border-bottom:2px solid var(--border);color:var(--muted);font-weight:600;font-size:.8rem;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+td{padding:8px 12px;border-bottom:1px solid var(--border);vertical-align:top}
+tr:last-child td{border-bottom:none}
+td code{font-size:.8rem}
+
+/* ── Notes ────────────────────────────────────────────────────────────────── */
+.note{background:rgba(9,105,218,.08);border-left:3px solid var(--accent2);padding:12px 16px;border-radius:0 6px 6px 0;font-size:.875rem;margin:16px 0;max-width:720px}
+.note strong{color:var(--accent2)}
+.warn{background:var(--mark-bg);border-left:3px solid #c69026;padding:12px 16px;border-radius:0 6px 6px 0;font-size:.875rem;margin:16px 0;max-width:720px}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+footer{border-top:1px solid var(--border);padding:24px max(16px,env(safe-area-inset-left,0px));color:var(--muted);font-size:.82rem;display:flex;gap:16px;flex-wrap:wrap;justify-content:space-between}
+footer a{color:var(--muted);text-decoration:none}
+footer a:hover{color:var(--text)}
+</style>
+</head>
+<body>
+
+<header class="site-header">
+    <a class="logo" href="/">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5"/>
+            <path d="M6 10h8M10 6l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        OpenClaiming
+    </a>
+    <nav>
+        <a href="#overview">Overview</a>
+        <a href="#format">Format</a>
+        <a href="#verify">Verify</a>
+        <a href="https://github.com/openclaiming/ocp">GitHub</a>
+    </nav>
+</header>
+
+<div class="container">
+
+    <!-- Hero -->
+    <div class="hero" id="overview">
+        <p class="kicker">Specification · v1.0</p>
+        <h1>OpenClaiming Protocol</h1>
+        <p>A minimal, cryptographically verifiable claim format for authorization and delegation. OCP claims are self-contained JSON objects signed with Ed25519 — no blockchain, no central authority, no server round-trip to verify.</p>
+        <div class="badges">
+            <span class="badge green">Stable · v1.0</span>
+            <span class="badge">Ed25519</span>
+            <span class="badge">Zero-dependency</span>
+            <span class="badge">JSON</span>
+        </div>
+    </div>
+
+    <!-- TOC -->
+    <div class="toc">
+        <h2>Contents</h2>
+        <ol>
+            <li><a href="#s1">Core Claim Format</a></li>
+            <li><a href="#s2">Canonicalization</a></li>
+            <li><a href="#s3">Signatures</a></li>
+            <li><a href="#s4">Verification Algorithm</a></li>
+            <li><a href="#s5">Issuer Key URIs</a></li>
+            <li><a href="#s6">Standard Statement Types</a></li>
+            <li><a href="#s7">Reference Implementations</a></li>
+        </ol>
+    </div>
+
+    <!-- §1 -->
+    <section id="s1">
+        <h2><span class="num">§1</span> Core Claim Format</h2>
+        <p>An OCP claim is a JSON object. Fields are defined below. All fields are optional unless marked <strong>required</strong>.</p>
+
+        <div class="table-wrap">
+        <table>
+            <thead><tr><th>Field</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+            <tbody>
+            <tr><td><code>ocp</code></td><td>integer</td><td>yes</td><td>Protocol version. Must be <code>1</code> for this spec.</td></tr>
+            <tr><td><code>iss</code></td><td>string</td><td>yes</td><td>Issuer key URI (see §5). Identifies the signing key.</td></tr>
+            <tr><td><code>sub</code></td><td>string</td><td>no</td><td>Subject. The entity the claim is about (e.g. a publisher ID, a user ID, a domain).</td></tr>
+            <tr><td><code>stm</code></td><td>object</td><td>no</td><td>Statements. Arbitrary key-value claims about the subject. Schema is defined per claim type.</td></tr>
+            <tr><td><code>nbf</code></td><td>integer</td><td>no</td><td>Not before — Unix timestamp (seconds). Claim is invalid before this time.</td></tr>
+            <tr><td><code>exp</code></td><td>integer</td><td>no</td><td>Expiry — Unix timestamp (seconds). <code>0</code> or absent means no expiry.</td></tr>
+            <tr><td><code>sig</code></td><td>string</td><td>yes</td><td>Signature — lowercase hex. See §3.</td></tr>
+            </tbody>
+        </table>
+        </div>
+
+        <h3>Minimal example</h3>
+        <pre><code>{
+  "ocp": 1,
+  "iss": "data:key/ed25519;hex,4a7f3c8d1b5e9f2a6c0e4d8b3f7a1c5e9d2b6e0a4c8f3d7b1e5a9c2f6d0b4e8a",
+  "sub": "apps.example.com",
+  "stm": { "publisherId": "apps.example.com", "rootCid": "bafyreid…" },
+  "nbf": 1762000000,
+  "exp": 1793536000,
+  "sig": "3f2a…c8d1"
+}</code></pre>
+
+        <div class="note"><strong>Note:</strong> Claims must be treated as untrusted input until <code>sig</code> is verified. Never rely on any field value before completing §4.</div>
+    </section>
+
+    <!-- §2 -->
+    <section id="s2">
+        <h2><span class="num">§2</span> Canonicalization</h2>
+        <p>Before signing or verifying, the claim is canonicalized into a deterministic byte string:</p>
+        <ol>
+            <li>Remove the <code>sig</code> field.</li>
+            <li>Sort the remaining top-level keys <strong>alphabetically</strong> (lexicographic, ascending).</li>
+            <li>Serialize as JSON with no extra whitespace (<code>JSON.stringify</code> defaults). The serialization must be valid UTF-8.</li>
+        </ol>
+        <pre><code>// JavaScript reference
+function canonicalize(claim) {
+    const unsigned = { ...claim };
+    delete unsigned.sig;
+    const keys = Object.keys(unsigned).sort();
+    const out = {};
+    for (const k of keys) out[k] = unsigned[k];
+    return JSON.stringify(out);   // → UTF-8 string
+}</code></pre>
+
+        <div class="note"><strong>Nested objects</strong> inside <code>stm</code> are <em>not</em> recursively sorted — only the top-level keys of the claim are sorted. This keeps the canonicalization simple and allows arbitrary statement schemas.</div>
+    </section>
+
+    <!-- §3 -->
+    <section id="s3">
+        <h2><span class="num">§3</span> Signatures</h2>
+
+        <h3>Algorithm</h3>
+        <p>OCP v1 uses <strong>Ed25519</strong> signatures over a SHA-256 hash of the canonical form:</p>
+        <pre><code>sig = Ed25519Sign(privKey, SHA-256(canonicalize(claim)))</code></pre>
+
+        <p>SHA-256 is applied before Ed25519 for two reasons: it bounds the message length to 32 bytes (enabling hardware security keys that only sign fixed-length payloads), and it allows batch verification over arbitrary-length claims with a single hash call.</p>
+
+        <h3>Encoding</h3>
+        <ul>
+            <li><strong>Signature (<code>sig</code>)</strong>: 64 raw bytes encoded as 128 lowercase hex characters.</li>
+            <li><strong>Public key</strong>: 32 raw bytes encoded as 64 lowercase hex characters. Embedded in <code>iss</code> (see §5).</li>
+            <li><strong>Private key</strong>: 32-byte Ed25519 scalar (the seed). Never included in a claim.</li>
+        </ul>
+
+        <h3>Signing (reference)</h3>
+        <pre><code>// Node.js
+const hash = crypto.createHash('sha256').update(canon, 'utf8').digest();
+const sig  = crypto.sign(null, hash, privKey).toString('hex');
+
+// Browser (Web Crypto)
+const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canon));
+const sig  = await crypto.subtle.sign({ name: 'Ed25519' }, privKey, hash);</code></pre>
+    </section>
+
+    <!-- §4 -->
+    <section id="s4">
+        <h2><span class="num">§4</span> Verification Algorithm</h2>
+        <p>A verifier <strong>must</strong> execute these steps in order and reject the claim at the first failure:</p>
+        <ol>
+            <li><strong>Parse.</strong> Decode the claim as JSON. Reject if malformed.</li>
+            <li><strong>Version check.</strong> Reject if <code>claim.ocp !== 1</code>.</li>
+            <li><strong>Required fields.</strong> Reject if <code>iss</code> or <code>sig</code> are absent or empty.</li>
+            <li><strong>Parse issuer.</strong> Extract the public key from <code>iss</code> per §5. Reject if the URI format is unrecognized.</li>
+            <li><strong>Temporal check.</strong> Reject if <code>nbf</code> is set and <code>nbf &gt; now + 300</code> (5-minute clock skew tolerance). Reject if <code>exp</code> is set and <code>exp &lt; now</code>.</li>
+            <li><strong>Canonicalize.</strong> Apply §2 to produce the canonical string.</li>
+            <li><strong>Hash.</strong> Compute <code>SHA-256(canonical)</code>.</li>
+            <li><strong>Verify signature.</strong> Verify <code>sig</code> against the hash using the issuer's public key per §3. Reject if invalid.</li>
+            <li><strong>Accept.</strong> The claim is valid. The verifier may now trust the contents of <code>sub</code> and <code>stm</code>.</li>
+        </ol>
+
+        <div class="warn"><strong>Important:</strong> Step 8 must succeed before the verifier relies on <em>any</em> field — including <code>iss</code>, <code>sub</code>, and <code>stm</code>.</div>
+    </section>
+
+    <!-- §5 -->
+    <section id="s5">
+        <h2><span class="num">§5</span> Issuer Key URIs</h2>
+        <p>The <code>iss</code> field is a URI that identifies the signing key. OCP v1 defines one URI form:</p>
+        <pre><code>data:key/ed25519;hex,&lt;64 lowercase hex chars&gt;</code></pre>
+        <p>Example:</p>
+        <pre><code>data:key/ed25519;hex,4a7f3c8d1b5e9f2a6c0e4d8b3f7a1c5e9d2b6e0a4c8f3d7b1e5a9c2f6d0b4e8a</code></pre>
+        <p>Future versions of this spec may define additional URI forms (e.g. DID URIs, HTTPS key endpoints). Verifiers must reject claims whose <code>iss</code> they do not recognize.</p>
+    </section>
+
+    <!-- §6 -->
+    <section id="s6">
+        <h2><span class="num">§6</span> Standard Statement Types</h2>
+        <p>The <code>stm</code> object is extensible. OCP v1 defines the following standard statement schemas:</p>
+
+        <h3>Publisher cert (<code>stm.publisherId</code>)</h3>
+        <p>Authorizes a named publisher to serve content on behalf of the issuing author.</p>
+        <div class="table-wrap">
+        <table>
+            <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+            <tbody>
+            <tr><td><code>publisherId</code></td><td>string</td><td>Domain or identifier of the authorized publisher.</td></tr>
+            <tr><td><code>rootCid</code></td><td>string?</td><td>Content root CID this cert covers. Absent = all roots for this author.</td></tr>
+            <tr><td><code>notes</code></td><td>string?</td><td>Human-readable note (e.g. "distribution agreement 2026").</td></tr>
+            </tbody>
+        </table>
+        </div>
+        <p>The <code>sub</code> field should equal <code>stm.publisherId</code>.</p>
+
+        <h3>Delegate claim (<code>stm.delegate</code>)</h3>
+        <p>Grants a delegate key the right to sign claims on behalf of the issuer, optionally scoped to specific statement types.</p>
+        <div class="table-wrap">
+        <table>
+            <thead><tr><th>Field</th><th>Type</th><th>Description</th></tr></thead>
+            <tbody>
+            <tr><td><code>delegate</code></td><td>string</td><td>Key URI of the delegate (same format as <code>iss</code>).</td></tr>
+            <tr><td><code>scope</code></td><td>string[]?</td><td>Allowed statement types. Absent = unrestricted.</td></tr>
+            </tbody>
+        </table>
+        </div>
+    </section>
+
+    <!-- §7 -->
+    <section id="s7">
+        <h2><span class="num">§7</span> Reference Implementations</h2>
+        <p>Official reference libraries implement the full §4 verification algorithm and the §3 signing helpers.</p>
+
+        <div class="table-wrap">
+        <table>
+            <thead><tr><th>Language</th><th>File</th><th>Requirements</th></tr></thead>
+            <tbody>
+            <tr><td>JavaScript</td><td><code>ocp.js</code></td><td>Browser (SubtleCrypto) or Node.js 15+ — zero runtime deps</td></tr>
+            <tr><td>PHP</td><td><code>ocp.php</code></td><td>PHP 8.1+, <code>sodium</code> extension (default in modern PHP)</td></tr>
+            </tbody>
+        </table>
+        </div>
+
+        <h3>JavaScript — verify</h3>
+        <pre><code>import OCP from './ocp.js';
+
+const claim = {
+    ocp: 1,
+    iss: 'data:key/ed25519;hex,' + pubKeyHex,
+    sub: 'apps.example.com',
+    stm: { publisherId: 'apps.example.com' },
+    nbf: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 86400 * 365,
+    sig: sigHex
+};
+
+const result = await OCP.verify(claim);
+if (!result.ok) {
+    console.error(result.error);  // 'OCP: signature verification failed' etc.
+} else {
+    console.log(result.pub);   // issuer pub key hex
+    console.log(result.sub);   // 'apps.example.com'
+    console.log(result.stm);   // { publisherId: … }
+}</code></pre>
+
+        <h3>JavaScript — sign</h3>
+        <pre><code>const claim = await OCP.sign({
+    iss: 'data:key/ed25519;hex,' + pubKeyHex,
+    sub: 'apps.example.com',
+    stm: { publisherId: 'apps.example.com', rootCid: 'bafyreid…' },
+    nbf: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 86400 * 365,
+}, privKeyHex);
+// claim.sig is now set</code></pre>
+
+        <h3>PHP — verify</h3>
+        <pre><code>require_once 'ocp.php';
+
+$json  = $_POST['claim'] ?? '';
+$result = OCP::verify($json);
+if (!$result['ok']) {
+    http_response_code(403);
+    echo $result['error'];
+    exit;
+}
+// $result['pub']  → issuer pub key hex
+// $result['sub']  → subject
+// $result['stm']  → statements array</code></pre>
+
+        <h3>PHP — publisher cert helper</h3>
+        <pre><code>$result = OCP::verifyPublisherCert($claimJson, 'apps.example.com', $rootCid);
+if (!$result['ok']) {
+    // publisher not authorized for this content
+}</code></pre>
+    </section>
+
+</div><!-- /.container -->
+
+<footer>
+    <span>OpenClaiming Protocol v1.0 · <a href="https://openclaiming.org">openclaiming.org</a></span>
+    <span>
+        <a href="https://github.com/openclaiming/ocp">GitHub</a> ·
+        <a href="/">Home</a>
+    </span>
+</footer>
+
+</body>
+</html>

@@ -31,7 +31,7 @@ const Q = {
   makeEventEmitter: (o)=>{ const ls={}; o.on=(e,f)=>{(ls[e]=ls[e]||[]).push(f);}; o.emit=(e,...a)=>{(ls[e]||[]).forEach(f=>f(...a));}; },
   listen: ()=>realServer,
   require: (n)=>{ if(n==='Users') return { Socket: { listen: ()=>({ io: { of: ()=>({ on: ()=>{} }) } }) } }; throw new Error('no '+n); },
-  app: { DIR: '/tmp/sc-test' }, Crypto: {}, Data: {}, Assets: {}, Socket: {}, Safecloud: {}
+  app: { DIR: '/tmp/sc-test' }, Crypto: {OpenClaim:{EVM:{}}}, Data: {}, Assets: {}, Socket: {}, Safecloud: {}
 };
 const Module = require('module'); const origLoad = Module._load;
 Module._load = function(req){ if(req==='Q') return Q;

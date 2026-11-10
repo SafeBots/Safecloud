@@ -24,7 +24,7 @@ function bootJet(safecloudConfig) {
     makeEventEmitter:(o)=>{const ls={};o.on=(e,f)=>{(ls[e]=ls[e]||[]).push(f);};o.emit=(e,...a)=>{(ls[e]||[]).forEach(f=>f(...a));};},
     listen:()=>realServer,
     require:(n)=>{ if(n==='Users')return{Socket:{listen:()=>({io:{of:()=>({on:()=>{}})}})}}; throw new Error('no '+n); },
-    app:{DIR:'/tmp/sc-'+Math.random().toString(36).slice(2)}, Crypto:{}, Data:{}, Assets:{}, Socket:{}, Safecloud:{}
+    app:{DIR:'/tmp/sc-'+Math.random().toString(36).slice(2)}, Crypto:{OpenClaim:{EVM:{}}}, Data:{}, Assets:{}, Socket:{}, Safecloud:{}
   };
   const M=require('module'); const ol=M._load;
   M._load=function(r){ if(r==='Q')return Q; if(r==='./Client')return{verifyGrant:async()=>true};
@@ -149,7 +149,7 @@ async function withServer(app, fn) {
       log:()=>{}, extend:Object.assign, getObject:(k,f)=>{let o=f;for(const x of k){if(o==null)return undefined;o=o[x];}return o;},
       makeEventEmitter:(o)=>{const l={};o.on=(e,f)=>{(l[e]=l[e]||[]).push(f);};o.emit=(e,...a)=>{(l[e]||[]).forEach(f=>f(...a));};},
       listen:()=>rs, require:(n)=>{ if(n==='Users')return{Socket:{listen:()=>({io:ioS})}}; throw new Error('no'); },
-      app:{DIR:'/tmp/x'}, Crypto:{}, Data:{}, Assets:{}, Socket:{}, Safecloud:{} };
+      app:{DIR:'/tmp/x'}, Crypto:{OpenClaim:{EVM:{}}}, Data:{}, Assets:{}, Socket:{}, Safecloud:{} };
     const MM=require('module'); const oll=MM._load;
     MM._load=function(r){ if(r==='Q')return Q; if(r==='./Client')return{verifyGrant:async()=>true};
       if(r==='./Drops')return{verifyChallengeResponse:()=>true,verifyAnnounce:()=>true};
