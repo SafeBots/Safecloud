@@ -16,44 +16,12 @@
  *   Agg:  COUNT, SUM, AVG, MIN, MAX, GROUP_CONCAT
  */
 
-var fs            = require('fs');
-var path          = require('path');
-var crypto        = require('crypto');   // needed for MD5/SHA1; hoist to avoid late-require under Jest
-var TableStore    = require('./TableStore');
-var ColumnarStore = require('./ColumnarStore');
-var WAL           = require('./WAL');
-var Catalog       = require('./Catalog');
-var KC            = require('./KeyCodec');
-
-// ─── Legacy TableStore migration ──────────────────────────────────────────────
-
-/**
- * Migrate a table from the old single-file TableStore format
- * ({dbPath}/tables/{name}.json) to the new columnar directory format
- * ({dbPath}/tables/{name}/col_{id}.json).
- *
- * Called the first time a table is opened after upgrading to columnar storage.
- * The legacy file is deleted after a successful migration.
- *
- * @param {string} legacyPath  Path of the old .json file.
- * @param {string} newDir      Columnar directory (must already exist).
- * @param {object} schema      Catalog schema {slots:[{id,name,type,active}]}.
- */
-function _migrateLegacyTableStore(legacyPath, newDir, schema) {
-    var raw;
-    try { raw = JSON.parse(fs.readFileSync(legacyPath, 'utf8')); } catch (e) { return; }
-    if (!raw || !Array.isArray(raw.entries) || !raw.entries.length) return;
-    // Inflate legacy prefix-delta entries into {key, value} pairs
-    var tmp  = new ColumnarStore(newDir, schema);
-    var prev = '';
-    for (var i = 0; i < raw.entries.length; i++) {
-        var e   = raw.entries[i];
-        var key = prev.slice(0, e.p) + e.k;
-        tmp.set(key, e.v);
-        prev = key;
-    }
-    tmp.flush();
-}
+var fs         = require('fs');
+var path       = require('path');
+var crypto     = require('crypto');   // needed for MD5/SHA1; hoist to avoid late-require under Jest
+var TableStore = require('./TableStore');
+var Catalog    = require('./Catalog');
+var KC         = require('./KeyCodec');
 
 var Parser;
 try { Parser = require('node-sql-parser').Parser; }
@@ -326,15 +294,14 @@ function evalFunc(node, row, params, pi) {
             }
             return null;
         }
-        case 'IFNULL': case 'NVL': {
+        case 'IFNULL': case 'NVL': case 'ISNULL': {
             var v = a0(); return v !== null ? v : a1();
         }
         case 'NULLIF': {
             var v = a0(), w = a1(); return v == w ? null : v;
         }
         case 'IIF': case 'IF': {
-            // MySQL treats numeric 0 and string '0' as false
-            var cond = a0(); return (cond && cond !== '0' && cond !== 0) ? a1() : a2();
+            var cond = a0(); return cond ? a1() : a2();
         }
         case 'LENGTH': case 'LEN': {
             var v = a0(); return v !== null ? String(v).length : null;
@@ -484,9 +451,11 @@ function evalFunc(node, row, params, pi) {
             var _idx = _parts.indexOf(String(_fv));
             return _idx === -1 ? 0 : _idx + 1;
         }
-        case 'NVL2': {
-            // NVL2(x, y, z): return y if x is not null, else z
-            return a0() !== null ? a1() : a2();
+        case 'IF': {
+            var _cond = a0(); return _cond && _cond !== '0' && _cond !== 0 ? a1() : a2();
+        }
+        case 'IFNULL': case 'NVL2': {
+            var _v = a0(); return _v !== null ? _v : a1();
         }
         case 'NOW': case 'SYSDATE': {
             return new Date().toISOString().replace('T', ' ').slice(0, 19);
@@ -606,6 +575,9 @@ function evalFunc(node, row, params, pi) {
             // MySQL scalar ISNULL(x) → 1 if x IS NULL, else 0
             var _v = a0(); return _v === null ? 1 : 0;
         }
+        case 'NULLIF': {
+            var _v = a0(), _w = a1(); return _v == _w ? null : _v;
+        }
         case 'ELT': {
             var _n = Number(a0());
             return (_n >= 1 && args.length > _n) ? evalExpr(args[_n], row, params, pi) : null;
@@ -710,32 +682,6 @@ function hasAggr(columns) {
 
 // ─── AST helpers ─────────────────────────────────────────────────────────────
 
-/** Count how many `?` parameter placeholders an expression tree contains. */
-function _countParams(node) {
-    if (!node) return 0;
-    if (node.type === 'origin' && node.value === '?') return 1;
-    if (node.type === 'binary_expr') return _countParams(node.left) + _countParams(node.right);
-    if (node.type === 'function' && node.args) {
-        var c = 0;
-        var vals = node.args.value || node.args;
-        if (Array.isArray(vals)) vals.forEach(function (v) { c += _countParams(v); });
-        return c;
-    }
-    if (node.type === 'expr_list' && Array.isArray(node.value)) {
-        var c2 = 0;
-        node.value.forEach(function (v) { c2 += _countParams(v); });
-        return c2;
-    }
-    if (node.type === 'unary_expr') return _countParams(node.expr);
-    if (node.type === 'case') {
-        var c3 = 0;
-        if (node.args) node.args.forEach(function (a) { c3 += _countParams(a.cond) + _countParams(a.result); });
-        c3 += _countParams(node.result);
-        return c3;
-    }
-    return 0;
-}
-
 function tblName(t) {
     if (!t) return '';
     if (typeof t === 'string') return t;
@@ -753,61 +699,24 @@ function colName(c) {
 // ─── Engine ───────────────────────────────────────────────────────────────────
 
 function Engine(dbPath, catalog) {
-    this._dbPath   = dbPath;
-    this._catalog  = catalog;
-    this._stores   = Object.create(null); // tableName → ColumnarStore; '__idx__'+n → TableStore
-    this._inTx     = false;
-    this._txId     = null;
-    this._txBuffer = null;  // [{op, table, key, row}] — WAL entries buffered during tx
-    this._txUndo   = null;  // {storeKey: {key: prevRow}} — undo log for rollback
-
-    // Open WAL and replay any committed transactions not yet flushed to column files.
-    this._wal = new WAL(path.join(dbPath, 'wal.ndjson'));
-    this._wal.open();
-    var self = this;
-    var replayed = this._wal.replay(function (tableName) {
-        // Only replay for tables that still exist in the catalog.
-        if (!self._catalog.getTable(tableName)) return null;
-        return self._store(tableName);
-    });
-    if (replayed) {
-        // Crash recovery: rebuild derived indexes and flush the recovered state.
-        this._rebuildAllIndexes();
-        var stores = this._stores;
-        Object.keys(stores).forEach(function (k) { stores[k].flush(); });
-        this._wal.checkpoint(this._wal._nextTxId - 1);
-    }
+    this._dbPath  = dbPath;
+    this._catalog = catalog;
+    this._stores  = Object.create(null); // name → TableStore  (prefix __idx__ for indexes)
+    this._txSnaps = null;
+    this._inTx    = false;
 }
 
-/**
- * Open (or lazily create) the columnar store for a data table.
- * On first access of a table still stored in the old single-file TableStore
- * format, the data is migrated transparently.
- */
 Engine.prototype._store = function (tableName) {
     if (!this._stores[tableName]) {
-        var dir = path.join(this._dbPath, 'tables', tableName);
-        fs.mkdirSync(dir, { recursive: true });
-        var tbl    = this._catalog.getTable(tableName);
-        var schema = tbl ? this._catalog.getSchema(tableName) : { slots: [] };
-        // One-time migration from legacy {name}.json TableStore format.
-        var legacyPath = path.join(this._dbPath, 'tables', tableName + '.json');
-        if (fs.existsSync(legacyPath) && !fs.existsSync(path.join(dir, 'index.json'))) {
-            _migrateLegacyTableStore(legacyPath, dir, schema);
-            try { fs.unlinkSync(legacyPath); } catch (e) {}
-        }
-        var s = new ColumnarStore(dir, schema);
+        var p = path.join(this._dbPath, 'tables', tableName + '.json');
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        var s = new TableStore(p);
         s.load();
         this._stores[tableName] = s;
     }
     return this._stores[tableName];
 };
 
-/**
- * Open (or lazily create) the TableStore for a secondary index.
- * Index stores remain as single-file TableStores — they're small
- * (one column: pk) and are rebuilt from data stores on WAL replay.
- */
 Engine.prototype._idxStore = function (indexName) {
     var key = '__idx__' + indexName;
     if (!this._stores[key]) {
@@ -826,7 +735,7 @@ Engine.prototype.flush = function () {
     this._catalog.save();
 };
 
-Engine.prototype.close = function () { this.flush(); this._wal.close(); };
+Engine.prototype.close = function () { this.flush(); };
 
 // ─── SQL preprocessor ─────────────────────────────────────────────────────────
 
@@ -841,99 +750,35 @@ Engine.prototype._preprocessSQL = function (sql) {
 // ─── Transactions ─────────────────────────────────────────────────────────────
 
 Engine.prototype.beginTx = function () {
-    this._txId     = this._wal.beginTx();
-    this._txBuffer = [];                   // WAL records buffered for this tx
-    this._txUndo   = Object.create(null);  // undo log for in-memory rollback
-    this._inTx     = true;
+    var snap = Object.create(null);
+    var stores = this._stores;
+    Object.keys(stores).forEach(function (k) {
+        snap[k] = { keys: stores[k]._keys.slice(), data: Object.assign(Object.create(null), stores[k]._data) };
+    });
+    this._txSnaps = snap;
+    this._inTx    = true;
 };
 
 Engine.prototype.commitTx = function () {
-    // Write all mutations to WAL + fdatasync → atomic commit point on disk.
-    if (this._txBuffer && this._txBuffer.length > 0) {
-        this._wal.commit(this._txId, this._txBuffer);
-    }
-    var txId       = this._txId;
-    this._txBuffer = null;
-    this._txUndo   = null;
-    this._inTx     = false;
-    this._txId     = null;
-    // Flush column files, then compact the WAL (safe now that files are durable).
+    this._txSnaps = null;
+    this._inTx    = false;
     this.flush();
-    if (txId !== null) this._wal.checkpoint(txId);
 };
 
 Engine.prototype.rollbackTx = function () {
-    var undo   = this._txUndo;
+    var snap = this._txSnaps;
     var stores = this._stores;
-    // Set _inTx = false BEFORE restoring so the store calls don't re-record.
-    this._txBuffer = null;
-    this._txUndo   = null;
-    this._inTx     = false;
-    this._txId     = null;
-    if (undo) {
-        Object.keys(undo).forEach(function (storeKey) {
-            var store = stores[storeKey];
-            if (!store) return;
-            var tableUndo = undo[storeKey];
-            Object.keys(tableUndo).forEach(function (key) {
-                var prev = tableUndo[key];
-                if (prev === null) {
-                    store.delete(key);
-                } else {
-                    store.set(key, prev);
-                }
-            });
+    if (snap) {
+        Object.keys(snap).forEach(function (k) {
+            if (stores[k]) {
+                stores[k]._keys  = snap[k].keys;
+                stores[k]._data  = snap[k].data;
+                stores[k]._dirty = false;
+            }
         });
     }
-};
-
-// ─── Transaction helpers ──────────────────────────────────────────────────────
-
-/**
- * Save the current value of `key` in `storeKey` to the undo log
- * so rollback can restore it.  Idempotent: only the first write per
- * (storeKey, key) pair is recorded within a transaction.
- */
-Engine.prototype._txRecord = function (storeKey, key) {
-    if (!this._inTx || !this._txUndo) return;
-    if (!this._txUndo[storeKey]) this._txUndo[storeKey] = Object.create(null);
-    if (key in this._txUndo[storeKey]) return; // already recorded for this tx
-    var store   = this._stores[storeKey];
-    var current = store ? store.get(key) : undefined;
-    this._txUndo[storeKey][key] = (current !== undefined) ? current : null;
-};
-
-/**
- * Append a mutation to the WAL buffer for the current transaction.
- * Only data-table mutations go here (not index stores, which are
- * derived from data and rebuilt on WAL replay).
- */
-Engine.prototype._txAppend = function (op, tableName, key, row) {
-    if (!this._inTx || !this._txBuffer) return;
-    var rec = { op: op, table: tableName, key: key };
-    if (row !== null && row !== undefined) rec.row = row;
-    this._txBuffer.push(rec);
-};
-
-/**
- * Rebuild all secondary indexes from their data tables.
- * Called after WAL replay to restore index consistency.
- */
-Engine.prototype._rebuildAllIndexes = function () {
-    var self    = this;
-    var indexes = this._catalog._indexes || {};
-    Object.keys(indexes).forEach(function (idxName) {
-        var idx      = indexes[idxName];
-        var store    = self._store(idx.table);
-        var idxStore = self._idxStore(idxName);
-        var tbl      = self._catalog.getTable(idx.table);
-        if (!tbl) return;
-        idxStore.clear();
-        store.all().forEach(function (e) {
-            idxStore.set(self._idxKey(idx.columns, e.value, tbl, e.key), { pk: e.key });
-        });
-        idxStore._dirty = true;
-    });
+    this._txSnaps = null;
+    this._inTx    = false;
 };
 
 // ─── Public execute entry point ───────────────────────────────────────────────
@@ -1003,7 +848,7 @@ Engine.prototype.execute = function (sql, params) {
     if (type === 'update')   return this._update(ast, params);
     if (type === 'delete')   return this._delete(ast, params);
     if (type === 'truncate') return this._truncate(ast, params);
-    if (type === 'alter')    return this._alter(ast, params);
+    if (type === 'alter')    return { rows: [], changes: 0, lastInsertRowid: null };
 
     throw new Error('Unsupported SQL type: ' + ast.type);
 };
@@ -1102,11 +947,8 @@ Engine.prototype._drop = function (ast, params) {
         // ast.prefix = 'if exists' (confirmed by AST probe); ast.if_exists is undefined
         var ie = ast.if_exists || (ast.prefix && /if\s+exists/i.test(ast.prefix));
         this._catalog.dropTable(name, ie);
-        // Remove columnar directory (new format)
-        var storeDir = path.join(this._dbPath, 'tables', name);
-        try { fs.rmSync(storeDir, { recursive: true, force: true }); } catch (e) {}
-        // Also remove legacy single-file store if still present
-        try { fs.unlinkSync(storeDir + '.json'); } catch (e) {}
+        var storePath = path.join(this._dbPath, 'tables', name + '.json');
+        try { fs.unlinkSync(storePath); } catch (e) {}
         delete this._stores[name];
         return { rows: [], changes: 0, lastInsertRowid: null };
     }
@@ -1134,78 +976,11 @@ Engine.prototype._drop = function (ast, params) {
 };
 
 Engine.prototype._truncate = function (ast) {
-    // TRUNCATE is non-transactional; refuse if inside an explicit BEGIN block.
-    if (this._inTx) throw new Error('TRUNCATE cannot be used inside a transaction; use DELETE instead.');
-    var name    = tblName(ast.name || ast.table);
-    var store   = this._store(name);
-    var indexes = this._catalog.getTableIndexes(name);
-    var self    = this;
+    var name  = tblName(ast.name || ast.table);
+    var store = this._store(name);
     store.clear();
     store.flush();
-    // Also clear every secondary index for the table.
-    indexes.forEach(function (idx) {
-        var idxStore = self._idxStore(idx.name);
-        idxStore.clear();
-        idxStore.flush();
-    });
     return { rows: [], changes: 0, lastInsertRowid: null };
-};
-
-// ─── ALTER TABLE ──────────────────────────────────────────────────────────────
-
-Engine.prototype._alter = function (ast) {
-    var tableName = tblName(ast.table);
-    var tbl       = this._catalog.getTable(tableName);
-    if (!tbl) throw new Error('Table not found: ' + tableName);
-    var self = this;
-    var changes = 0;
-
-    (ast.expr || []).forEach(function (op) {
-        if (op.action === 'add' && op.resource === 'column') {
-            var colName = (op.column && op.column.column) || (typeof op.column === 'string' ? op.column : null);
-            if (!colName) throw new Error('ALTER TABLE ADD COLUMN: missing column name');
-
-            // If column already exists, silently skip (idempotent — matches Streams.js migration pattern)
-            var existing = tbl.columns.find(function (c) { return c.name === colName; });
-            if (existing) return;
-
-            var dataType = (op.definition && op.definition.dataType) || 'TEXT';
-            var notNull  = !!(op.nullable && op.nullable.value === 'not null');
-            var defVal   = null;
-            if (op.default_val && op.default_val.value != null) {
-                var dv = op.default_val.value;
-                if (typeof dv === 'object' && dv.value !== undefined) defVal = dv.value;
-                else defVal = dv;
-            }
-
-            var slotId = tbl._nextSlotId || (tbl.columns.length + 1);
-            tbl._nextSlotId = slotId + 1;
-
-            tbl.columns.push({
-                name:         colName,
-                type:         dataType.toUpperCase(),
-                notNull:      notNull,
-                defaultValue: defVal,
-                primaryKey:   false,
-                autoIncrement: false,
-                slotId:       slotId,
-                active:       true
-            });
-
-            // Backfill existing rows with default value
-            var store = self._store(tableName);
-            store.addColumn(slotId, defVal);
-
-            // Refresh the cached store's schema so _activeSlots picks up the new column.
-            store.updateSchema(self._catalog.getSchema(tableName));
-
-            self._catalog.save();
-            changes++;
-        }
-        // Other ALTER ops (DROP COLUMN, RENAME, etc.) can be added later.
-    });
-
-    return { rows: [], changes: changes, lastInsertRowid: null };
 };
 
 // ─── INSERT ───────────────────────────────────────────────────────────────────
@@ -1217,10 +992,6 @@ Engine.prototype._insert = function (ast, params) {
 
     var suppliedCols = (ast.columns || []).map(colName);
     if (!suppliedCols.length) suppliedCols = tbl.columns.map(function (c) { return c.name; });
-
-    // Detect INSERT IGNORE (prefix = "ignore into") and ON DUPLICATE KEY UPDATE
-    var isIgnore      = /ignore/i.test(ast.prefix || '');
-    var onDupUpdate   = ast.on_duplicate_update;   // { keyword, set: [{column, value}] }
 
     var store   = this._store(tableName);
     var indexes = this._catalog.getTableIndexes(tableName);
@@ -1270,67 +1041,20 @@ Engine.prototype._insert = function (ast, params) {
             ? KC.encodeTuple([row['__rowid__']])
             : KC.encodeTuple(tbl.primaryKey.map(function (cn) { return row[cn]; }));
 
-        // Check primary key uniqueness
-        var existingRow = store.get(pk);
-        if (existingRow !== undefined) {
-            if (onDupUpdate) {
-                // ON DUPLICATE KEY UPDATE: apply SET clauses to existing row.
-                // VALUES(col) / excluded.col → the value from the INSERT row.
-                var updatedRow = Object.assign(Object.create(null), existingRow);
-                var updatePi   = { i: 0 };  // fresh param index — SET exprs don't consume params
-                onDupUpdate.set.forEach(function (assignment) {
-                    var colTarget = assignment.column;
-                    var valExpr   = assignment.value;
-                    // Evaluate expression; resolve VALUES(col) / excluded.col to new row values
-                    var val = _evalDupExpr(valExpr, existingRow, row, params, updatePi);
-                    updatedRow[colTarget] = val;
-                });
-
-                // Remove old secondary index entries before update
-                indexes.forEach(function (idx) {
-                    var oldIdxKey = self._idxKey(idx.columns, existingRow, tbl, pk);
-                    self._txRecord('__idx__' + idx.name, oldIdxKey);
-                    self._idxStore(idx.name).delete(oldIdxKey);
-                });
-
-                self._txRecord(tableName, pk);
-                store.set(pk, updatedRow);
-                self._txAppend('set', tableName, pk, updatedRow);
-
-                // Re-add secondary index entries
-                indexes.forEach(function (idx) {
-                    var newIdxKey = self._idxKey(idx.columns, updatedRow, tbl, pk);
-                    self._txRecord('__idx__' + idx.name, newIdxKey);
-                    self._idxStore(idx.name).set(newIdxKey, { pk: pk });
-                });
-
-                changes++;
-                return; // next row
-            }
-            if (isIgnore) return; // INSERT IGNORE: silently skip conflicting row
+        // Check primary key uniqueness (store.set silently overwrites without this)
+        if (store.get(pk) !== undefined) {
             var pkCols = tbl.autoRowid ? ['rowid'] : tbl.primaryKey;
             throw new Error('UNIQUE constraint failed: ' + tableName + '.' + pkCols.join(', '));
         }
 
-        // Check unique constraints (secondary UNIQUE indexes / table UNIQUE constraints)
-        try {
-            self._checkUnique(tableName, tbl, store, row, pk, null);
-        } catch (e) {
-            if (isIgnore) return; // INSERT IGNORE: silently skip
-            // ON DUPLICATE KEY UPDATE only handles PK / first-encountered unique conflict
-            // (matching MySQL behaviour — secondary unique conflicts still throw)
-            throw e;
-        }
+        // Check unique constraints
+        self._checkUnique(tableName, tbl, store, row, pk, null);
 
-        self._txRecord(tableName, pk);
         store.set(pk, row);
-        self._txAppend('set', tableName, pk, row);
 
         // Update secondary indexes
         indexes.forEach(function (idx) {
-            var idxKey = self._idxKey(idx.columns, row, tbl, pk);
-            self._txRecord('__idx__' + idx.name, idxKey);
-            self._idxStore(idx.name).set(idxKey, { pk: pk });
+            self._idxStore(idx.name).set(self._idxKey(idx.columns, row, tbl, pk), { pk: pk });
         });
 
         lastId = tbl.autoRowid ? row['__rowid__']
@@ -1340,49 +1064,6 @@ Engine.prototype._insert = function (ast, params) {
 
     return { rows: [], changes: changes, lastInsertRowid: lastId };
 };
-
-/**
- * Evaluate an expression in an ON DUPLICATE KEY UPDATE SET clause.
- * Resolves VALUES(col) calls and excluded.col references to the INSERT row's values.
- * Falls back to evalExpr for everything else.
- * @private
- */
-function _evalDupExpr(expr, existingRow, newRow, params, pi) {
-    if (!expr) return null;
-    // VALUES(col) — MySQL syntax: function call named VALUES with a column_ref arg
-    if (expr.type === 'function' && expr.name && expr.name.toUpperCase() === 'VALUES') {
-        var argList = expr.args;
-        if (argList && argList.type === 'expr_list' && argList.value && argList.value.length) {
-            var colRef = argList.value[0];
-            if (colRef && colRef.type === 'column_ref') {
-                return newRow[colRef.column] !== undefined ? newRow[colRef.column] : null;
-            }
-        }
-        return null;
-    }
-    // excluded.col — SQLite syntax (table ref = "excluded")
-    if (expr.type === 'column_ref' && expr.table === 'excluded') {
-        return newRow[expr.column] !== undefined ? newRow[expr.column] : null;
-    }
-    // column_ref without table → existing row value
-    if (expr.type === 'column_ref' && !expr.table) {
-        return existingRow[expr.column] !== undefined ? existingRow[expr.column] : null;
-    }
-    // Binary expressions (e.g. messageCount + 1)
-    if (expr.type === 'binary_expr') {
-        var left  = _evalDupExpr(expr.left,  existingRow, newRow, params, pi);
-        var right = _evalDupExpr(expr.right, existingRow, newRow, params, pi);
-        switch (expr.operator) {
-            case '+':  return (left || 0) + (right || 0);
-            case '-':  return (left || 0) - (right || 0);
-            case '*':  return (left || 0) * (right || 0);
-            case '/':  return right ? (left || 0) / right : null;
-            case '||': return String(left || '') + String(right || '');
-        }
-    }
-    // Fallback to regular evalExpr (handles numbers, strings, params, etc.)
-    return evalExpr(expr, existingRow, params, pi);
-}
 
 Engine.prototype._checkUnique = function (tableName, tbl, store, newRow, newPk, oldPk) {
     // Check UNIQUE constraints
@@ -1788,18 +1469,9 @@ Engine.prototype._update = function (ast, params) {
     var pi      = { i: 0 };
     var self    = this;
 
-    // Determine how many params the SET clause consumes so that
-    // WHERE params start at the right offset.
-    // In SQL: UPDATE t SET v = ? WHERE k = ?  →  params = [v_val, k_val]
-    // SET params come first (index 0..setCount-1), WHERE params after (setCount..).
-    var setParamCount = 0;
-    (ast.set || []).forEach(function (s) {
-        setParamCount += _countParams(s.value);
-    });
-
-    var whereStart = setParamCount; // WHERE params start after SET params
+    var _updWhereStart = pi.i;
     var candidates = ast.where
-        ? store.all().filter(function (e) { pi.i = whereStart; return evalExpr(ast.where, e.value, params, pi); })
+        ? store.all().filter(function (e) { pi.i = _updWhereStart; return evalExpr(ast.where, e.value, params, pi); })
         : store.all().slice();
 
     var changes = 0;
@@ -1807,7 +1479,6 @@ Engine.prototype._update = function (ast, params) {
         var old = entry.value;
         var row = Object.assign(Object.create(null), old);
 
-        pi.i = 0; // SET params start at index 0
         (ast.set || []).forEach(function (s) {
             var cn = colName(s.column);
             row[cn] = evalExpr(s.value, row, params, pi);
@@ -1823,19 +1494,13 @@ Engine.prototype._update = function (ast, params) {
 
         // Remove old index entries
         indexes.forEach(function (idx) {
-            var oldIdxKey = self._idxKey(idx.columns, old, tbl, entry.key);
-            self._txRecord('__idx__' + idx.name, oldIdxKey);
-            self._idxStore(idx.name).delete(oldIdxKey);
+            self._idxStore(idx.name).delete(self._idxKey(idx.columns, old, tbl, entry.key));
         });
 
-        self._txRecord(tableName, entry.key);
         store.set(entry.key, row);
-        self._txAppend('set', tableName, entry.key, row);
 
         indexes.forEach(function (idx) {
-            var newIdxKey = self._idxKey(idx.columns, row, tbl, entry.key);
-            self._txRecord('__idx__' + idx.name, newIdxKey);
-            self._idxStore(idx.name).set(newIdxKey, { pk: entry.key });
+            self._idxStore(idx.name).set(self._idxKey(idx.columns, row, tbl, entry.key), { pk: entry.key });
         });
         changes++;
     });
@@ -1862,12 +1527,8 @@ Engine.prototype._delete = function (ast, params) {
 
     candidates.forEach(function (entry) {
         indexes.forEach(function (idx) {
-            var idxKey = self._idxKey(idx.columns, entry.value, tbl, entry.key);
-            self._txRecord('__idx__' + idx.name, idxKey);
-            self._idxStore(idx.name).delete(idxKey);
+            self._idxStore(idx.name).delete(self._idxKey(idx.columns, entry.value, tbl, entry.key));
         });
-        self._txRecord(tableName, entry.key);
-        self._txAppend('delete', tableName, entry.key, null);
         store.delete(entry.key);
     });
 

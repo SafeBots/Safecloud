@@ -181,7 +181,7 @@ fs.mkdirSync(tmpDir, { recursive: true });
 
 var dbPath = path.join(tmpDir, 'test.sc');
 var db  = new Database(dbPath);
-var srv = new MySQLServer(db, { port: 0, host: '127.0.0.1', password: 'Test#Passw0rd!99' }); // port 0 = OS assigns
+var srv = new MySQLServer(db, { port: 0, host: '127.0.0.1' }); // port 0 = OS assigns
 
 // ── Test runner ───────────────────────────────────────────────────────────────
 

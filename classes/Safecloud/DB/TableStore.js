@@ -107,9 +107,6 @@ function TableStore(filePath) {
 
 /** Load from disk, or start empty if the file doesn't exist. */
 TableStore.prototype.load = function () {
-    // Clean up any leftover temp file from a previously crashed flush.
-    // The rename did not complete, so the target (if present) is still valid.
-    try { fs.unlinkSync(this._path + '.tmp'); } catch (e) {}
     if (!fs.existsSync(this._path)) return;
     var raw;
     try { raw = fs.readFileSync(this._path, 'utf8'); }
@@ -126,35 +123,15 @@ TableStore.prototype.load = function () {
     this._dirty = false;
 };
 
-/**
- * Flush to disk if dirty.
- *
- * Uses an atomic write-to-temp-then-rename pattern so a crash mid-write
- * never leaves a corrupt store file.  POSIX rename(2) is atomic within
- * a single filesystem, so the file is either the old version or the new
- * version — never a half-written intermediate.
- *
- * Note on multi-table commit atomicity: Engine.flush() (called from
- * commitTx) flushes all table stores first, then saves the catalog last.
- * The catalog therefore acts as a commit marker: if the catalog is
- * consistent, every table it references was fully flushed.  A crash
- * between individual table renames leaves at most one stale .tmp file
- * (cleaned up on the next load) and the catalog pointing at the previous
- * committed state for that table.  Full write-ahead logging would be
- * required for strict cross-table atomicity; this is intentionally a
- * pragmatic trade-off for the local/embedded use case.
- */
+/** Flush to disk if dirty. */
 TableStore.prototype.flush = function () {
     if (!this._dirty) return;
     var entries = this._keys.map(function (k) {
         return { key: k, value: this._data[k] };
     }, this);
     var json = JSON.stringify({ v: 1, entries: deflate(entries) });
-    var dir  = path.dirname(this._path);
-    var tmp  = this._path + '.tmp';
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(tmp, json, 'utf8');
-    fs.renameSync(tmp, this._path);
+    fs.mkdirSync(path.dirname(this._path), { recursive: true });
+    fs.writeFileSync(this._path, json, 'utf8');
     this._dirty = false;
 };
 

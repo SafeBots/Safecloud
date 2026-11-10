@@ -174,7 +174,7 @@ function run(jestDone) {
 var tmpDir = path.join(os.tmpdir(), 'safedb_e2e_' + process.pid);
 fs.mkdirSync(tmpDir, { recursive: true });
 var db  = new Database(path.join(tmpDir, 'e2e.sc'));
-var srv = new MySQLServer(db, { port: 0, host: '127.0.0.1', password: 'Test#Passw0rd!99' });
+var srv = new MySQLServer(db, { port: 0, host: '127.0.0.1' });
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 

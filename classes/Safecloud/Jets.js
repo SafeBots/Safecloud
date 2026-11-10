@@ -170,6 +170,12 @@ var AuthorPanel;
 try { AuthorPanel = require('./AuthorPanel'); }
 catch (e) { AuthorPanel = null; }
 
+// ── OCP Delegation (Safecloud 4.1) ──────────────────────────────────────
+var Delegation;
+try { Delegation = require('./Delegation'); }
+catch (e) { Delegation = null; }
+var _delegation = null; // set in listen() when rights are enabled
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Constructor / namespace object
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1982,6 +1988,13 @@ Safecloud_Jets.listen = function (options) {
             AuthorPanel.registerRoutes(app, _rightsManager);
             Q.log('Q.Safecloud.Jets: author control panel enabled at /Safecloud/author/panel', 'Safecloud');
         }
+
+        // ── 4.1: OCP Delegation ──────────────────────────────────────────
+        if (Delegation) {
+            _delegation = new Delegation(_rightsManager._db);
+            Delegation.registerRoutes(app, _delegation);
+            Q.log('Q.Safecloud.Jets: OCP delegation enforcement enabled', 'Safecloud');
+        }
     }
 
     // ── 9. MySQL protocol server for the DB engine (Safecloud 3.7) ───────────
@@ -3077,6 +3090,38 @@ function _registerHttpRoutes(app) {
             }
         }
 
+        // ── 4.1: OCP Delegation check (Origin-based) ────────────────────────
+        // If no publisherAuth token but an Origin header is present, check
+        // for an active delegation matching that domain. This is the simple
+        // "free tier" flow — no crypto from the publisher needed.
+        var delegationMatch = null;
+        if (_delegation && !publisherAuth) {
+            var origin = req.headers['origin'] || req.headers['referer'] || null;
+            if (origin) {
+                var matches = _delegation.findByOrigin(origin, { rootCid: rootCid });
+                if (matches.length > 0) {
+                    delegationMatch = matches[0];
+                    // Check geo + IP + rate limits
+                    var viewerIp = req.ip || req.connection.remoteAddress;
+                    var check = _delegation.checkAndConsume(delegationMatch.id, {
+                        ip:       viewerIp,
+                        quantity: 'requests',
+                        amount:   1
+                    });
+                    if (!check.allowed) {
+                        var statusCode = check.reason === 'limit_exceeded' ? 429
+                            : check.reason === 'geo_blocked' ? 451
+                            : check.reason === 'ip_not_allowed' ? 403
+                            : 403;
+                        return res.status(statusCode).json({
+                            error: { code: 'DelegationDenied', message: check.reason,
+                                     detail: check.limit || check.country || null }
+                        });
+                    }
+                }
+            }
+        }
+
         // ── 4.0: rate limiting per (publisher, userId) ───────────────────────
         if (_rightsManager && body.publisherId && body.userId) {
             if (!_rightsManager.checkRateLimit(body.publisherId, body.userId)) {
@@ -3195,15 +3240,22 @@ function _registerHttpRoutes(app) {
             });
         }
 
+        // ── 4.1: delegation bypasses payment ─────────────────────────────────
+        // When a valid delegation covers this request, the delegation IS
+        // the authorization. No payment required.
+        var effectiveCheckPayment = (delegationMatch)
+            ? function () { return Promise.resolve({ ok: true }); }
+            : checkPayment;
+
         SafecloudKeyIssuance.issueKeys({
             rootCid:          rootCid,
             chunkIndices:     chunkIndices,
             rootKey:          rootKey,
             accessModel:      accessModel,
-            paymentSig:       paymentSig,
+            paymentSig:       delegationMatch ? 'delegation' : paymentSig,
             attestation:      attestation,
             blessedBuilds:    blessedBuilds,
-            checkPayment:     checkPayment
+            checkPayment:     effectiveCheckPayment
         }).then(function (result) {
             res.status(200).json(result);
         }).catch(function (err) {

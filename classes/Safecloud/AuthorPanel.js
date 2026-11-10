@@ -111,6 +111,7 @@ var PANEL_HTML = '<!doctype html>\n<html lang="en">\n<head>\n' +
 '    <button class="tab" data-tab="roots">My Content</button>\n' +
 '    <button class="tab" data-tab="issue">Issue Cert</button>\n' +
 '    <button class="tab" data-tab="certs">Issued Certs</button>\n' +
+'    <button class="tab" data-tab="delegations">Delegations</button>\n' +
 '  </div>\n' +
 '\n' +
 '  <!-- Keypair Tab -->\n' +
@@ -168,6 +169,31 @@ var PANEL_HTML = '<!doctype html>\n<html lang="en">\n<head>\n' +
 '    <div id="certs-msg"></div>\n' +
 '    <div id="certs-table"><div class="empty">No certs recorded on this Jet.</div></div>\n' +
 '    <div class="actions"><button id="btn-load-certs">Refresh</button></div>\n' +
+'  </div>\n' +
+'\n' +
+'  <!-- Delegations Tab -->\n' +
+'  <div class="panel" id="tab-delegations">\n' +
+'    <div class="desc">Grant a publisher (by domain) the right to serve your content to their users. Delegations use the OCP Delegation Extension — the publisher does not need to set up keys. The jet checks the <code>Origin</code> header automatically.</div>\n' +
+'    <div id="deleg-msg"></div>\n' +
+'    <div class="card">\n' +
+'      <h3>Create Delegation</h3>\n' +
+'      <div class="form-row"><label>Publisher Domains (comma-separated)</label><input id="d-domains" placeholder="publisher.com, app.publisher.com"></div>\n' +
+'      <div class="form-row"><label>Label (scoping string)</label><input id="d-label" placeholder="e.g. my-video-catalog"></div>\n' +
+'      <div class="form-row"><label>Root CID (blank = all your content)</label><input id="d-root" placeholder="bafyroots... (optional)"></div>\n' +
+'      <div class="form-row"><label>Expires (days, 0 = no expiry)</label><input id="d-exp" type="number" min="0" value="365"></div>\n' +
+'      <div class="form-row"><label>Rate Limits (JSON array, optional)</label><textarea id="d-limits" rows="2" placeholder=\'[{"minutes": 10000, "per": "month"}]\'></textarea></div>\n' +
+'      <div class="form-row"><label>Geo Restrictions (JSON, optional)</label><input id="d-geo" placeholder=\'{"excludeCountries": ["KP","IR"]}\'></div>\n' +
+'      <div class="form-row"><label>IP Allowlist (comma-separated CIDRs, optional)</label><input id="d-ips" placeholder="203.0.113.0/24, 198.51.100.5"></div>\n' +
+'      <div class="form-row"><label>Max Re-delegation Depth</label><input id="d-depth" type="number" min="0" value="1"></div>\n' +
+'      <div class="form-row"><label>Webhook URL (revocation notices)</label><input id="d-webhook" placeholder="https://publisher.com/hooks/safecloud"></div>\n' +
+'      <div class="form-row"><label><input type="checkbox" id="d-irrevocable"> Irrevocable (valid until expiry)</label></div>\n' +
+'      <div class="actions"><button class="primary" id="btn-create-deleg">Sign & Create</button></div>\n' +
+'    </div>\n' +
+'    <div class="card">\n' +
+'      <h3>Active Delegations</h3>\n' +
+'      <div id="deleg-table"><div class="empty">No delegations yet.</div></div>\n' +
+'      <div class="actions"><button id="btn-load-delegs">Refresh</button></div>\n' +
+'    </div>\n' +
 '  </div>\n' +
 '\n' +
 '</div>\n' +
@@ -352,6 +378,76 @@ var PANEL_HTML = '<!doctype html>\n<html lang="en">\n<head>\n' +
 '  el.innerHTML=\'<div class="msg msg-\'+kind+\'">\'+text+\'</div>\';\n' +
 '  setTimeout(function(){el.innerHTML="";},8000);\n' +
 '}\n' +
+// ── Delegations ───────────────────────────────────────────────────────────
+'document.getElementById("btn-create-deleg").addEventListener("click",async function(){\n' +
+'  if(!_privHex||!_pubHex){_msg("deleg-msg","Load a keypair first.","err");return;}\n' +
+'  var domainsStr=document.getElementById("d-domains").value.trim();\n' +
+'  if(!domainsStr){_msg("deleg-msg","At least one domain required.","err");return;}\n' +
+'  var domains=domainsStr.split(",").map(function(s){return s.trim();}).filter(Boolean);\n' +
+'  var label=document.getElementById("d-label").value.trim()||"";\n' +
+'  var root=document.getElementById("d-root").value.trim()||null;\n' +
+'  var expDays=parseInt(document.getElementById("d-exp").value)||0;\n' +
+'  var now=Math.floor(Date.now()/1000);\n' +
+'  var exp=expDays>0?now+expDays*86400:0;\n' +
+'  var stm={parent:"SHA256("+_pubHex+")",label:label,domains:domains,issuedTime:now};\n' +
+'  if(root)stm.rootCid=root;\n' +
+'  var limitsStr=document.getElementById("d-limits").value.trim();\n' +
+'  if(limitsStr){try{stm.limits=JSON.parse(limitsStr);}catch(e){_msg("deleg-msg","Invalid limits JSON.","err");return;}}\n' +
+'  var geoStr=document.getElementById("d-geo").value.trim();\n' +
+'  if(geoStr){try{stm.geo=JSON.parse(geoStr);}catch(e){_msg("deleg-msg","Invalid geo JSON.","err");return;}}\n' +
+'  var ipsStr=document.getElementById("d-ips").value.trim();\n' +
+'  if(ipsStr){stm.allowIPs=ipsStr.split(",").map(function(s){return s.trim();}).filter(Boolean);}\n' +
+'  var depth=parseInt(document.getElementById("d-depth").value);\n' +
+'  if(!isNaN(depth))stm.maxDepth=depth;\n' +
+'  var webhookUrl=document.getElementById("d-webhook").value.trim()||null;\n' +
+'  if(webhookUrl)stm.webhookUrl=webhookUrl;\n' +
+'  if(document.getElementById("d-irrevocable").checked)stm.irrevocable=true;\n' +
+'  var claim={ocp:1,iss:"data:key/ed25519;hex,"+_pubHex,sub:label||domains[0],stm:stm,nbf:now,exp:exp};\n' +
+'  var keys=Object.keys(claim).sort();\n' +
+'  var canon=JSON.stringify(keys.reduce(function(o,k){o[k]=claim[k];return o;},{}),"utf8");\n' +
+'  try{\n' +
+'    var privBytes3=_privHex.match(/.{2}/g).map(function(h){return parseInt(h,16);});\n' +
+'    var pkcs8Header3=[0x30,0x2e,0x02,0x01,0x00,0x30,0x05,0x06,0x03,0x2b,0x65,0x70,0x04,0x22,0x04,0x20];\n' +
+'    var pkcs8b3=new Uint8Array(pkcs8Header3.concat(privBytes3));\n' +
+'    var pKey3=await crypto.subtle.importKey("pkcs8",pkcs8b3,{name:"Ed25519"},false,["sign"]);\n' +
+'    var hashBuf3=await crypto.subtle.digest("SHA-256",new TextEncoder().encode(canon));\n' +
+'    var sigBuf3=await crypto.subtle.sign({name:"Ed25519"},pKey3,hashBuf3);\n' +
+'    var sigHex3=Array.from(new Uint8Array(sigBuf3)).map(function(b){return b.toString(16).padStart(2,"0");}).join("");\n' +
+'    claim.sig=sigHex3;\n' +
+'    var resp=await fetch("./panel/api/delegation",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({claim:claim})});\n' +
+'    var rd=await resp.json();\n' +
+'    if(!resp.ok){_msg("deleg-msg","Jet rejected: "+(rd.error||resp.status),"err");return;}\n' +
+'    _msg("deleg-msg","Delegation created (id "+rd.delegation.id+") for "+domains.join(", "),"ok");\n' +
+'    _loadDelegs();\n' +
+'  }catch(e){_msg("deleg-msg","Error: "+e.message,"err");}\n' +
+'});\n' +
+'document.getElementById("btn-load-delegs").addEventListener("click",_loadDelegs);\n' +
+'async function _loadDelegs(){\n' +
+'  if(!_pubHex){_msg("deleg-msg","Load keypair first.","err");return;}\n' +
+'  var r=await fetch("./panel/api/delegations?authorPubKey="+encodeURIComponent(_pubHex));\n' +
+'  var d=await r.json();\n' +
+'  if(!r.ok||!d.delegations){_msg("deleg-msg","Error loading delegations.","err");return;}\n' +
+'  if(!d.delegations.length){document.getElementById("deleg-table").innerHTML=\'<div class="empty">No delegations.</div>\';return;}\n' +
+'  var h=\'<table><tr><th>ID</th><th>Domains</th><th>Label</th><th>Limits</th><th>Expires</th><th>Status</th><th></th></tr>\';\n' +
+'  d.delegations.forEach(function(c){\n' +
+'    var exp2=c.expiresAt?new Date(c.expiresAt*1000).toLocaleDateString():"never";\n' +
+'    var badge2=c.active?\'<span class="badge badge-green">active</span>\':\'<span class="badge badge-red">revoked</span>\';\n' +
+'    var limStr=c.limits?JSON.stringify(c.limits):"—";\n' +
+'    h+=\'<tr><td>\'+c.id+\'</td><td class="mono">\'+c.domains.join(", ")+\'</td><td>\'+c.label+\'</td><td style="font-size:.75rem">\'+limStr+\'</td><td>\'+exp2+\'</td><td>\'+badge2+\'</td>\';\n' +
+'    if(c.active&&c.revocable)h+=\'<td><button class="danger" onclick="_revokeDeleg(\'+c.id+\')">Revoke</button></td>\';\n' +
+'    else h+=\'<td></td>\';\n' +
+'    h+=\'</tr>\';\n' +
+'  });\n' +
+'  h+=\'</table>\';\n' +
+'  document.getElementById("deleg-table").innerHTML=h;\n' +
+'}\n' +
+'async function _revokeDeleg(id){\n' +
+'  if(!confirm("Revoke delegation "+id+"?"))return;\n' +
+'  var r=await fetch("./panel/api/delegation/"+id,{method:"DELETE"});\n' +
+'  var d=await r.json();\n' +
+'  if(!r.ok){_msg("deleg-msg",d.error||"Error","err");return;}\n' +
+'  _msg("deleg-msg","Delegation "+id+" revoked.","ok");_loadDelegs();\n' +
+'};\n' +
 '_loadKp();\n' +
 '})();\n' +
 '</script>\n' +

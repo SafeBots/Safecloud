@@ -58,23 +58,6 @@ var SERVER_CAPS = CLIENT_LONG_PASSWORD
 
 var SERVER_STATUS_AUTOCOMMIT = 0x0002;
 
-/**
- * Estimate password entropy in bits using charset-pool method.
- * Counts which character classes are present, computes pool size,
- * returns log2(pool^length).
- * @param {string} pw
- * @returns {number} estimated bits of entropy
- */
-function _estimateEntropy(pw) {
-    var pool = 0;
-    if (/[a-z]/.test(pw)) pool += 26;
-    if (/[A-Z]/.test(pw)) pool += 26;
-    if (/[0-9]/.test(pw)) pool += 10;
-    if (/[^a-zA-Z0-9]/.test(pw)) pool += 32;
-    if (pool === 0) pool = 26; // fallback
-    return pw.length * Math.log2(pool);
-}
-
 // MySQL column type codes
 var TYPE_VARCHAR  = 0xfd;
 var TYPE_LONG     = 0x03; // INT
@@ -99,10 +82,7 @@ var COM_STMT_RESET       = 0x1a;
  * @param {object}   options
  * @param {string}   [options.host='127.0.0.1']   Bind address.
  * @param {number}   [options.port=3306]           TCP port.
- * @param {string}   options.password               Required auth password. Must be at least 12
- *                                                  characters with >= 40 bits of entropy (mixed
- *                                                  case + digits + specials). No default — the
- *                                                  server refuses to start without one.
+ * @param {string}   [options.password=null]       Required auth password; null = no auth.
  * @param {string}   [options.dbName='safecloud']  Logical DB name sent to clients.
  */
 function MySQLServer(database, options) {
@@ -111,20 +91,7 @@ function MySQLServer(database, options) {
     this._host    = options.host     || '127.0.0.1';
     // Allow port 0 (OS-assigned ephemeral port) — don't treat 0 as falsy.
     this._port    = (options.port !== undefined && options.port !== null) ? options.port : 3306;
-
-    // Password is required. Validate length and entropy.
-    var pw = options.password;
-    if (!pw || typeof pw !== 'string') {
-        throw new Error('MySQLServer: password is required. Set Safecloud.db.mysql.password in your config.');
-    }
-    if (pw.length < 12) {
-        throw new Error('MySQLServer: password must be at least 12 characters (got ' + pw.length + ').');
-    }
-    var entropy = _estimateEntropy(pw);
-    if (entropy < 40) {
-        throw new Error('MySQLServer: password entropy too low (' + entropy.toFixed(1) + ' bits, need >= 40). Use mixed case, digits, and special characters.');
-    }
-    this._password = pw;
+    this._password = options.password || null;
     this._dbName  = options.dbName   || 'safecloud';
     this._server  = null;
     this._nextConnId = 1;
@@ -1518,7 +1485,7 @@ function _decodeBinaryParam(buf, offset, type) {
             else if (slen === 0xfd) {
                 slen = buf[offset] | (buf[offset + 1] << 8) | (buf[offset + 2] << 16);
                 offset += 3;
-            } else if (slen === 0xfe) { slen = buf.readUInt32LE(offset); offset += 8; } // 8-byte lenenc; hi 4 bytes ignored
+            } else if (slen === 0xfe) { slen = buf.readUInt32LE(offset); offset += 4; }
             if (offset + slen > buf.length) slen = buf.length - offset;
             var str = buf.slice(offset, offset + slen).toString('utf8');
             return { value: str, offset: offset + slen };

@@ -13,11 +13,6 @@ Role-based guides in **`GetStarted/`**:
 
 This document is an overview of the internals of the Safecloud ecosystem. It can serve as the canonical context file for new LLM sessions working on the Safecloud project. It covers architecture, cryptographic design, all method signatures, and the role of OpenClaiming (OCP) in the system.
 
-**Release notes:**
-
-- **[RELEASE_4.0.md](RELEASE_4.0.md)** — **Safecloud 4.0**: collaborative editors (Univer Docs/Sheets, CodeMirror, Slides), Streams access enforcement (readLevel/writeLevel/adminLevel), inheritAccess for folder→file cascade, SafeDB migration (no more native dependencies), DocStore Google-Suite layer.
-- **[CHANGELOG.md](CHANGELOG.md)** — **Safecloud 3.8**: payment replay protection, admin control panel with WebAuthn passkey auth.
-
 **Companion documents** — this README covers the storage and compute primitives. The broader ecosystem is documented across several companion files:
 
 - **[Architecture.md](Architecture.md)** — top-level architecture: the unified triangle (Safecloud pull, Intercloud push, Safebox trust), three-tier WASM execution model, tree API, chat and messaging, SafecloudApp deployment, and comparison with related systems.

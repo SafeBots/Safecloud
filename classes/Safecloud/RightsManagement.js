@@ -94,6 +94,51 @@ var SCHEMA = [
     ')',
 
     'CREATE INDEX IF NOT EXISTS idx_used_nonces_exp ON used_nonces(exp)',
+
+    // ── delegations (OCP Delegation Extension) ──────────────────────────────
+    // Author-signed delegations granting a publisher (identified by domain)
+    // access to the author's content, with optional rate limits, geo
+    // restrictions, IP allowlists, and depth limits.
+    'CREATE TABLE IF NOT EXISTS delegations (' +
+        'id              INTEGER PRIMARY KEY AUTOINCREMENT,' +
+        'author_pub_hex  TEXT NOT NULL,' +       // hex Ed25519 pub key of issuing author
+        'domains_json    TEXT NOT NULL,' +        // JSON array of publisher domains
+        'root_cid        TEXT,' +                 // NULL = all roots for this author
+        'label           TEXT NOT NULL,' +        // scoping string
+        'limits_json     TEXT,' +                 // JSON array of {quantity: N, per: "day"|...}
+        'geo_json        TEXT,' +                 // JSON {includeCountries:[]} or {excludeCountries:[]}
+        'allow_ips_json  TEXT,' +                 // JSON array of CIDR/wildcard/exact IPs
+        'max_depth       INTEGER,' +              // NULL = unlimited
+        'claim_json      TEXT NOT NULL,' +        // the full signed OCP delegation claim
+        'issued_at       INTEGER NOT NULL,' +     // Unix seconds
+        'expires_at      INTEGER,' +              // NULL = no expiry
+        'revocable       INTEGER NOT NULL DEFAULT 1,' + // 0 = irrevocable until expires_at
+        'active          INTEGER NOT NULL DEFAULT 1,' + // 0 = revoked
+        'webhook_url     TEXT' +                  // publisher's webhook for revocation notices
+    ')',
+
+    'CREATE INDEX IF NOT EXISTS idx_delegations_author ON delegations(author_pub_hex)',
+    'CREATE INDEX IF NOT EXISTS idx_delegations_active ON delegations(active, expires_at)',
+
+    // Domain lookup index — maps domain strings to delegation IDs for fast
+    // Origin-header resolution. One row per domain per delegation.
+    'CREATE TABLE IF NOT EXISTS delegation_domains (' +
+        'domain          TEXT NOT NULL,' +
+        'delegation_id   INTEGER NOT NULL,' +
+        'FOREIGN KEY (delegation_id) REFERENCES delegations(id)' +
+    ')',
+
+    'CREATE INDEX IF NOT EXISTS idx_deleg_domains ON delegation_domains(domain, delegation_id)',
+
+    // Aggregate consumption tracking — one row per delegation per period per
+    // quantity type. No per-viewer tracking; limits are global per delegation.
+    'CREATE TABLE IF NOT EXISTS delegation_usage (' +
+        'delegation_id   INTEGER NOT NULL,' +
+        'period_key      TEXT NOT NULL,' +        // "2026-11" for month, "2026-11-08" for day, etc.
+        'quantity        TEXT NOT NULL,' +         // "minutes", "videos", etc.
+        'consumed        REAL NOT NULL DEFAULT 0,' +
+        'PRIMARY KEY (delegation_id, period_key, quantity)' +
+    ')',
 ];
 
 // ─── Default config ───────────────────────────────────────────────────────────

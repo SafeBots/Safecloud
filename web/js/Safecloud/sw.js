@@ -34,16 +34,6 @@ var sessions = {};
 // segments[videoId][version][segIndex] = { ciphertext, tag, iv }
 var segments = {};
 
-// ── Rolling-rewind key destruction ────────────────────────────────────────────
-// highWaterMark[videoId][version] = highest segment index ever successfully served.
-// Once a segment is decrypted and delivered to hls.js, it is gone from memory —
-// rewind past it results in a 503, which is exactly what pay-per-minute requires.
-// REWIND_WINDOW_SEGS lets hls.js's own buffer absorb normal scrubbing without
-// re-requesting: segments within this many indices of the high-water mark are
-// kept, everything older is evicted immediately after serving.
-var highWaterMark = {};
-var REWIND_WINDOW_SEGS = 10; // ~1 min at 6 s/segment; keep for intra-buffer seeks
-
 // ── IndexedDB session persistence ─────────────────────────────────────────────
 // Browsers kill idle service workers; without persistence a restart mid-
 // playback would 404 every request. Sessions therefore also live in the
@@ -168,18 +158,10 @@ self.addEventListener('message', function (event) {
             if (segments[msg.videoId]) {
                 var sess = sessions[msg.videoId];
                 var ver  = sess && (sess.activeVersion || '');
-                var hwmV = (highWaterMark[msg.videoId] && highWaterMark[msg.videoId][ver]) || -1;
                 if (segments[msg.videoId][ver]) {
                     var keep = {}, si = msg.segIndex;
                     for (var k in segments[msg.videoId][ver]) {
-                        var ki = parseInt(k, 10);
-                        // Keep segments near the seek target, but never
-                        // restore segments the high-water mark has already
-                        // evicted (they don't exist here anyway — just be
-                        // explicit that the window applies in both directions).
-                        if (Math.abs(ki - si) <= 2 && ki >= (hwmV - REWIND_WINDOW_SEGS)) {
-                            keep[k] = segments[msg.videoId][ver][k];
-                        }
+                        if (Math.abs(k - si) <= 2) { keep[k] = segments[msg.videoId][ver][k]; }
                     }
                     segments[msg.videoId][ver] = keep;
                 }
@@ -194,29 +176,9 @@ self.addEventListener('message', function (event) {
             }
             break;
 
-        case 'Q.Safecloud.Client.played':
-            // Page reports that the viewer has played past segIndex —
-            // evict everything older than the rewind window right now,
-            // even if that segment hasn't been fetched by hls.js yet
-            // (it may have been prefetched but not yet requested).
-            // This handles the case where _prefetchLoop fetched ahead
-            // but the page needs to signal destruction proactively.
-            if (segments[msg.videoId]) {
-                var pVer = msg.version || (sessions[msg.videoId] && sessions[msg.videoId].activeVersion) || '';
-                var pHwm = (highWaterMark[msg.videoId] && highWaterMark[msg.videoId][pVer]) || -1;
-                if (msg.segIndex > pHwm) {
-                    if (!highWaterMark[msg.videoId]) { highWaterMark[msg.videoId] = {}; }
-                    highWaterMark[msg.videoId][pVer] = msg.segIndex;
-                    pHwm = msg.segIndex;
-                }
-                _evictOldSegments(msg.videoId, pVer, pHwm);
-            }
-            break;
-
         case 'Q.Safecloud.Client.stop':
             delete sessions[msg.videoId];
             delete segments[msg.videoId];
-            delete highWaterMark[msg.videoId];
             _idbDeleteSession(msg.videoId);
             break;
     }
@@ -235,21 +197,6 @@ self.addEventListener('fetch', function (event) {
 // silent failure in here previously left zero trace anywhere the page's
 // own diagnostics — _prefetchLoop's stall warning, hls.js's event log —
 // could see). Fire-and-forget; never blocks the actual response.
-/**
- * Evict all segments for videoId/version whose index is strictly less than
- * (hwm - REWIND_WINDOW_SEGS).  Called after serving a segment and after a
- * 'played' message so old ciphertext does not linger in memory.
- */
-function _evictOldSegments(videoId, version, hwm) {
-    var store = segments[videoId] && segments[videoId][version];
-    if (!store) { return; }
-    var cutoff = hwm - REWIND_WINDOW_SEGS;
-    if (cutoff <= 0) { return; }
-    Object.keys(store).forEach(function (k) {
-        if (parseInt(k, 10) < cutoff) { delete store[k]; }
-    });
-}
-
 function _notifyClients(message) {
     try {
         self.clients.matchAll({ includeUncontrolled: true }).then(function (clientList) {
@@ -522,23 +469,6 @@ function serveSegment(request, videoId, version, segIndex, session) {
             }
             return decryptSegment(segData, segIndex, session, version)
                 .then(function (plaintext) {
-                    // ── Rolling-rewind key destruction ────────────────────
-                    // Delete the ciphertext immediately after decryption so
-                    // a rewind past the window can't get the same bytes again.
-                    // The plaintext is already in hls.js's SourceBuffer —
-                    // the ciphertext in memory serves no further purpose.
-                    if (segments[videoId] && segments[videoId][version]) {
-                        delete segments[videoId][version][segIndex];
-                    }
-                    if (!highWaterMark[videoId]) { highWaterMark[videoId] = {}; }
-                    var hwm = highWaterMark[videoId][version] || -1;
-                    if (segIndex > hwm) {
-                        highWaterMark[videoId][version] = segIndex;
-                        hwm = segIndex;
-                    }
-                    _evictOldSegments(videoId, version, hwm);
-                    // ─────────────────────────────────────────────────────
-
                     var rangeHeader = request.headers.get('Range');
                     if (rangeHeader) { return serveRange(plaintext, rangeHeader); }
                     return new Response(plaintext, {
