@@ -1,69 +1,102 @@
 # Get Started: publish as an Author
 
-An **Author** uploads content and sets the revenue split. Your content is
-encrypted before it leaves the browser — infrastructure never sees plaintext —
-and the split you choose is **enforced by the payment rail itself**: no party
-collects unless you are paid in the very same transaction.
+An **Author** uploads content to the Safecloud network. The file is split into 256 KB chunks in your browser, each one content-addressed and optionally encrypted before anything leaves your machine. The Jet proxies the chunks to connected Drops; you get a root CID and an embed snippet.
 
 ---
 
-## Steps
+## Option A: drag-drop dashboard (no code)
 
-1. **Upload** through the Safecloud client:
-   ```js
-   Q.Safecloud.Client.store(file, { revenue: { policy: {
-       payees:     [yourAddress],
-       fractions:  [9000],          // 90% to you
-       dynamicBps: 1000,            // 10% to infrastructure (Jet + Drops)
-       dynamicConstraint: ZERO32,
-       targets:    []
-   } } });
-   ```
-   90 / 10 is the default; adjust it in the share panel.
+Open the author dashboard in any modern browser:
 
-2. **Share.** The share panel gives you:
-   - a **link**,
-   - an **iframe embed** snippet,
-   - optionally a **split-entropy passphrase** — the link alone won't play the
-     video; you tell viewers the four words separately, out of band.
+```
+https://<your-jet>/Safecloud/player/author.html
+```
 
-3. **Get paid.** Viewers stream; every settled payment splits **atomically**
-   per your policy. Your lifetime earnings are public chain state:
-   `receivedTotal(safebux, yourAddress)` — no dashboard required.
+1. **Drop a file** onto the upload zone, or click to browse. Any format — video, audio, PDF, whatever.
+2. **Fill in metadata** (all optional): title, description, comma-separated tags.
+3. **Choose encryption** — check the box if you want AES-256-GCM per-chunk encryption. A fresh 256-bit key is generated in the browser; it never leaves in one piece. The dashboard tells you what to do with the key after upload.
+4. **Click Publish.** A progress bar shows chunking → encrypting (if on) → uploading.
+5. **Copy the embed snippet.** The result panel shows the root CID and a ready-to-paste `<iframe>` tag.
+
+That's it. No wallet required for a free upload. If the Jet charges for storage, the dashboard shows the estimated cost before you click Publish.
 
 ---
 
-## The revenue policy, briefly
+## Embedding in a static site
 
-| Field | Meaning |
-|---|---|
-| `payees` / `fractions` | who gets paid and what share (bps of 10000) |
-| `dynamicBps` | the infrastructure share — filled by whichever Jet/Drops served |
-| `dynamicConstraint` | restricts who may fill the dynamic slot (`ZERO32` = any) |
-| `targets` | optional routing of your own share (e.g. through a vesting contract) |
+Paste the snippet from the result panel into any HTML page — a GitHub Pages site, a Netlify deploy, a WordPress post, anywhere:
 
-`fractions` + `dynamicBps` must sum to 10000. The Jet rejects a policy that
-underpays infrastructure below its configured `minInfraBp`, so set a realistic
-infra share (the 1000 bps default is safe).
+```html
+<iframe
+  src="https://<jet>/Safecloud/player/embed.html?rootCid=bafy…&jetUrl=https%3A%2F%2F<jet>"
+  sandbox="allow-scripts allow-same-origin"
+  allow="autoplay; fullscreen; picture-in-picture"
+  width="640" height="360"
+  frameborder="0"
+></iframe>
+```
+
+The player runs entirely inside the iframe, on the Jet's origin. Your static host never touches the content — it just holds the tag, exactly like a YouTube or Vimeo embed.
+
+**Encrypted uploads** — the snippet will include a `#key=…` fragment and `&sf=1` in the URL:
+
+```
+…embed.html?rootCid=bafy…&jetUrl=…&sf=1#key=abc123…
+```
+
+The fragment is the viewer's half of the AES key. The Jet holds the other half and hands it to anyone who loads the player with that root CID. Together they reconstruct the full key and decrypt. Copy the full URL — hash and all — or the content won't play. If you lose the `#key=…` half, the content is unrecoverable.
+
+**`sandbox` explained** — `allow-scripts` is required (the player is JavaScript). `allow-same-origin` is required for the Service Worker the player uses to stitch chunks into a stream and for the local capability cache. Without `allow-same-origin` the player loads but streaming breaks. Leave out `allow-top-navigation`, `allow-popups`, and `allow-forms` — the player doesn't need them and dropping them reduces the embedding page's attack surface.
 
 ---
 
-## Options worth knowing
+## Option B: JavaScript library (developers)
 
-- **Split-entropy sharing.** Choose a passphrase and the decryption key is split
-  between the URL and the words you speak aloud. Whoever holds only the link
-  cannot watch.
-- **Vesting / anti-cycling.** Set `targets: [vestingContract]` to route your own
-  share through a lockup.
-- **Sponsored viewers.** A website can pay on a viewer's behalf so first-time
-  visitors watch instantly — see the **Publisher** guide. From your side nothing
-  changes; you're still paid your full share per your policy.
+For apps that need to trigger uploads programmatically, load `safecloud-upload.js` directly:
+
+```html
+<script src="https://<jet>/Safecloud/player/safecloud-upload.js"></script>
+```
+
+```js
+const up = new SafecloudUpload({ jetUrl: 'https://jet.example.com' });
+
+up.on('progress', ({ phase, pct }) => {
+    console.log(phase, pct + '%');
+    // phases: 'chunking', 'encrypting', 'uploading', 'done'
+});
+
+const { rootCid, embedUrl, urlFragment } = await up.upload(file, {
+    title:       'My Podcast',
+    description: 'Episode 42',
+    tags:        ['music', 'podcast'],
+    price:       '0',     // wei per chunk view ('0' = free)
+    encrypt:     false    // true = AES-256-GCM split-key
+});
+```
+
+`embedUrl` is the full iframe `src` including the `#key=…` fragment if the upload was encrypted. `urlFragment` is just the fragment, if you need to store it separately.
+
+---
+
+## Option C: Q.js API (Qbix plugin developers)
+
+If you're building a Qbix plugin and want the full revenue-policy and grant machinery:
+
+```js
+Q.Safecloud.Client.store(file, { revenue: { policy: {
+    payees:            [yourAddress],
+    fractions:         [9000],       // 90% to you
+    dynamicBps:        1000,         // 10% to infrastructure
+    dynamicConstraint: ZERO32,       // any Jet/Drop may fill the dynamic slot
+    targets:           []
+} } });
+```
+
+The share panel gives you a link, an iframe snippet, and optionally a split-entropy passphrase. See the full Q.Safecloud.Client API in the README for grant types, teaser capabilities, and on-chain settlement.
 
 ---
 
 ## What you never have to trust
 
-You don't trust the Jet, the Drops, or the website to pay you. The split is in
-the signed policy, and the OpenClaiming contract enforces it in one transaction:
-either everyone in the policy is paid their exact fraction, or the settlement
-doesn't happen.
+Your file is chunked and CID-hashed in the browser before any byte leaves. The Jet routes ciphertext — it can verify a chunk is uncorrupted (hash match) but cannot read it. If you enable encryption, the Jet holds only half the key. Revenue splits, if you configure them, are enforced by the OpenClaiming contract: either the full policy executes atomically or no one is paid.

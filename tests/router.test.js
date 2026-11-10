@@ -134,5 +134,116 @@ const afterBlip = Router._weightDrop({dropId:'honest1', storage:{GB:10}});
 check('one failure in ~56 serves costs an honest Drop <25% of its weight',
   afterBlip > beforeBlip * 0.75, beforeBlip.toFixed(3)+' → '+afterBlip.toFixed(3));
 
-console.log(`\n${pass} passed, ${fail} failed`);
-process.exit(fail?1:0);
+// ══ Pause / Resume lifecycle ══
+section('onDropPause / onDropResume — lifecycle hooks');
+
+// Set up Q.Safecloud.Jets.drops so selectForGet/selectForPut can access them
+Q.Safecloud.Jets = Q.Safecloud.Jets || {};
+Q.Safecloud.Jets.drops = {};
+
+// Register three Drops with CID coverage
+const mkDrop = (id, gb) => ({ dropId: id, storage: { GB: gb || 10 }, evmAddress: '0x' + id });
+['pDrop1','pDrop2','pDrop3'].forEach(id => {
+    const d = mkDrop(id, 10);
+    Q.Safecloud.Jets.drops[id] = d;
+    Router.onDropRegistered(d, 'root-abc');
+    Router.onDropAnnounce(d, [{ cid: 'cid-pause-test', added: true }]);
+});
+
+// Verify all three are candidates before any pause
+(async () => {
+    // selectForGet returns a Promise
+    let found = {};
+    for (let i = 0; i < 60; i++) {
+        const drop = await Router.selectForGet('cid-pause-test');
+        if (drop) found[drop.dropId] = true;
+    }
+    check('all 3 Drops are selectable before pause',
+        Object.keys(found).length === 3, Object.keys(found).join(','));
+
+    // Pause pDrop2
+    Router.onDropPause({ dropId: 'pDrop2' }, 'battery low');
+
+    found = {};
+    for (let i = 0; i < 60; i++) {
+        const drop = await Router.selectForGet('cid-pause-test');
+        if (drop) found[drop.dropId] = true;
+    }
+    check('paused Drop is excluded from selectForGet',
+        !found.pDrop2, 'got: ' + Object.keys(found).join(','));
+    check('unpaused Drops still selected',
+        found.pDrop1 && found.pDrop3, Object.keys(found).join(','));
+
+    // selectForPut should also exclude paused
+    const putDrops = await Router.selectForPut(['cid-new-put'], { replicationFactor: 5 });
+    const putIds = putDrops.map(d => d.dropId);
+    check('paused Drop excluded from selectForPut',
+        putIds.indexOf('pDrop2') < 0, putIds.join(','));
+
+    // Resume pDrop2
+    Router.onDropResume({ dropId: 'pDrop2' }, { type: 'wifi', effectiveType: '4g' });
+    found = {};
+    for (let i = 0; i < 90; i++) {
+        const drop = await Router.selectForGet('cid-pause-test');
+        if (drop) found[drop.dropId] = true;
+    }
+    check('after resume, pDrop2 is selectable again',
+        !!found.pDrop2, Object.keys(found).join(','));
+
+    // ══ preferDrops ══
+    section('selectForGet — preferDrops parameter');
+
+    // With preferDrops, the first valid preferred Drop should be returned
+    const pref = await Router.selectForGet('cid-pause-test', { preferDrops: ['pDrop3'] });
+    check('preferDrops returns the preferred Drop',
+        pref && pref.dropId === 'pDrop3', pref && pref.dropId);
+
+    // preferDrops with first choice paused, should fall to second
+    Router.onDropPause({ dropId: 'pDrop1' }, 'plugged-only');
+    const pref2 = await Router.selectForGet('cid-pause-test', { preferDrops: ['pDrop1', 'pDrop3'] });
+    check('preferDrops skips paused Drop and selects next',
+        pref2 && pref2.dropId === 'pDrop3', pref2 && pref2.dropId);
+
+    // preferDrops with all preferred paused — should fall back to weighted random
+    Router.onDropPause({ dropId: 'pDrop3' }, 'wifi-only');
+    const pref3 = await Router.selectForGet('cid-pause-test', { preferDrops: ['pDrop1', 'pDrop3'] });
+    check('preferDrops fallback to weighted-random when all preferred paused',
+        pref3 && pref3.dropId === 'pDrop2', pref3 && pref3.dropId);
+
+    // preferDrops with exclude
+    Router.onDropResume({ dropId: 'pDrop1' });
+    Router.onDropResume({ dropId: 'pDrop3' });
+    const pref4 = await Router.selectForGet('cid-pause-test', {
+        preferDrops: ['pDrop1', 'pDrop3'],
+        exclude: ['pDrop1']
+    });
+    check('preferDrops respects exclude list',
+        pref4 && pref4.dropId === 'pDrop3', pref4 && pref4.dropId);
+
+    // ══ onDropDisconnected cleanup ══
+    section('onDropDisconnected — pause state cleanup');
+
+    Router.onDropPause({ dropId: 'pDrop2' }, 'test');
+    Router.onDropDisconnected({ dropId: 'pDrop2' });
+    // After disconnect, pause state should be cleaned up
+    // Re-register pDrop2 — fresh drop record, fresh coverage
+    const freshDrop2 = mkDrop('pDrop2', 10);
+    Q.Safecloud.Jets.drops.pDrop2 = freshDrop2;
+    Router.onDropRegistered(freshDrop2, 'root-abc');
+    Router.onDropAnnounce(freshDrop2, [{ cid: 'cid-pause-test', added: true }]);
+    // Boost reliability so weighted-random can actually pick it
+    for (let i = 0; i < 30; i++) Router._updateReliability('pDrop2', true);
+    found = {};
+    for (let i = 0; i < 200; i++) {
+        const drop = await Router.selectForGet('cid-pause-test');
+        if (drop) found[drop.dropId] = true;
+    }
+    check('after disconnect + re-register, Drop is selectable (pause cleared)',
+        !!found.pDrop2, Object.keys(found).join(','));
+
+    console.log(`\n${pass} passed, ${fail} failed`);
+    process.exit(fail ? 1 : 0);
+})().catch(e => {
+    console.error('Async test failed:', e);
+    process.exit(1);
+});

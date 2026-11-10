@@ -1,0 +1,15 @@
+.git
+.github
+node_modules
+tests
+test
+*.test.js
+local
+dist
+*.zip
+*.blob
+sea-prep.blob
+bin/jet-bundle.cjs
+safecloud-jet-*
+.env
+.env.*

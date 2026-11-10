@@ -24,7 +24,7 @@ const Q={Config:{get:(k,d)=>{let o=configStore;for(const x of k){if(o==null)retu
  makeEventEmitter:(o)=>{const ls={};o.on=(e,f)=>{(ls[e]=ls[e]||[]).push(f);};o.emit=(e,...a)=>{(ls[e]||[]).forEach(f=>f(...a));};},
  listen:()=>realServer,
  require:(n)=>{ if(n==='Users') return { Socket:{ listen:()=>({ io: ioServer }) } }; throw new Error('no '+n); },
- app:{DIR:'/tmp/sc'}, Crypto:{ OpenClaim:{ verify: async()=>true } }, Data:{}, Assets:{}, Socket:{}, Safecloud:{}};
+ app:{DIR:'/tmp/sc'}, Crypto:{ OpenClaim:{ verify: async()=>true, EVM:{} } }, Data:{}, Assets:{}, Socket:{}, Safecloud:{}};
 const M=require('module'); const ol=M._load;
 M._load=function(r){ if(r==='Q')return Q; if(r==='./Client')return{verifyGrant:async()=>true};
  if(r==='./Drops')return{verifyChallengeResponse:()=>true,verifyAnnounce:()=>true};

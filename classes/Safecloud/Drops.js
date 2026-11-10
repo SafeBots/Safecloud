@@ -7,6 +7,37 @@
  *   - Challenge response CID verification
  *   - Reputation tracking helpers
  *   - CoC pattern detection (slash threshold)
+ *   - Storage backend adapter (Safecloud 3.4)
+ *
+ * Safecloud 3.4 storage adapter
+ * ─────────────────────────────
+ * A configurable storage backend can be injected at startup via
+ * `Drops.initStorage(store)`. The backend must implement:
+ *
+ *   store.get(cid)          → Promise<Buffer|null>
+ *   store.put(cid, buf)     → Promise<void>
+ *   store.has(cid)          → Promise<Boolean>
+ *   store.delete(cid)       → Promise<void>
+ *   store.list(prefix)      → Promise<String[]>
+ *
+ * When a backend is set Jets.js routes chunk I/O through `Drops.putChunks()`
+ * and `Drops.getChunks()` for the built-in local Drop (`__local_s3__`) rather
+ * than forwarding requests over socket.io to browser Drop nodes. The existing
+ * proof-of-storage challenge logic, reputation tracking, and Safebux accounting
+ * are untouched.
+ *
+ * Wire format inside the storage layer
+ * ─────────────────────────────────────
+ * Each chunk is serialised as a fixed-layout Buffer:
+ *
+ *   [ IV_LEN  (4 bytes, big-endian uint32) ]
+ *   [ IV      (IV_LEN bytes)               ]
+ *   [ TAG_LEN (4 bytes, big-endian uint32) ]
+ *   [ TAG     (TAG_LEN bytes)              ]
+ *   [ CIPHERTEXT (remaining bytes)         ]
+ *
+ * This keeps the storage layer opaque and version-upgradeable without changing
+ * the CID or the chunk semantics visible to Cloud clients.
  *
  * @class Q.Safecloud.Drops
  * @static
@@ -16,6 +47,159 @@ var Q      = require('Q');
 var crypto = require('crypto');
 
 var Drops = module.exports = {};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Safecloud 3.4 — Storage backend adapter
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The injected storage backend. Null when no backend is configured (default:
+ * browser-based IndexedDB Drops handle all storage via socket.io).
+ * @property {Object|null} _store
+ * @private
+ */
+Drops._store = null;
+
+/**
+ * Inject a storage backend. Called by Jets.js during `listen()` when
+ * `Safecloud.storage.backend` is set to something other than `"indexeddb"`.
+ *
+ * @method initStorage
+ * @param {Object} store  Object implementing get/put/has/delete/list
+ */
+Drops.initStorage = function (store) {
+    if (!store || typeof store.get !== 'function' || typeof store.put !== 'function') {
+        throw new Error('Drops.initStorage: store must implement get(cid) and put(cid, buf)');
+    }
+    Drops._store = store;
+};
+
+/**
+ * Store an array of chunks using the configured backend.
+ * Each chunk object must have: `cid` (String), `ciphertext` (base64 String),
+ * `tag` (base64 String), and optionally `iv` (base64 String).
+ *
+ * @method putChunks
+ * @param {Array<Object>} chunks
+ * @return {Promise<{results: Array<{cid: String, stored: Boolean}>}>}
+ */
+Drops.putChunks = function (chunks) {
+    if (!Drops._store) {
+        return Promise.reject(new Error('Drops.putChunks: no storage backend configured'));
+    }
+    if (!Array.isArray(chunks)) {
+        return Promise.resolve({ results: [] });
+    }
+
+    var promises = chunks.map(function (chunk) {
+        if (!chunk || typeof chunk.cid !== 'string' || !chunk.cid) {
+            return Promise.resolve({ cid: null, stored: false });
+        }
+        try {
+            var buf = _serializeChunk(chunk);
+            return Drops._store.put(chunk.cid, buf).then(function () {
+                return { cid: chunk.cid, stored: true };
+            }).catch(function () {
+                return { cid: chunk.cid, stored: false };
+            });
+        } catch (e) {
+            return Promise.resolve({ cid: chunk.cid, stored: false });
+        }
+    });
+
+    return Promise.all(promises).then(function (results) {
+        return { results: results };
+    });
+};
+
+/**
+ * Retrieve an array of chunks by CID from the configured backend.
+ * Missing chunks are omitted from the result array.
+ *
+ * @method getChunks
+ * @param {Array<String>} cids
+ * @return {Promise<{chunks: Array<Object>}>}
+ */
+Drops.getChunks = function (cids) {
+    if (!Drops._store) {
+        return Promise.reject(new Error('Drops.getChunks: no storage backend configured'));
+    }
+    if (!Array.isArray(cids)) {
+        return Promise.resolve({ chunks: [] });
+    }
+
+    var promises = cids.map(function (cid) {
+        if (typeof cid !== 'string' || !cid) { return Promise.resolve(null); }
+        return Drops._store.get(cid).then(function (buf) {
+            if (!buf) { return null; }
+            try {
+                return _deserializeChunk(cid, buf);
+            } catch (e) {
+                return null;
+            }
+        }).catch(function () { return null; });
+    });
+
+    return Promise.all(promises).then(function (results) {
+        return { chunks: results.filter(Boolean) };
+    });
+};
+
+/**
+ * Check whether a single CID exists in the configured backend.
+ *
+ * @method hasChunk
+ * @param {String} cid
+ * @return {Promise<Boolean>}
+ */
+Drops.hasChunk = function (cid) {
+    if (!Drops._store) { return Promise.resolve(false); }
+    return Drops._store.has(cid).catch(function () { return false; });
+};
+
+// ── Private serialisation helpers ─────────────────────────────────────────────
+
+/**
+ * Serialise a chunk object to the storage wire format:
+ *   IV_LEN(4) | IV | TAG_LEN(4) | TAG | CIPHERTEXT
+ * @private
+ */
+function _serializeChunk(chunk) {
+    var ivBuf  = chunk.iv  ? Buffer.from(chunk.iv,  'base64') : Buffer.alloc(0);
+    var tagBuf = chunk.tag ? Buffer.from(chunk.tag, 'base64') : Buffer.alloc(0);
+    var ctBuf  = chunk.ciphertext ? Buffer.from(chunk.ciphertext, 'base64') : Buffer.alloc(0);
+
+    var ivLen  = Buffer.allocUnsafe(4); ivLen.writeUInt32BE(ivBuf.length, 0);
+    var tagLen = Buffer.allocUnsafe(4); tagLen.writeUInt32BE(tagBuf.length, 0);
+
+    return Buffer.concat([ivLen, ivBuf, tagLen, tagBuf, ctBuf]);
+}
+
+/**
+ * Deserialise the storage wire format back to a chunk object.
+ * @private
+ */
+function _deserializeChunk(cid, buf) {
+    if (!buf || buf.length < 8) { return null; }
+
+    var offset = 0;
+    var ivLen  = buf.readUInt32BE(offset); offset += 4;
+    if (offset + ivLen > buf.length) { return null; }
+    var ivBuf  = buf.slice(offset, offset + ivLen); offset += ivLen;
+
+    if (offset + 4 > buf.length) { return null; }
+    var tagLen = buf.readUInt32BE(offset); offset += 4;
+    if (offset + tagLen > buf.length) { return null; }
+    var tagBuf = buf.slice(offset, offset + tagLen); offset += tagLen;
+
+    var ctBuf  = buf.slice(offset);
+
+    var result = { cid: cid, ciphertext: ctBuf.toString('base64') };
+    if (tagBuf.length > 0) { result.tag = tagBuf.toString('base64'); }
+    if (ivBuf.length  > 0) { result.iv  = ivBuf.toString('base64'); }
+
+    return result;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Announce verification

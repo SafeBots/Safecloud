@@ -1,0 +1,883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Safecloud Sheets</title>
+
+<!-- Yjs (local bundle — also works from CDN: cdn.jsdelivr.net/npm/yjs@13.6.21/dist/yjs.cjs.js) -->
+<script src="/js/yjs.min.js"></script>
+<!-- socket.io-client (local bundle — also works from CDN: cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js) -->
+<script src="/js/socket.io.min.js"></script>
+<!-- SafecloudYjsProvider -->
+<script src="/js/SafecloudYjsProvider.js"></script>
+
+<style>
+/* ── Reset / base ─────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: "Google Sans", Arial, sans-serif;
+  font-size: 13px;
+  background: #fff;
+  color: #202124;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ── Toolbar ──────────────────────────────────────────────────────────── */
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #f8f9fa;
+  flex-shrink: 0;
+}
+.tb-sep { width: 1px; height: 20px; background: #dadce0; margin: 0 4px; }
+.tb-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border: none; border-radius: 4px;
+  background: transparent; cursor: pointer; font-size: 13px; color: #444;
+  transition: background 0.1s;
+}
+.tb-btn:hover { background: #e8eaed; }
+.tb-btn.active { background: #d2e3fc; color: #1a73e8; }
+.tb-btn svg { width: 16px; height: 16px; }
+#font-size-sel {
+  width: 46px; height: 28px; border: 1px solid #dadce0; border-radius: 4px;
+  background: #fff; font-size: 12px; padding: 0 2px; cursor: pointer;
+  color: #444;
+}
+#doc-title {
+  font-size: 16px; font-weight: 500; color: #202124;
+  border: none; outline: none; background: transparent;
+  padding: 2px 6px; border-radius: 4px;
+  flex: 0 0 auto;
+  max-width: 220px;
+}
+#doc-title:hover, #doc-title:focus { background: #f1f3f4; }
+#peers-bar {
+  margin-left: auto; display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: #5f6368;
+}
+.peer-avatar {
+  width: 24px; height: 24px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: 600; color: #fff;
+}
+#conn-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+#conn-status.connected { background: #e6f4ea; color: #137333; }
+#conn-status.disconnected { background: #fce8e6; color: #c5221f; }
+
+/* ── Formula bar ──────────────────────────────────────────────────────── */
+#formula-bar {
+  display: flex; align-items: center; gap: 0;
+  padding: 2px 8px;
+  border-bottom: 1px solid #e0e0e0;
+  background: #fff;
+  flex-shrink: 0;
+  height: 34px;
+}
+#cell-ref {
+  min-width: 60px; max-width: 80px;
+  padding: 3px 6px; font-size: 12px;
+  border: 1px solid #dadce0; border-radius: 2px;
+  text-align: center; outline: none; background: #fff;
+  color: #444; font-weight: 500;
+}
+#fx-label {
+  padding: 0 8px; font-size: 14px; color: #5f6368; font-style: italic;
+}
+#formula-input {
+  flex: 1; height: 26px; border: 1px solid #dadce0; border-radius: 2px;
+  padding: 2px 6px; font-size: 13px; outline: none;
+  font-family: "Consolas", "Courier New", monospace;
+  color: #202124;
+}
+#formula-input:focus { border-color: #1a73e8; }
+
+/* ── Sheet area ───────────────────────────────────────────────────────── */
+#sheet-wrap {
+  flex: 1; overflow: auto; position: relative;
+  background: #fff;
+}
+
+/* ── Grid ─────────────────────────────────────────────────────────────── */
+#grid-container {
+  display: inline-block;
+  position: relative;
+  min-width: 100%;
+}
+table {
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+/* Corner */
+th.corner {
+  width: 46px; min-width: 46px;
+  background: #f8f9fa; border: 1px solid #e0e0e0;
+  position: sticky; top: 0; left: 0; z-index: 10;
+}
+/* Column headers */
+th.col-hdr {
+  width: 100px; min-width: 50px;
+  background: #f8f9fa; color: #444;
+  border: 1px solid #e0e0e0; text-align: center;
+  font-size: 12px; font-weight: 500; padding: 2px 0;
+  position: sticky; top: 0; z-index: 5;
+  cursor: default;
+}
+th.col-hdr.selected { background: #d2e3fc; color: #1a73e8; }
+/* Row headers */
+th.row-hdr {
+  width: 46px; min-width: 46px;
+  background: #f8f9fa; color: #444;
+  border: 1px solid #e0e0e0; text-align: center;
+  font-size: 12px; font-weight: 500;
+  position: sticky; left: 0; z-index: 4;
+  cursor: default;
+}
+th.row-hdr.selected { background: #d2e3fc; color: #1a73e8; }
+/* Data cells */
+td.cell {
+  width: 100px; min-width: 50px; height: 22px;
+  border: 1px solid #e0e0e0;
+  padding: 1px 4px;
+  vertical-align: middle;
+  overflow: hidden; white-space: nowrap;
+  cursor: cell;
+  font-size: 13px;
+  position: relative;
+}
+td.cell.selected {
+  outline: 2px solid #1a73e8;
+  outline-offset: -1px;
+  z-index: 2;
+}
+td.cell .cell-inner {
+  outline: none;
+  display: block;
+  min-height: 1em;
+  pointer-events: none;
+}
+td.cell.editing .cell-inner {
+  pointer-events: auto;
+}
+td.cell .peer-cursor {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  pointer-events: none; z-index: 3;
+  border: 2px solid transparent;
+}
+td.cell .peer-cursor-label {
+  position: absolute; top: -18px; left: 0;
+  font-size: 10px; padding: 1px 4px; border-radius: 2px;
+  color: #fff; white-space: nowrap; pointer-events: none;
+  display: none;
+}
+td.cell .peer-cursor:hover .peer-cursor-label { display: block; }
+/* Selection range */
+td.cell.in-selection {
+  background: rgba(26, 115, 232, 0.08);
+}
+
+/* ── Sheet tabs ───────────────────────────────────────────────────────── */
+#sheet-tabs {
+  display: flex; align-items: center; gap: 0;
+  border-top: 1px solid #e0e0e0; background: #f8f9fa;
+  padding: 0 8px; height: 34px; flex-shrink: 0;
+}
+.sheet-tab {
+  padding: 4px 16px; font-size: 12px; cursor: pointer;
+  border-radius: 4px 4px 0 0; border: 1px solid transparent;
+  color: #5f6368;
+}
+.sheet-tab.active {
+  background: #fff; border-color: #e0e0e0 #e0e0e0 #fff;
+  color: #1a73e8; font-weight: 500;
+}
+#add-sheet-btn {
+  width: 28px; height: 28px; border: none; border-radius: 50%;
+  background: transparent; cursor: pointer; font-size: 18px;
+  color: #5f6368; display: flex; align-items: center; justify-content: center;
+}
+#add-sheet-btn:hover { background: #e8eaed; }
+
+/* ── Status bar ───────────────────────────────────────────────────────── */
+#status-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 2px 12px; font-size: 11px; color: #5f6368;
+  border-top: 1px solid #e0e0e0; background: #f8f9fa;
+  height: 24px; flex-shrink: 0;
+}
+#status-bar span { flex: 1; }
+#status-bar .sb-right { margin-left: auto; }
+</style>
+</head>
+<body>
+
+<!-- ── Toolbar ─────────────────────────────────────────────────────────── -->
+<div id="toolbar">
+  <input id="doc-title" value="Untitled spreadsheet" title="Click to rename">
+  <div class="tb-sep"></div>
+
+  <!-- Undo/Redo -->
+  <button class="tb-btn" id="btn-undo" title="Undo (Ctrl+Z)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 10h8a6 6 0 0 1 0 12H7"/><path d="M3 10l4-4-4-4"/></svg>
+  </button>
+  <button class="tb-btn" id="btn-redo" title="Redo (Ctrl+Y)">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 10h-8a6 6 0 0 0 0 12h4"/><path d="M21 10l-4-4 4-4"/></svg>
+  </button>
+  <div class="tb-sep"></div>
+
+  <!-- Font size -->
+  <select id="font-size-sel" title="Font size">
+    <option>10</option><option>11</option><option selected>12</option>
+    <option>14</option><option>16</option><option>18</option><option>24</option>
+  </select>
+  <div class="tb-sep"></div>
+
+  <!-- Bold / Italic / Underline -->
+  <button class="tb-btn" id="btn-bold" title="Bold (Ctrl+B)"><strong>B</strong></button>
+  <button class="tb-btn" id="btn-italic" title="Italic (Ctrl+I)"><em>I</em></button>
+  <button class="tb-btn" id="btn-underline" title="Underline (Ctrl+U)" style="text-decoration:underline">U</button>
+  <div class="tb-sep"></div>
+
+  <!-- Text / Fill color -->
+  <button class="tb-btn" id="btn-text-color" title="Text color">
+    <span style="border-bottom:3px solid currentColor;padding-bottom:1px">A</span>
+    <input type="color" id="tc-pick" style="display:none">
+  </button>
+  <button class="tb-btn" id="btn-fill-color" title="Fill color">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.56 8.94L7.62 0 6.21 1.41l2.38 2.38-5.15 5.15a1.49 1.49 0 0 0 0 2.12l5.5 5.5c.29.29.68.44 1.06.44s.77-.15 1.06-.44l5.5-5.5c.59-.58.59-1.53 0-2.12zM5.21 10L10 5.21 14.79 10H5.21zM19 11.5s-2 2.17-2 3.5c0 1.1.9 2 2 2s2-.9 2-2c0-1.33-2-3.5-2-3.5z"/></svg>
+    <input type="color" id="bg-pick" value="#ffffff" style="display:none">
+  </button>
+  <div class="tb-sep"></div>
+
+  <!-- Align -->
+  <button class="tb-btn active" id="btn-align-left" title="Align left">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15 15H3v2h12v-2zm0-8H3v2h12V7zM3 13h18v-2H3v2zm0 8h18v-2H3v2zM3 3v2h18V3H3z"/></svg>
+  </button>
+  <button class="tb-btn" id="btn-align-center" title="Align center">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M7 15v2h10v-2H7zm-4 6h18v-2H3v2zm0-8h18v-2H3v2zm4-6v2h10V7H7zM3 3v2h18V3H3z"/></svg>
+  </button>
+  <button class="tb-btn" id="btn-align-right" title="Align right">
+    <svg viewBox="0 0 24 24" fill="currentColor"><path d="M3 21h18v-2H3v2zm6-4h12v-2H9v2zm-6-4h18v-2H3v2zm6-4h12V7H9v2zM3 3v2h18V3H3z"/></svg>
+  </button>
+  <div class="tb-sep"></div>
+
+  <!-- Clear -->
+  <button class="tb-btn" id="btn-clear" title="Clear cell">✕</button>
+
+  <!-- Right: peers + status -->
+  <div id="peers-bar">
+    <span id="conn-status" class="disconnected">Offline</span>
+    <div id="peer-avatars"></div>
+  </div>
+</div>
+
+<!-- ── Formula bar ─────────────────────────────────────────────────────── -->
+<div id="formula-bar">
+  <input id="cell-ref" readonly value="A1">
+  <span id="fx-label">fx</span>
+  <input id="formula-input" type="text" placeholder="Enter value or formula…">
+</div>
+
+<!-- ── Grid ───────────────────────────────────────────────────────────── -->
+<div id="sheet-wrap">
+  <div id="grid-container">
+    <table id="grid"></table>
+  </div>
+</div>
+
+<!-- ── Sheet tabs ──────────────────────────────────────────────────────── -->
+<div id="sheet-tabs">
+  <div class="sheet-tab active">Sheet1</div>
+  <button id="add-sheet-btn" title="Add sheet">+</button>
+</div>
+
+<!-- ── Status bar ─────────────────────────────────────────────────────── -->
+<div id="status-bar">
+  <span id="sb-sel">A1</span>
+  <span class="sb-right" id="sb-sum"></span>
+</div>
+
+<script>
+(function () {
+'use strict';
+
+/* ═══════════════════════════════════════════════════════════════════════
+   PEER COLORS (must be declared before CONFIG uses it)
+   ═══════════════════════════════════════════════════════════════════════ */
+var PEER_COLORS = [
+  '#1a73e8','#e8710a','#188038','#9334e6','#c5221f',
+  '#00796b','#7b5ea7','#c64b4b','#2b6cb0','#c89000'
+];
+
+/* ═══════════════════════════════════════════════════════════════════════
+   CONFIG  — edit to point at your Jet
+   ═══════════════════════════════════════════════════════════════════════ */
+var JET_URL     = window.location.origin;   // served from same origin as Jet
+var PUBLISHER   = 'alice';
+var STREAM_NAME = 'docs/sheets-demo';
+var USER_ID     = 'user-' + Math.random().toString(36).slice(2, 6);
+var USER_COLOR  = PEER_COLORS[Math.floor(Math.random() * PEER_COLORS.length)];
+var ROWS        = 50;
+var COLS        = 26;
+
+/* ═══════════════════════════════════════════════════════════════════════
+   COLUMN LETTERS
+   ═══════════════════════════════════════════════════════════════════════ */
+function colLetter(c) {
+  var s = '';
+  c++;
+  while (c > 0) {
+    s = String.fromCharCode(64 + (c % 26 || 26)) + s;
+    c = Math.floor((c - 1) / 26);
+  }
+  return s;
+}
+function cellRef(r, c) { return colLetter(c) + (r + 1); }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   BUILD THE GRID
+   ═══════════════════════════════════════════════════════════════════════ */
+var grid = document.getElementById('grid');
+
+(function buildGrid() {
+  var colWidths = [46]; // row-header column
+  var headerRow = document.createElement('tr');
+
+  // Corner
+  var corner = document.createElement('th');
+  corner.className = 'corner';
+  headerRow.appendChild(corner);
+
+  // Column headers
+  for (var c = 0; c < COLS; c++) {
+    var th = document.createElement('th');
+    th.className = 'col-hdr';
+    th.textContent = colLetter(c);
+    th.dataset.col = c;
+    headerRow.appendChild(th);
+    colWidths.push(100);
+  }
+  grid.appendChild(headerRow);
+
+  // Data rows
+  for (var r = 0; r < ROWS; r++) {
+    var tr = document.createElement('tr');
+
+    // Row header
+    var rh = document.createElement('th');
+    rh.className = 'row-hdr';
+    rh.textContent = r + 1;
+    rh.dataset.row = r;
+    tr.appendChild(rh);
+
+    // Data cells
+    for (var c2 = 0; c2 < COLS; c2++) {
+      var td = document.createElement('td');
+      td.className = 'cell';
+      td.dataset.r = r;
+      td.dataset.c = c2;
+      var inner = document.createElement('div');
+      inner.className = 'cell-inner';
+      td.appendChild(inner);
+      tr.appendChild(td);
+    }
+    grid.appendChild(tr);
+  }
+})();
+
+function getCell(r, c) {
+  return grid.querySelector('td[data-r="' + r + '"][data-c="' + c + '"]');
+}
+function getCellInner(r, c) {
+  var td = getCell(r, c);
+  return td ? td.querySelector('.cell-inner') : null;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   YJS DOCUMENT
+   ═══════════════════════════════════════════════════════════════════════ */
+var ydoc  = new Y.Doc();
+var cells = ydoc.getMap('cells');  // key: "r,c" → {v, b, i, u, fs, tc, bg, align}
+var meta  = ydoc.getMap('meta');   // key: "title" etc.
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SELECTION STATE
+   ═══════════════════════════════════════════════════════════════════════ */
+var selR = 0, selC = 0;
+var editMode = false;
+
+function selectCell(r, c, startEdit) {
+  // Clamp
+  r = Math.max(0, Math.min(ROWS - 1, r));
+  c = Math.max(0, Math.min(COLS - 1, c));
+
+  // End editing on old cell
+  if (editMode) commitEdit(selR, selC);
+
+  // Clear old selection
+  var oldTd = getCell(selR, selC);
+  if (oldTd) {
+    oldTd.classList.remove('selected');
+    oldTd.classList.remove('editing');
+    var oi = oldTd.querySelector('.cell-inner');
+    if (oi) { oi.contentEditable = 'false'; }
+  }
+  // Clear col/row header highlight
+  var oldCH = grid.querySelector('.col-hdr.selected');
+  if (oldCH) oldCH.classList.remove('selected');
+  var oldRH = grid.querySelector('.row-hdr.selected');
+  if (oldRH) oldRH.classList.remove('selected');
+
+  selR = r; selC = c;
+
+  var td = getCell(r, c);
+  if (!td) return;
+  td.classList.add('selected');
+
+  // Highlight headers
+  var colHeaders = grid.querySelectorAll('.col-hdr');
+  if (colHeaders[c]) colHeaders[c].classList.add('selected');
+  var rowHeaders = grid.querySelectorAll('.row-hdr');
+  if (rowHeaders[r]) rowHeaders[r].classList.add('selected');
+
+  // Scroll into view
+  td.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+
+  // Update formula bar
+  document.getElementById('cell-ref').value = cellRef(r, c);
+  var cellData = cells.get(r + ',' + c) || {};
+  document.getElementById('formula-input').value = cellData.v || '';
+
+  // Update status bar
+  document.getElementById('sb-sel').textContent = cellRef(r, c);
+
+  // Update toolbar for cell's formatting
+  applyToolbarState(cellData);
+
+  if (startEdit) startEditing(r, c);
+
+  // Broadcast awareness
+  broadcastCursor();
+}
+
+function startEditing(r, c) {
+  if (editMode) return;
+  editMode = true;
+  var td = getCell(r, c);
+  if (!td) return;
+  td.classList.add('editing');
+  var inner = td.querySelector('.cell-inner');
+  if (inner) {
+    inner.contentEditable = 'true';
+    inner.focus();
+    // Place cursor at end
+    var range = document.createRange();
+    range.selectNodeContents(inner);
+    range.collapse(false);
+    var sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+}
+
+function commitEdit(r, c) {
+  if (!editMode) return;
+  editMode = false;
+  var td = getCell(r, c);
+  if (!td) return;
+  td.classList.remove('editing');
+  var inner = td.querySelector('.cell-inner');
+  if (inner) {
+    inner.contentEditable = 'false';
+    var newVal = inner.textContent;
+    // Update Yjs
+    var key = r + ',' + c;
+    var existing = cells.get(key) || {};
+    var updated = Object.assign({}, existing, { v: newVal });
+    cells.set(key, updated);
+  }
+}
+
+function applyToolbarState(data) {
+  document.getElementById('btn-bold').classList.toggle('active', !!data.b);
+  document.getElementById('btn-italic').classList.toggle('active', !!data.i);
+  document.getElementById('btn-underline').classList.toggle('active', !!data.u);
+  var aligns = ['left', 'center', 'right'];
+  aligns.forEach(function (a) {
+    var btn = document.getElementById('btn-align-' + a);
+    if (btn) btn.classList.toggle('active', (data.align || 'left') === a);
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   RENDER CELL FROM YJS DATA
+   ═══════════════════════════════════════════════════════════════════════ */
+function renderCell(r, c, data) {
+  var inner = getCellInner(r, c);
+  if (!inner) return;
+  data = data || {};
+  inner.textContent = data.v || '';
+  inner.style.fontWeight     = data.b ? 'bold'   : '';
+  inner.style.fontStyle      = data.i ? 'italic' : '';
+  inner.style.textDecoration = data.u ? 'underline' : '';
+  inner.style.fontSize       = data.fs ? data.fs + 'px' : '';
+  inner.style.color          = data.tc || '';
+  inner.style.textAlign      = data.align || '';
+  var td = getCell(r, c);
+  if (td) td.style.background = data.bg || '';
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   YJS OBSERVER — apply remote + local changes to DOM
+   ═══════════════════════════════════════════════════════════════════════ */
+cells.observe(function (event) {
+  event.changes.keys.forEach(function (change, key) {
+    var parts = key.split(',');
+    var r = parseInt(parts[0], 10);
+    var c = parseInt(parts[1], 10);
+    var data = cells.get(key);
+    renderCell(r, c, data);
+    // If the changed cell is selected, update formula bar
+    if (r === selR && c === selC && !editMode) {
+      document.getElementById('formula-input').value = (data && data.v) || '';
+      applyToolbarState(data || {});
+    }
+  });
+});
+
+meta.observe(function (event) {
+  event.changes.keys.forEach(function (change, key) {
+    if (key === 'title') {
+      var v = meta.get('title') || '';
+      document.getElementById('doc-title').value = v;
+      document.title = (v || 'Untitled spreadsheet') + ' — Safecloud Sheets';
+    }
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   KEYBOARD / MOUSE INPUT
+   ═══════════════════════════════════════════════════════════════════════ */
+document.getElementById('grid').addEventListener('mousedown', function (e) {
+  var td = e.target.closest('td.cell');
+  if (!td) return;
+  var r = parseInt(td.dataset.r, 10);
+  var c = parseInt(td.dataset.c, 10);
+  if (r === selR && c === selC && editMode) return; // already editing — let browser handle
+  e.preventDefault();
+  selectCell(r, c, false);
+});
+
+document.getElementById('grid').addEventListener('dblclick', function (e) {
+  var td = e.target.closest('td.cell');
+  if (!td) return;
+  startEditing(selR, selC);
+});
+
+document.addEventListener('keydown', function (e) {
+  var key = e.key;
+
+  if (editMode) {
+    if (key === 'Escape') { commitEdit(selR, selC); return; }
+    if (key === 'Enter')  { commitEdit(selR, selC); selectCell(selR + 1, selC); return; }
+    if (key === 'Tab')    { commitEdit(selR, selC); selectCell(selR, selC + (e.shiftKey ? -1 : 1)); e.preventDefault(); return; }
+    return; // let other keys go to contenteditable
+  }
+
+  // Navigation
+  var handled = true;
+  switch (key) {
+    case 'ArrowUp':    selectCell(selR - 1, selC); break;
+    case 'ArrowDown':  selectCell(selR + 1, selC); break;
+    case 'ArrowLeft':  selectCell(selR, selC - 1); break;
+    case 'ArrowRight': selectCell(selR, selC + 1); break;
+    case 'Tab':        selectCell(selR, selC + (e.shiftKey ? -1 : 1)); break;
+    case 'Enter':      selectCell(selR + 1, selC); break;
+    case 'F2':         startEditing(selR, selC); break;
+    case 'Delete':
+    case 'Backspace':  clearCell(selR, selC); break;
+    case 'Home':       selectCell(selR, 0); break;
+    case 'End':        selectCell(selR, COLS - 1); break;
+    default: handled = false;
+  }
+
+  if (handled) { e.preventDefault(); return; }
+
+  // Ctrl shortcuts
+  if (e.ctrlKey || e.metaKey) {
+    switch (key) {
+      case 'b': toggleFormat('b'); e.preventDefault(); return;
+      case 'i': toggleFormat('i'); e.preventDefault(); return;
+      case 'u': toggleFormat('u'); e.preventDefault(); return;
+      case 'z': ydoc.transact(function () { }); e.preventDefault(); return; // placeholder
+    }
+    return;
+  }
+
+  // Printable character → start editing
+  if (key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    // Clear cell first, then start editing
+    var key2 = selR + ',' + selC;
+    var existing2 = cells.get(key2) || {};
+    cells.set(key2, Object.assign({}, existing2, { v: '' }));
+    startEditing(selR, selC);
+    // The character will appear naturally in the contenteditable
+  }
+});
+
+/* Formula bar input syncs to cell on Enter */
+document.getElementById('formula-input').addEventListener('keydown', function (e) {
+  if (e.key === 'Enter') {
+    var key = selR + ',' + selC;
+    var existing = cells.get(key) || {};
+    cells.set(key, Object.assign({}, existing, { v: this.value }));
+    this.blur();
+    var inner = getCellInner(selR, selC);
+    if (inner) inner.textContent = this.value;
+    selectCell(selR + 1, selC);
+    e.preventDefault();
+  }
+  if (e.key === 'Escape') { this.blur(); }
+});
+
+document.getElementById('formula-input').addEventListener('input', function () {
+  var inner = getCellInner(selR, selC);
+  if (inner) inner.textContent = this.value;
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   FORMATTING
+   ═══════════════════════════════════════════════════════════════════════ */
+function toggleFormat(prop) {
+  var key = selR + ',' + selC;
+  var data = cells.get(key) || {};
+  var updated = Object.assign({}, data);
+  updated[prop] = !data[prop];
+  cells.set(key, updated);
+  applyToolbarState(updated);
+}
+
+function setFormat(prop, val) {
+  var key = selR + ',' + selC;
+  var data = cells.get(key) || {};
+  var updated = Object.assign({}, data);
+  updated[prop] = val;
+  cells.set(key, updated);
+  applyToolbarState(updated);
+}
+
+function clearCell(r, c) {
+  cells.set(r + ',' + c, {});
+}
+
+document.getElementById('btn-bold').addEventListener('click', function () { toggleFormat('b'); });
+document.getElementById('btn-italic').addEventListener('click', function () { toggleFormat('i'); });
+document.getElementById('btn-underline').addEventListener('click', function () { toggleFormat('u'); });
+
+['left','center','right'].forEach(function (a) {
+  document.getElementById('btn-align-' + a).addEventListener('click', function () {
+    setFormat('align', a);
+  });
+});
+
+document.getElementById('btn-clear').addEventListener('click', function () { clearCell(selR, selC); });
+
+// Text color
+document.getElementById('btn-text-color').addEventListener('click', function () {
+  document.getElementById('tc-pick').click();
+});
+document.getElementById('tc-pick').addEventListener('input', function () {
+  setFormat('tc', this.value);
+});
+
+// Fill color
+document.getElementById('btn-fill-color').addEventListener('click', function () {
+  document.getElementById('bg-pick').click();
+});
+document.getElementById('bg-pick').addEventListener('input', function () {
+  setFormat('bg', this.value);
+});
+
+// Font size
+document.getElementById('font-size-sel').addEventListener('change', function () {
+  setFormat('fs', parseInt(this.value, 10));
+});
+
+// Doc title
+document.getElementById('doc-title').addEventListener('change', function () {
+  meta.set('title', this.value);
+  document.title = this.value + ' — Safecloud Sheets';
+});
+
+/* ═══════════════════════════════════════════════════════════════════════
+   PEER AWARENESS
+   ═══════════════════════════════════════════════════════════════════════ */
+var peerCursors = {};  // clientID → {r, c, color, name}
+
+function broadcastCursor() {
+  if (!provider) return;
+  provider.setAwarenessState({
+    cursor: { r: selR, c: selC },
+    user: { name: USER_ID, color: USER_COLOR }
+  });
+}
+
+function renderPeerCursors() {
+  // Clear all existing peer overlays
+  document.querySelectorAll('.peer-cursor').forEach(function (el) { el.remove(); });
+
+  // Render avatars in toolbar
+  var avatarDiv = document.getElementById('peer-avatars');
+  avatarDiv.innerHTML = '';
+
+  Object.values(peerCursors).forEach(function (p) {
+    // Avatar
+    var av = document.createElement('div');
+    av.className = 'peer-avatar';
+    av.style.background = p.color;
+    av.textContent = (p.name || 'U').slice(-2).toUpperCase();
+    av.title = p.name || 'Anonymous';
+    avatarDiv.appendChild(av);
+
+    // Cell cursor overlay
+    var td = getCell(p.r, p.c);
+    if (!td) return;
+    var overlay = document.createElement('div');
+    overlay.className = 'peer-cursor';
+    overlay.style.borderColor = p.color;
+    var label = document.createElement('div');
+    label.className = 'peer-cursor-label';
+    label.style.background = p.color;
+    label.textContent = p.name || 'Unknown';
+    overlay.appendChild(label);
+    td.appendChild(overlay);
+  });
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   SAFECLOUD YJS PROVIDER
+   ═══════════════════════════════════════════════════════════════════════ */
+var provider = null;
+
+function initProvider() {
+  provider = new SafecloudYjsProvider(ydoc, {
+    jetUrl:      JET_URL,
+    publisherId: PUBLISHER,
+    streamName:  STREAM_NAME,
+    userId:      USER_ID,
+    // Dev-mode crypto: encode as data: URI (no real encryption)
+    encryptUpdate: function (update) {
+      var bin = '';
+      for (var i = 0; i < update.length; i++) bin += String.fromCharCode(update[i]);
+      return 'data:application/octet-stream;base64,' + btoa(bin);
+    },
+    decryptUpdate: function (cid) {
+      var b64 = cid.split(',')[1] || '';
+      var bin = atob(b64);
+      var arr = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return arr;
+    }
+  });
+
+  // Awareness hook
+  provider.onAwarenessChange = function (clientID, state) {
+    if (!state) {
+      delete peerCursors[clientID];
+    } else if (state.cursor) {
+      peerCursors[clientID] = {
+        r:     state.cursor.r,
+        c:     state.cursor.c,
+        color: (state.user && state.user.color) || '#888',
+        name:  (state.user && state.user.name)  || 'Unknown'
+      };
+    }
+    renderPeerCursors();
+  };
+
+  // Connection status
+  provider._socket && provider._socket.on('connect', function () {
+    document.getElementById('conn-status').textContent = 'Connected';
+    document.getElementById('conn-status').className = 'connected';
+    broadcastCursor();
+  });
+  provider._socket && provider._socket.on('disconnect', function () {
+    document.getElementById('conn-status').textContent = 'Offline';
+    document.getElementById('conn-status').className = 'disconnected';
+  });
+
+  provider.connect();
+
+  // Patch socket events AFTER connect() so _socket is set
+  setTimeout(function () {
+    if (provider._socket) {
+      provider._socket.on('connect', function () {
+        document.getElementById('conn-status').textContent = 'Connected';
+        document.getElementById('conn-status').className = 'connected';
+        broadcastCursor();
+      });
+      provider._socket.on('disconnect', function () {
+        document.getElementById('conn-status').textContent = 'Offline';
+        document.getElementById('conn-status').className = 'disconnected';
+      });
+      if (provider._socket.connected) {
+        document.getElementById('conn-status').textContent = 'Connected';
+        document.getElementById('conn-status').className = 'connected';
+      }
+    }
+  }, 200);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   BOOTSTRAP
+   ═══════════════════════════════════════════════════════════════════════ */
+// Initial cell selection
+selectCell(0, 0, false);
+
+// Try to connect to Jet
+try {
+  initProvider();
+} catch (e) {
+  console.warn('[Sheets] Provider init failed (Jet not running?):', e.message);
+}
+
+// Populate some sample data to show on first load (only if no Yjs data yet)
+setTimeout(function () {
+  if (cells.size === 0) {
+    var sample = [
+      ['Product',    'Q1',    'Q2',    'Q3',    'Q4',    'Total'],
+      ['Widget A',   '1200',  '1350',  '1500',  '1800',  '5850'],
+      ['Widget B',   '800',   '950',   '1100',  '1300',  '4150'],
+      ['Service Pro','2500',  '2750',  '3000',  '3500', '11750'],
+      ['SaaS Basic', '400',   '480',   '600',   '750',   '2230'],
+    ];
+    ydoc.transact(function () {
+      sample.forEach(function (row, r) {
+        row.forEach(function (val, c) {
+          var data = { v: val };
+          if (r === 0) { data.b = true; data.bg = '#1a73e8'; data.tc = '#ffffff'; }
+          if (c === 0 && r > 0) { data.b = true; }
+          cells.set(r + ',' + c, data);
+        });
+      });
+      meta.set('title', 'Q1-Q4 Revenue by Product');
+    });
+    document.getElementById('doc-title').value = 'Q1-Q4 Revenue by Product';
+  }
+}, 800);
+
+console.log('[Sheets] Safecloud Sheets initialized. Doc:', STREAM_NAME);
+console.log('[Sheets] Open another tab at ' + window.location.href + ' to collaborate.');
+
+})(); // end IIFE
+</script>
+</body>
+</html>

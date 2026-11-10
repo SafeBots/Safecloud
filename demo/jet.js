@@ -65,7 +65,9 @@ requireQinc()(function (Q) {
     // + JetSwarm inter-Jet peer discovery (if Safecloud.swarm.enabled)
     Q.plugins.Safecloud.listen();
 
-    Q.log('Safecloud Jet ready at ' + Q.nodeUrl(), 'Safecloud');
+    var _nodePort = Q.Config.get(['Q', 'node', 'port'], 8888);
+    var _nodeHost = Q.Config.get(['Q', 'node', 'host'], '0.0.0.0');
+    Q.log('Safecloud Jet ready at http://' + _nodeHost + ':' + _nodePort, 'Safecloud');
     Q.log('Safecloud JetSwarm stats: '
         + JSON.stringify(require('../classes/Safecloud/JetSwarm').stats()), 'Safecloud');
 });

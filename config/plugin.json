@@ -43,6 +43,12 @@
         "jet": {
             "address": null
         },
+        "cors": {
+            "allowedOrigins": ["*"]
+        },
+        "admin": {
+            "sessionDurationHours": 8
+        },
         "openclaiming": {
             "address": null
         },
@@ -56,6 +62,59 @@
             "secureIds": false,
             "bootstrap": null,
             "allowUnverifiedDelegations": false
+        },
+        "ipfs": {
+            "enabled": false,
+            "mode": "external",
+            "apiUrl": null,
+            "gatewayUrl": null,
+            "pinningService": {
+                "endpoint": null,
+                "key": null,
+                "exposedKey": null
+            },
+            "requireSafebux": false,
+            "sbuxPerGB": 0
+        },
+        "storage": {
+            "backend": "indexeddb",
+            "localGB": 1000,
+            "s3": {
+                "endpoint": null,
+                "region": "us-east-1",
+                "bucket": null,
+                "accessKeyId": null,
+                "secretAccessKey": null,
+                "forcePathStyle": false
+            },
+            "filesystem": {
+                "storageDir": null
+            },
+            "webdav": {
+                "url": null,
+                "username": null,
+                "password": null,
+                "basePath": "/safecloud"
+            },
+            "arweave": {
+                "host": "arweave.net",
+                "port": 443,
+                "protocol": "https",
+                "timeout": 20000,
+                "keyfile": null
+            },
+            "filecoin": {
+                "endpoint": "https://api.web3.storage",
+                "gatewayUrl": "https://w3s.link/ipfs",
+                "key": null,
+                "indexDir": null
+            },
+            "rclone": {
+                "remote": null,
+                "basePath": "safecloud",
+                "rclonePath": "rclone",
+                "timeout": 30000
+            }
         }
     }
 }

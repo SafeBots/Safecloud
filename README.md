@@ -13,6 +13,24 @@ Role-based guides in **`GetStarted/`**:
 
 This document is an overview of the internals of the Safecloud ecosystem. It can serve as the canonical context file for new LLM sessions working on the Safecloud project. It covers architecture, cryptographic design, all method signatures, and the role of OpenClaiming (OCP) in the system.
 
+**Release notes:**
+
+- **[RELEASE_4.0.md](RELEASE_4.0.md)** — **Safecloud 4.0**: collaborative editors (Univer Docs/Sheets, CodeMirror, Slides), Streams access enforcement (readLevel/writeLevel/adminLevel), inheritAccess for folder→file cascade, SafeDB migration (no more native dependencies), DocStore Google-Suite layer.
+- **[CHANGELOG.md](CHANGELOG.md)** — **Safecloud 3.8**: payment replay protection, admin control panel with WebAuthn passkey auth.
+
+**Companion documents** — this README covers the storage and compute primitives. The broader ecosystem is documented across several companion files:
+
+- **[Architecture.md](Architecture.md)** — top-level architecture: the unified triangle (Safecloud pull, Intercloud push, Safebox trust), three-tier WASM execution model, tree API, chat and messaging, SafecloudApp deployment, and comparison with related systems.
+- **[Ecosystem.md](Ecosystem.md)** — how the pieces connect: the epoch protocol, keychains, delegated identity, organizations, E2E chat, neighborhood cameras, and the unifying role of the bidirectional hash-chain primitive.
+- **[EpochProtocol.md](EpochProtocol.md)** — full implementation reference for the bidirectional hash-chain epoch protocol: data structures, algorithms, invariants, failure modes.
+- **[Apps.md](Apps.md)** — SafecloudApps: WASM execution model on Jets, tree API for transparent persistence, triggers, outbound endpoints, rooms and E2E encrypted chat (WebRTC mesh, onion-routed persistence, Safebox push gateway), and SafecloudApp deployment (CLI, dashboard, standard includes, OCP access control).
+- **[Flagging.md](Flagging.md)** — content moderation: two-layer scanning architecture (Layer 1: client-side WASM scanning before encryption; Layer 2: Safebox chaperone scanning of stored content via attested TEE with scoped grants), reputation system, corroboration and jury verification, and E2E chat safety (bilateral scanning, batched chaperone delivery, severity-tiered deniability, per-message key escrow under threshold ElGamal).
+- **[Attacks.md](Attacks.md)** — threat model: 150+ attack entries across storage, compute, payments, epoch protocol, and chat. Sections 10–11 cover epoch protocol and E2E chat specifically.
+- **[AdaptiveStreamer.md](AdaptiveStreamer.md)** — adaptive drop selection for striped downloads: probe algorithm, EMA ranking, drop-side serving policy, micropayment ramping.
+- **[LLM.md](LLM.md)** — compact LLM-context primer: all APIs, architecture layers, epoch protocol, keychains, chat, content safety, organizations.
+- **[docs/ACCESS.md](docs/ACCESS.md)** — **access control system**: roles (Creator, Publisher, Jet Operator, Viewer), identity (Qbix PRF keys + Ed25519 publisher tokens), the cryptographic grant chain (append-only Merkle log of signed grants/negotiations/revocations), grant lifecycle, embed origin enforcement (Origin header + publisher-signed viewer auth tokens), teaser policy, rate limits, price floors, payment modes (Safebux direct vs. website-sponsored), and full API reference.
+- **[docs/PayPerMinute.md](docs/PayPerMinute.md)** — pay-per-minute / pay-per-second streaming: access models, per-chunk key derivation (HKDF), the `POST /Safecloud/key` API, rolling-rewind enforcement, and Safebox build attestation to prevent distributed client hacks.
+
 ---
 
 ## Installation & Quick Start
@@ -98,6 +116,8 @@ The three network roles are:
 
 Jets never see plaintext. Drops never see plaintext. Only the Cloud (owner or
 authorised grantee) has the keys to decrypt.
+
+Beyond storage, Jets also serve as a compute layer — executing SafecloudApp WASM handlers for triggers, chat rooms, and content moderation workflows. See [Apps.md](Apps.md) for the execution model and [Ecosystem.md](Ecosystem.md) for how storage, compute, identity, and governance unify under a single cryptographic primitive.
 
 ---
 
@@ -211,6 +231,8 @@ serialisation). Used by OCP claim signing. Byte-identical to PHP
 ---
 
 ## 4. Tree Structures
+
+These tree structures underpin both storage (chunk integrity, routing) and SafecloudDB (the prolly-tree-based encrypted database that stores keychains, chat state, organization roles, and audit logs as tracks). See [Ecosystem.md §Storage: SafecloudDB and Drops](Ecosystem.md#storage-safeclouddb-and-drops) for how SafecloudDB uses prolly trees for O(diff × log n) reconciliation.
 
 ### 4.1 `Q.Data.Merkle` — ordered Merkle tree for chunk integrity
 
@@ -338,7 +360,7 @@ options.recovered:   Object        (optional — .address written here on EIP712
 ### 5.4 `Q.Crypto.delegate(options)` → Promise<delegation>
 
 Derives a child secret and creates a signed proof that the parent authorised it.
-Used by `Cloud.grant()` to create scoped access tokens.
+Used by `Cloud.grant()` to create scoped access tokens. This same primitive underpins keychain entries (§22), identity delegation ([Ecosystem.md §Delegated identity](Ecosystem.md#delegated-identity)), and organizational role grants ([Ecosystem.md §Organizations and DAOs](Ecosystem.md#organizations-and-daos)).
 
 ```js
 options.rootSecret: Uint8Array    (parent secret)
@@ -382,7 +404,7 @@ options.recovered:     Object        (optional)
 
 Every file has one master secret: the **rootKey** (32 random bytes). From it,
 everything is derived deterministically using `Q.Data.derive`. The owner must
-store the rootKey securely — it is not in the manifest.
+store the rootKey securely — it is not in the manifest. This hierarchy covers per-file storage keys. For identity key management (device keys, key rotation, revocation, recovery), see §22 Keychains below. For the epoch-based key derivation used in E2E chat and group membership, see [EpochProtocol.md](EpochProtocol.md).
 
 ```
 rootKey  (32 bytes — owner must keep this secret)
@@ -670,7 +692,7 @@ callback(err, { announced: Number })
 ## 11. Q.Safecloud.Jets API
 
 **Browser only.** Shared socket client used by both `Cloud` (uploaders/downloaders)
-and `Drops` (storage providers). All methods follow `Q.promisify` convention.
+and `Drops` (storage providers). All methods follow `Q.promisify` convention. Jets also execute SafecloudApp WASM handlers — see [Apps.md](Apps.md) for the execution model, including triggers, outbound endpoints, and room/chat handlers.
 
 ### Connection
 
@@ -884,7 +906,7 @@ see the JSDoc in `web/js/Safecloud.js` for signatures.
 ## 13. Node.js Jet Server (`classes/Safecloud/Jets.js`)
 
 The Jet server routes chunks between Cloud clients and Drop storage providers.
-It never decrypts anything.
+It never decrypts anything. For WASM handler execution, including the `WasmRunner` sandbox, see [Apps.md](Apps.md). For content moderation duties (reputation, flagging, jury coordination), see [Flagging.md](Flagging.md).
 
 ### Starting the server
 
@@ -967,7 +989,7 @@ All socket events under the `/Safecloud/cloud` namespace:
 
 **OCP is the authorisation and payment layer that governs who may store and
 retrieve chunks.** All chunk routing goes through Jets, so OCP verification
-lives primarily in the Jet server.
+lives primarily in the Jet server. OCP grants are also the mechanism for keychain entries and identity delegation — see §22 Keychains and [Ecosystem.md §Delegated identity](Ecosystem.md#delegated-identity). For a comprehensive list of attacks on OCP payment and authorisation flows, see [Attacks.md](Attacks.md) sections 5–7.
 
 ### What OCP is
 
@@ -1099,6 +1121,30 @@ plugins/Safecloud/
         ├── grant.js                               ← Capability delegation
         └── reshare.js                             ← Re-announce held chunks to Jets
 
+classes/Safecloud/
+├── Jets/
+│   ├── WasmRunner.js                              ← SafecloudApp WASM execution engine
+│   └── _bounded.js                               ← BoundedMap + metered WASM sandbox
+├── Attestation/
+│   ├── index.js                                  ← Public API (Verifier, Fetcher, Policy, PQClaim, TrustStore)
+│   ├── AttestationVerifier.js                    ← Provider dispatch + result normalisation
+│   ├── AttestationFetcher.js                     ← JWKS + VCEK network fetches
+│   ├── AttestationPolicy.js                      ← scannerCID / provider / PQClaim policy enforcement
+│   ├── PQClaim.js                                ← ML-DSA-65 scanner-authorization claims (3.1)
+│   ├── TrustStore.js                             ← Pinned root certs for all six providers
+│   ├── providers/
+│   │   ├── Nitro.js                              ← AWS Nitro: CBOR COSE_Sign1 + cert chain
+│   │   ├── GCP.js                               ← Google Cloud Confidential VMs: JWT RS256/ES384
+│   │   ├── Azure.js                             ← Azure Confidential VMs: JWT RS256
+│   │   ├── OCI.js                               ← OCI Confidential: JWT
+│   │   ├── SEV_SNP.js                           ← AMD SEV-SNP: binary report + VCEK cert
+│   │   └── TDX.js                               ← Intel TDX: DCAP report + Intel root CA
+│   └── util/
+│       ├── cbor.js                              ← CBOR decoder (zero deps)
+│       ├── jwt.js                               ← JWT decode + signature verification
+│       ├── certchain.js                         ← X.509 cert chain validation
+│       └── cose.js                              ← COSE_Sign1 verification
+
 plugins/Q/web/js/
 ├── methods/Q/
 │   ├── Data/
@@ -1135,8 +1181,6 @@ classes/Q/
 
 ## 17. Remaining Work
 
-Items 1–4 from the original TODO list are **done** and tested (491 assertions).
-
 | Item | Status |
 |------|--------|
 | OCP authorization verification in Jets | Done — `Q.Crypto.OpenClaim.verify()` in `verifySubtreeGrant()` |
@@ -1146,6 +1190,13 @@ Items 1–4 from the original TODO list are **done** and tested (491 assertions)
 | Prolly-backed Drop selection | Wired — `Router.onDropRegistered(drop, prollyRoot)` passes the root; Router uses it for coverage-weighted selection when `Q.Data.Prolly` is available |
 | `Q.Data.Merkle`/`Prolly`/`Bloom` integration | Wired — Jets.js calls the canonical `Q.Data.*` methods with fallbacks when the platform primitives are available |
 | Jet-to-Jet peering (JetSwarm) | Implemented — Hyperswarm-based with Noise encryption, fan-out fetch, CID-range announcements, grant forwarding. Mode 2 (epoch-based Sybil resistance) is documented but not yet activated |
+| SafecloudApp WASM runtime | Implemented — `WasmRunner.js` with metered sandbox, host API, receipt chaining, composable `call()` |
+| Persistent SafecloudDB (Safecloud 3.2) | Done — checkpoint blobs written to Drops after each handler execution; root CID gossiped to peer Jets; restart recovery from checkpoint index; §27 |
+| Jet HTTP file serving (Safecloud 3.2) | Done — `express.static` route at `/Safecloud/player`; any Jet serves `embed.html` + `player.js` for iframe embeds; §28 |
+| TEE Attestation (Safecloud 3.0) | Done — six-provider `AttestationVerifier` (Nitro, GCP, Azure, OCI, SEV-SNP, TDX), `AttestationFetcher`, `AttestationPolicy`, pinned `TrustStore`, 71 tests |
+| PQClaim ML-DSA-65 (Safecloud 3.1) | Done — `PQClaim.sign/verify`, `AttestationPolicy.requirePQClaim`, 16 tests |
+| Drop hot-CID replication | Not yet — Jets publish hot-N CID signal; Drops subscribe and pin |
+| TEE orchestrator (minimal trusted binary) | Not yet — manifest CID attestation for Safebox launch |
 | Erasure coding | Not yet — replication only. Future work for bandwidth efficiency |
 
 ---
@@ -1932,6 +1983,8 @@ property the incentive design below leans on.
 
 ## 21. Micropayments end to end, and the incentive design
 
+For attacks on the micropayment and incentive model (watermark replay, token withholding, split manipulation), see [Attacks.md](Attacks.md) sections 5–7.
+
 ### Configuration
 
 Server (`local/app.json` or plugin config): `Safecloud.jet.privateKey`
@@ -2067,24 +2120,795 @@ returns, it returns as a reputation feed, not an enforcement layer.
 
 ---
 
+## 22. Keychains — identity key management
+
+A keychain is a single-writer hash-chained log stored as a SafecloudDB track at `keychain/{pubkey-fingerprint}`. It is the identity primitive: every user, device, organization, and delegate has a keychain. Keychains reuse the same bidirectional hash-chain epoch protocol documented in [EpochProtocol.md](EpochProtocol.md) — adding a device key is joining an epoch, rotating a key is an epoch transition, revoking a key is excluding a participant from the next epoch. The forward/backward chain math guarantees that after a key rotation the old key cannot derive the new epoch's secrets.
+
+### 22.1 Keychain entry structure
+
+Each entry is a key lifecycle operation, signed by the keychain owner and hash-chained via `prevHash`:
+
+```json
+{
+  "op":        "rotate | add | revoke",
+  "keyType":   "signing | encryption | threshold-share",
+  "key":       "base64...",
+  "prevHash":  "sha256:...",
+  "recovery":  "base64...",
+  "timestamp": 1697500000,
+  "signature": "..."
+}
+```
+
+Readers verify the chain by walking `prevHash` links back to the genesis entry. Keychain entries are OCP grants — the same `Delegation` typed data structure verified by `Client.js verifyGrant` (§5.4). This means delegation is not a separate mechanism; it is the identity system itself. See [Ecosystem.md §Delegated identity](Ecosystem.md#delegated-identity) for how brands and organizations delegate identity via OCP grants recorded in their keychains.
+
+### 22.2 Fork detection
+
+Because keychains are single-writer, a fork — two entries with the same `prevHash` — means either the writer's signing key was stolen or the writer is equivocating (publishing different histories to different readers). A fork is detectable via gossip: any two readers who compare notes will discover the conflicting entries. No EVM, blockchain, or Safebox is required for fork detection; it is an inherent property of hash chains with gossip.
+
+A fork invalidates the entire keychain from the fork point forward. The cost of forking is total: the forker loses their identity from the fork point onward and must go through the recovery protocol to re-establish a valid keychain. See [Attacks.md](Attacks.md) §10 for the full set of epoch-protocol attacks including keychain forks, and [Ecosystem.md §Fork detection](Ecosystem.md#fork-detection) for the broader discussion.
+
+### 22.3 Recovery protocol
+
+Recovery requires BOTH of two independent thresholds simultaneously:
+
+1. **M-of-N friend attestations** — M out of N pre-designated friends attest that the recovery is legitimate. Friends alone cannot commandeer the account.
+2. **A-of-B cold personal keys** — A out of B cold keys (hardware tokens, paper keys, keys in a safe deposit box) sign the recovery request. Cold keys alone cannot recover (preventing a thief who steals the safe deposit box from taking over).
+
+The recovery process:
+
+1. **SOS posted** — an SOS entry is posted to the keychain, signed by any current key (even a compromised one — the point is to start the clock).
+2. **72-hour window opens** — the network observes the SOS and begins a waiting period.
+3. **Cold key signatures collected** — A-of-B cold keys sign the recovery request.
+4. **Friend attestations collected** — M-of-N friends sign attestations confirming the recovery is legitimate.
+5. **Both thresholds met** — a new keychain genesis is created. The old keychain is tombstoned from the SOS point forward.
+6. **Counter-SOS** — if a competing SOS appears (indicating active key theft, where the attacker is also trying to "recover"), the keychain freezes. Resolution requires cold keys — the attacker is unlikely to have both the compromised online keys AND the cold keys.
+
+Recovery is itself an epoch transition. The new keychain genesis starts a new epoch with new keys. The old epoch's keys remain valid for decrypting historical content but cannot be used for new operations.
+
+### 22.4 Keychains and the broader ecosystem
+
+Keychains unify several things that would otherwise be separate systems:
+
+| Use case | Keychain role | See also |
+|---|---|---|
+| Device management | Adding/revoking device keys are epoch transitions | [EpochProtocol.md](EpochProtocol.md) |
+| Identity delegation | Delegation entries are OCP grants in the keychain | [Ecosystem.md §Delegated identity](Ecosystem.md#delegated-identity) |
+| Organizations | Each role is a keychain (hash-chained member list) | [Ecosystem.md §Organizations and DAOs](Ecosystem.md#organizations-and-daos) |
+| E2E chat | Chat conversations use the same epoch protocol | [Apps.md §Rooms and E2E encrypted chat](Apps.md), [Flagging.md §E2E chat content safety](Flagging.md) |
+| Key escrow governance | Threshold ElGamal key shares live in keychains | [Flagging.md §Threshold ElGamal decryption](Flagging.md) |
+| Content moderation | Reputation tied to keychain identity | [Flagging.md](Flagging.md), [Attacks.md](Attacks.md) §11 |
+
+The `Q.Crypto.delegate` primitive (§5.4) is the implementation: it derives a child secret via HKDF and creates a signed OCP grant proving the parent authorized the child. Every delegation chain is verifiable by walking the keychain hash chain back to genesis. See [Ecosystem.md §How the pieces connect](Ecosystem.md#how-the-pieces-connect) for the full picture of how keychains, epochs, delegation, chat, and organizations share code paths through `Q.Crypto.delegate`, HKDF derivation, and OCP grants.
+
+---
+
+## 23. Adaptive Drop Selection for Striped Downloads
+
+When a client fetches a large file, the chunks are spread across multiple Drops. The adaptive selection algorithm picks which Drops to download from, measures their actual throughput, and culls the slow ones — producing a striped download that converges on the fastest available subset without relying on BGP, traceroute, or any network-level inspection (since Drops are browser tabs).
+
+**Full companion document:** [AdaptiveStreamer.md](AdaptiveStreamer.md) covers the algorithm in detail. The summary below captures the essentials.
+
+### 23.1 Probe and rank
+
+The download starts by requesting the first chunk from every candidate Drop simultaneously. Each response is timed; throughput = bytes / elapsed. The fastest responder's chunk enters the download pipeline immediately (no wasted work). Drops are sorted into three tiers relative to the best throughput: **Fast** (≥ 50%), **Marginal** (≥ 10%), **Slow** (< 10% or timed out). Chunks are assigned to Fast-tier Drops in proportion to their throughput. Marginal Drops are on standby for promotion; Slow Drops are removed from the candidate set.
+
+### 23.2 Continuous re-ranking
+
+Every completed chunk fetch updates the Drop's EMA throughput (`alpha = 0.3`, asymmetric — failures decay faster at `0.5×`). A Fast drop whose EMA falls below the marginal threshold is demoted; a Marginal drop that recovers is promoted. This catches a Drop whose wifi silently switches to cellular mid-download.
+
+### 23.3 Drop-side serving policy
+
+Each Drop advertises a `servingPolicy` at registration time (see `Drops/init.js`): `serveWhen` (`'wifi-only'` | `'always'` | `'plugged-only'`), `maxConcurrent`, `minBatteryPct`. The Drop monitors its own connection via the Network Information API (`navigator.connection`) and Battery API. When the connection violates the policy (e.g. wifi → cellular on a `wifi-only` Drop), the Drop sends `Safecloud/drop/pause` to its Jet; Router.js removes it from routing candidates. On recovery, `Safecloud/drop/resume` re-adds it with a reliability penalty (`RELIABILITY_RECONNECT = 0.25`).
+
+### 23.4 Micropayment ramping
+
+Payment for adaptive downloads follows a pay-after-receipt model: an unsigned intent accompanies the request; a signed watermark advance follows only after the chunk is received and Merkle-verified. Each Drop gets its own watermark channel (line 0 for Jet infrastructure, line 1+ per Drop), so a slow Drop is not subsidized by a fast one. The maximum unpaid window ramps as trust builds: 1 chunk (probe) → 3 (ramp-up) → 8 (steady) → 16 (trusted, after 100 zero-failure chunks). See [AdaptiveStreamer.md §6](AdaptiveStreamer.md#6-micropayment-ramping) for the full schedule.
+
+### 23.5 Implementation files
+
+| File | Role |
+|------|------|
+| `web/js/methods/Safecloud/Client/AdaptiveStreamer.js` | Client-side adaptive drop selector — probing, EMA ranking, tier classification, payment ramping |
+| `classes/Safecloud/Router.js` | Jet-side routing — `selectForGet` now accepts `preferDrops`; filters paused Drops; `onDropPause`/`onDropResume` lifecycle hooks |
+| `web/js/methods/Safecloud/Drops/init.js` | Drop-side — `servingPolicy` in `dropRegister`; connection/battery monitoring; pause/resume emission |
+| `web/js/methods/Safecloud/Client/fetch.js` | `adaptive: true` option delegates to AdaptiveStreamer instead of `Promise.all` |
+| `web/js/methods/Safecloud/Client/_prefetchLoop.js` | Video prefetch routes through `AdaptiveStreamer.assignDrop()` |
+
+---
+
+## 24. SafecloudApps — WASM Application Runtime
+
+SafecloudApps are server-side applications deployed as immutable WASM modules stored on Drops. Jets execute them in a bounded sandbox on behalf of authenticated callers. The full execution model — manifest format, host API, receipts, and chains — is in [Apps.md](Apps.md); this section covers the Node.js implementation.
+
+### 24.1 App manifest
+
+A SafecloudApp manifest is a JSON document stored by CID on Drops:
+
+```json
+{
+  "v": 1,
+  "name": "my-app",
+  "handlers": {
+    "GET /posts/*":   "bafy...posts-reader",
+    "POST /posts":    "bafy...posts-writer",
+    "on_key_request": "bafy...key-release"
+  },
+  "contentCid": "bafy..."
+}
+```
+
+The manifest CID is the app's identity. Handlers map HTTP routes and lifecycle hooks to individual WASM module CIDs. Each WASM CID is fetched from Drops and compiled exactly once (cached 1 hour per process via `_compiledModules`).
+
+### 24.2 `WasmRunner.execute(opts)` → Promise<{ envelope, receipt }>
+
+The main entry point. Loads the handler WASM from Drops, instantiates it with the host API, runs it under fuel and memory limits, and returns a signed envelope with an execution receipt.
+
+```js
+opts: {
+  appCid:     String,   // CID of the SafecloudApp manifest
+  handlerCid: String,   // CID of the specific WASM handler module
+  claim:      Object,   // OCP claim from the caller (optional)
+  params:     Object,   // request parameters as key-value map
+  body:       Buffer,   // raw request body bytes (optional)
+  method:     String,   // HTTP method: 'GET' | 'POST' | ...
+  path:       String,   // URL path for dynamic route matching
+  callDepth:  Number    // current composable-call depth (internal, default 0)
+}
+
+// Returns:
+{
+  envelope: {
+    v:          Number,
+    inputHash:  String,    // SHA-256 of deterministic (appCid + handlerCid + claim + params + body) input
+    output:     Object,    // the handler's respond() payload
+    executedAt: Number,    // Unix timestamp ms
+    fuelUsed:   Number,
+    jetId:      String,
+    signature:  String     // Jet's hex signature over inputHash + SHA-256(output)
+  },
+  receipt: {
+    v:           Number,
+    appCid:      String,
+    handlerCid:  String,
+    inputHash:   String,
+    outputHash:  String,
+    chainHead:   String,   // previous receipt CID (null at genesis)
+    executedAt:  Number,
+    fuelUsed:    Number,
+    memoryBytes: Number,
+    jetId:       String,
+    receiptCid:  String    // CIDv1 = SHA-256(JSON(receipt))
+  }
+}
+```
+
+### 24.3 Bounded execution
+
+The sandbox is enforced by `classes/Safecloud/Jets/_bounded.js`:
+
+```js
+_bounded.runWasm(wasmBytes, hostApi, { fuelLimit, memoryLimit })
+// → { output, fuelUsed, memoryBytes }
+// Throws with 'fuel limit exceeded' or 'memory limit exceeded' if either cap is hit
+```
+
+Default limits: **10 million instructions** of fuel, **16 MiB** of WebAssembly linear memory. Both are configurable via `WasmRunner.init({ fuelLimit, memoryLimit })`. `_bounded.BoundedMap` is also used for the compiled-module cache and manifest cache, with configurable `max` size and `ttlMs` expiry.
+
+### 24.4 Host API (exposed to WASM)
+
+| Host function | Description |
+|---|---|
+| `safedb_get(track, key)` | Read a value from a SafecloudDB track |
+| `safedb_range(track, gte, lte)` | Range scan on a track, returns iterator |
+| `safedb_put(track, key, value)` | Write a value (mutations tracked for receipt) |
+| `safedb_delete(track, key)` | Delete a key |
+| `request_claim()` | Caller's OCP claim (or null) |
+| `request_params()` | Request parameters as key-value map |
+| `request_body()` | Raw body bytes |
+| `now()` | Current Unix time in milliseconds |
+| `random_seed()` | 32-byte cryptographic random seed |
+| `respond(envelope)` | Emit response — ends execution |
+| `call(handlerCid, input)` | Invoke another handler composably (max depth: 8) |
+
+### 24.5 Receipt chaining (SafecloudChain)
+
+Every handler execution appends a receipt to the app's chain — a hash-chained log stored as a SafecloudDB track. Receipts commit to `inputHash`, `outputHash`, the previous receipt CID (`chainHead`), fuel and memory used, and the Jet's identity and signature. Given any receipt CID, any party can verify the full execution history of an app.
+
+### 24.6 Route dispatch
+
+`WasmRunner.dispatch(appCid, request)` resolves a `method + path` to the matching handler CID using the manifest's `handlers` map, then calls `execute()`. Route matching is longest-prefix with `*` wildcards (`GET /posts/*` matches `GET /posts/123`). Lifecycle hooks (e.g. `on_key_request`) are dispatched by hook name rather than HTTP route.
+
+---
+
+## 25. TEE Attestation — Safebox chaperone verification
+
+Safecloud 3.0 adds a pure Node.js attestation library for verifying Trusted Execution Environment documents. It covers all six major cloud TEE providers, is network-free for most providers (Nitro needs no external call at all), and ships with pinned root certificates for every provider.
+
+### 25.1 Providers
+
+| Provider key | TEE type | Document format | Root-cert strategy |
+|---|---|---|---|
+| `nitro` | AWS Nitro Enclaves | CBOR COSE_Sign1 | Pinned in `TrustStore` |
+| `gcp` | Google Cloud Confidential VMs | JWT (RS256 / ES384) | Fetched JWKS via `AttestationFetcher` |
+| `azure` | Azure Confidential VMs | JWT (RS256) | Pinned root CA or fetched JWKS |
+| `oci` | OCI Confidential Instances | JWT | Fetched JWKS |
+| `sev_snp` | AMD SEV-SNP | Binary measurement report | Fetched VCEK cert from AMD KDS |
+| `tdx` | Intel TDX | DCAP report | Fetched Intel SGX/TDX root CA |
+
+### 25.2 Quick start
+
+```js
+var Attestation = require('./classes/Safecloud/Attestation');
+
+var store    = new Attestation.TrustStore();     // loads pinned root certs
+var verifier = new Attestation.Verifier(store);
+var fetcher  = new Attestation.Fetcher(store);
+
+// Nitro — no network call needed: the document embeds its own cert chain
+var result = await verifier.verify('nitro', docBuffer, {
+    trustedRoot: store.nitroRoot
+});
+
+// GCP — fetch JWKS first, then verify
+var jwks   = await fetcher.fetchGCPJwks();
+var result = await verifier.verify('gcp', jwtString, { jwks });
+
+console.log(result.valid, result.scannerCID, result.provider);
+```
+
+### 25.3 `Attestation.Verifier`
+
+`verifier.verify(provider, document, options)` → Promise\<result\>
+
+```js
+result: {
+  valid:      Boolean,
+  provider:   String,     // 'nitro' | 'gcp' | 'azure' | 'oci' | 'sev_snp' | 'tdx'
+  scannerCID: String,     // the WASM CID the TEE reports as running
+  claims:     Object,     // provider-specific raw attestation claims
+  error:      String      // present only when valid === false
+}
+```
+
+### 25.4 `Attestation.Fetcher`
+
+Handles the network calls needed for JWKS-based providers. Each fetch method is independent; use only the ones your deployment needs.
+
+```js
+var fetcher = new Attestation.Fetcher(store);
+
+await fetcher.fetchGCPJwks()           // Google attestation JWKS endpoint
+await fetcher.fetchAzureJwks()         // Azure attestation JWKS endpoint
+await fetcher.fetchOCIJwks()           // OCI attestation JWKS endpoint
+await fetcher.fetchSEVSNPVcek(params)  // AMD VCEK cert from KDS, keyed by chip/tcb
+await fetcher.fetchTDXRootCA()         // Intel TDX / SGX root CA
+```
+
+### 25.5 `Attestation.Policy`
+
+Declares what a Safecloud room requires from a Safebox before admitting it:
+
+```js
+var policy = new Attestation.Policy({
+    scannerCID:  'bafybeig...',          // required — WASM CID the Safebox must run
+    providers:   ['nitro', 'gcp'],       // accepted TEE providers (default: all six)
+    allowDebug:  false,                  // reject debug-mode enclaves (default)
+
+    // Post-quantum layer (Safecloud 3.1 — see §26):
+    requirePQClaim: true,
+    pqTrustedKey:   'data:key/ml-dsa-65;base64,...'
+});
+
+// Synchronous when requirePQClaim is false:
+var { pass, reason } = policy.evaluate(result);
+
+// Async (returns Promise) when requirePQClaim is true:
+var { pass, reason } = await policy.evaluate(result, { pqClaim: claim });
+```
+
+Serialise and restore for room state or epoch protocol storage:
+
+```js
+var json     = policy.toJSON();           // plain object, omits requirePQClaim when false
+var restored = Attestation.Policy.fromJSON(json);
+```
+
+### 25.6 `Attestation.TrustStore`
+
+Loads pinned root certificates for every provider at construction time. No network call, no operator setup — the roots ship with the library.
+
+### 25.7 Provider utilities and internal codecs
+
+```js
+Attestation.providers.Nitro    // CBOR/COSE_Sign1 parser, cert chain validator
+Attestation.providers.GCP      // JWT verifier (RS256 / ES384)
+Attestation.providers.Azure    // JWT verifier (RS256)
+Attestation.providers.OCI      // JWT verifier
+Attestation.providers.SEV_SNP  // AMD binary report parser, VCEK verifier
+Attestation.providers.TDX      // Intel DCAP report parser
+
+Attestation.util.cbor          // zero-dep CBOR decoder
+Attestation.util.jwt           // JWT header/payload decode + sig verification
+Attestation.util.certchain     // X.509 cert chain validation
+Attestation.util.cose          // COSE_Sign1 verification
+```
+
+### 25.8 Test coverage
+
+71 tests across all six providers. Each provider suite covers: valid document (happy path), invalid hardware signature, tampered `scannerCID` claim, expired certificate, and debug-mode rejection. Policy tests cover provider allow-list enforcement and `toJSON`/`fromJSON` round-trip. Run with:
+
+```bash
+node tests/run_all.js
+```
+
+---
+
+## 26. Post-quantum scanner authorization (PQClaim)
+
+Safecloud 3.1 adds `PQClaim` — an ML-DSA-65 (FIPS 204 / CRYSTALS-Dilithium) scanner-authorization claim. It layers quantum-resistant authorization on top of TEE attestation.
+
+### 26.1 Why PQ matters here
+
+TEE attestation documents are signed with ECDSA (ES256/ES384) or RSA (RS256) by cloud providers. Both schemes are broken in polynomial time by Shor's algorithm on a sufficiently large quantum computer. The provider signatures cannot be changed — they are issued by AWS, GCP, Azure, etc. The PQClaim operates at the application layer above that, answering "who authorized this scanner WASM?" with an ML-DSA-65 signature that is quantum-resistant. The chunk encryption layer (HKDF-SHA-256 for key derivation, AES-256-GCM for encryption) provides ~128-bit post-quantum security via Grover's algorithm and needs no changes.
+
+### 26.2 Claim format
+
+```js
+{
+  v:           1,
+  action:      'approve-scanner',
+  scannerCID:  'bafybeig...',                           // WASM CID being authorized
+  issued:      '2026-10-28T12:00:00.000Z',              // ISO 8601 issuance time
+  expires:     '2026-11-27T12:00:00.000Z',              // ISO 8601 expiry (default: 30 days)
+  pqPublicKey: 'data:key/ml-dsa-65;base64,<1952 bytes>',
+  pqSig:       '<3309 bytes as base64>'                 // over canonical bytes (all fields except pqSig, keys sorted)
+}
+```
+
+The canonical bytes are the UTF-8 encoding of the JSON object with all fields **except `pqSig`**, keys sorted lexicographically (`action`, `expires`, `issued`, `pqPublicKey`, `scannerCID`, `v`).
+
+### 26.3 `PQClaim.sign(opts)` → Promise\<claim\>
+
+```js
+var Attestation = require('./classes/Safecloud/Attestation');
+var PQClaim = Attestation.PQClaim;
+
+var claim = await PQClaim.sign({
+    scannerCID:  'bafybeig...',
+    pqPublicKey: 'data:key/ml-dsa-65;base64,...',   // issuer's public key URI
+    pqSecretKey: secretKeyBytes,                     // 4032-byte ML-DSA-65 secret key (Uint8Array)
+    ttlSeconds:  30 * 24 * 3600                      // optional (default: 30 days)
+});
+```
+
+### 26.4 `PQClaim.verify(claim, opts)` → Promise\<{ valid, error? }\>
+
+```js
+var result = await PQClaim.verify(claim, {
+    scannerCID: 'bafybeig...',                          // must match claim.scannerCID
+    trustedKey: 'data:key/ml-dsa-65;base64,...',        // optional: pin the issuer key
+    now:        new Date()                              // optional: clock override for tests
+});
+// result.valid: Boolean
+// result.error: String (present when valid === false)
+```
+
+Checks performed in order: schema (`v === 1`, `action === 'approve-scanner'`), not-yet-issued, not expired, `scannerCID` match, `trustedKey` match (if provided), ML-DSA-65 signature valid.
+
+### 26.5 Generating an ML-DSA-65 keypair
+
+```js
+import { ml_dsa65 } from '@noble/post-quantum/ml-dsa.js';
+import { randomBytes } from 'crypto';
+
+var seed      = randomBytes(32);
+var keypair   = ml_dsa65.keygen(seed);
+// keypair.publicKey: Uint8Array(1952)
+// keypair.secretKey: Uint8Array(4032)
+
+var pqPublicKey = 'data:key/ml-dsa-65;base64,' + Buffer.from(keypair.publicKey).toString('base64');
+```
+
+Key and signature sizes: **1952-byte** public key, **4032-byte** secret key, **3309-byte** signature, **32-byte** seed.
+
+### 26.6 Wiring into `AttestationPolicy`
+
+```js
+var policy = new Attestation.Policy({
+    scannerCID:     'bafybeig...',
+    requirePQClaim: true,
+    pqTrustedKey:   'data:key/ml-dsa-65;base64,...'   // omit to accept any valid ML-DSA-65 signature
+});
+
+// evaluate() returns a Promise when requirePQClaim is set:
+var { pass, reason } = await policy.evaluate(attestationResult, { pqClaim: claim });
+```
+
+When `requirePQClaim` is false (the default), `evaluate()` runs synchronously and requires no `pqClaim` argument — existing callers are unaffected if they always `await`. `toJSON()` omits `requirePQClaim` and `pqTrustedKey` when PQ is not required; `fromJSON()` round-trips them correctly.
+
+### 26.7 Dependency
+
+`@noble/post-quantum ^0.7.1` is ESM-only and is listed in `dependencies`. `PQClaim.js` lazy-imports it on first use (`await import(...)`) and caches the module reference, so the ESM cost is paid once per process.
+
+### 26.8 Test coverage
+
+16 tests in `tests/pq_claim.test.js`: sign/verify round-trip, wrong scannerCID, tampered scannerCID (sig fails), expired claim, future-issued claim, wrong trusted key, correct trusted key, bit-flipped signature, plus five `AttestationPolicy` integration scenarios including `toJSON`/`fromJSON` round-trip.
+
+---
+
+## 27. Persistent SafecloudDB (Safecloud 3.2)
+
+Prior to 3.2 the SafecloudDB track store (`_trackStore`) was a pure in-memory `BoundedMap`. Every Jet restart wiped all application state, making persistent apps impossible.
+
+Safecloud 3.2 adds durable track checkpoints with zero-WAL semantics: because WASM handler execution is deterministic and atomic, the last committed state root is sufficient to resume after a crash. No write-ahead log or redo journal is needed.
+
+### 27.1 Checkpoint model
+
+After each successful handler execution, `WasmRunner` collects the set of tracks mutated by `stateChanges`, then for each track:
+
+1. **Serializes** all key→value pairs from `_trackStore`/`_trackIndices` into a JSON checkpoint blob:
+   ```json
+   { "v": 1, "appCid": "bafy…", "track": "posts",
+     "rootCid": "bafy…", "seq": 42, "jetId": "jet-abc123",
+     "checkpointedAt": 1730000000,
+     "entries": [{ "key": "post/001", "value": "<base64>" }, …] }
+   ```
+2. **Content-addresses** the blob (SHA-256 → `bafy…` CID — same scheme as all Safecloud content).
+3. **Writes** the blob to Drops via `Safecloud/drop/put` (fire-and-forget — does not block the HTTP response).
+4. **Updates** the local checkpoint index file (default `~/.safecloud-checkpoints.json`) with `"appCid/track" → checkpointCid`.
+5. **Gossips** the new root to peer Jets (§27.2).
+
+### 27.2 Root CID gossip
+
+After a checkpoint is durably stored, `WasmRunner._emitRootUpdate` broadcasts a `safedb:root-update` message over the existing `/Safecloud/cloud` socket.io namespace:
+
+```js
+{
+  appCid:        "bafy…",
+  track:         "posts",
+  rootCid:       "bafy…",
+  checkpointCid: "bafy…",   // CID of the checkpoint blob on Drops
+  seq:           42,
+  jetId:         "jet-abc123"
+}
+```
+
+Receiving Jets filter out their own echoes (`payload.jetId === WasmRunner._jetId`), then call `WasmRunner.applyRootUpdate(msg)`:
+
+- If the local `seq` for that `appCid/track` is already `>= msg.seq`, the message is silently dropped (monotone anti-entropy guard).
+- Otherwise, the checkpoint blob is fetched from Drops by CID, deserialized, and replayed into `_trackStore`. The local checkpoint index is updated so restart recovery picks up the new CID.
+
+This gives Jets eventual consistency on all app tracks with sub-second propagation under normal conditions.
+
+### 27.3 Restart recovery
+
+On startup, after `WasmRunner.init()`, Jets call `WasmRunner.restoreCheckpoints(indexPath)`:
+
+1. Reads `~/.safecloud-checkpoints.json` (path configurable via `Safecloud.wasm.checkpointIndexPath`).
+2. For each `"appCid/track" → checkpointCid` entry, fetches the blob from Drops and replays it.
+3. Returns a `Promise` — Jets start serving immediately; restoration completes in the background. Handlers that execute before restoration finishes start from empty state and will checkpoint their first write.
+
+### 27.4 Receipt track
+
+The receipt chain (`receipts/<appCid>`) is a regular SafecloudDB track and is checkpointed identically, so the full execution history survives restarts.
+
+### 27.5 Configuration
+
+| Config key | Default | Description |
+|---|---|---|
+| `Safecloud.wasm.checkpointIndexPath` | `~/.safecloud-checkpoints.json` | Local checkpoint CID index file |
+
+---
+
+## 28. Jet HTTP file serving and hosting (Safecloud 3.2)
+
+Every Jet is now a full HTTP/HTTPS origin: it serves the Safecloud embed player and any web assets in `web/`, and can be the public endpoint for both.  Jet operators choose one of three deployment patterns depending on their infrastructure.
+
+### 28.1 Static route
+
+```js
+app.use('/Safecloud/player', express.static(path.join(__dirname, '../../web'), {
+    maxAge: '1h', etag: true
+}));
+```
+
+Files served under `/Safecloud/player/`:
+
+| Path | Description |
+|---|---|
+| `embed.html` | Self-contained iframe embed player (dark theme, passphrase modal, split-entropy fetch, MediaSource video) |
+| `player.js` | Player logic — chunk fetch, fragment fetch, MSE playback |
+| `css/` | Companion stylesheets |
+| `js/` | Companion scripts |
+| `drop-dashboard.html` | Drop operator dashboard |
+| `onboard-*.html` | Onboarding wizards for Drops, Jets, and viewers |
+
+### 28.2 Embedding content
+
+Any content with a Prolly tree root CID can be embedded in a webpage with a single `<iframe>`:
+
+```html
+<iframe
+  src="https://<jet-host>/Safecloud/player/embed.html?rootCid=bafy…&jetUrl=https://<jet-host>"
+  allow="encrypted-media"
+  style="border:none; width:100%; aspect-ratio:16/9;">
+</iframe>
+```
+
+The embed player:
+1. Decodes the passphrase from the URL fragment (split-entropy: user half in `#` + server fragment fetched from `/safecloud/fragment`).
+2. Fetches chunks from the Jet (`/Safecloud/cloud/chunk/:cid`) using x402 micropayment headers.
+3. Streams decrypted segments into a `MediaSource`-backed `<video>` element.
+
+### 28.3 Package registry
+
+Because SafecloudApps are WASM modules stored by CID on Drops, a Jet doubles as a decentralized package registry: publish a manifest CID, and any Jet can instantiate the app. The `/Safecloud/player` static route completes the stack — authors can publish front-end assets alongside their WASM handlers and serve them directly from the same Jet.
+
+### 28.4 Hosting a Jet — three patterns
+
+#### Pattern A: Jet as its own HTTPS server (no reverse proxy)
+
+The Jet's Express app can terminate TLS directly.  Configure in `Q.Config` (typically `~/safecloud.json` or `Safecloud/config`):
+
+```json
+{
+  "Safecloud": {
+    "jets": {
+      "listen": {
+        "port": 443,
+        "tls": {
+          "cert": "/etc/letsencrypt/live/jet.example.com/fullchain.pem",
+          "key":  "/etc/letsencrypt/live/jet.example.com/privkey.pem"
+        }
+      }
+    }
+  }
+}
+```
+
+Jets.js passes `tls` options directly to `https.createServer()`, so any cert/key pair works — Let's Encrypt, a self-signed cert for development, or a cert issued by your CA.
+
+**Automatic cert renewal with `greenlock-express` or `acme-client`**
+
+For a zero-touch ACME setup the operator can install `greenlock-express` and point it at the Jet's Express app:
+
+```js
+// In a Jets wrapper (e.g. safecloud-jet-server.js)
+const greenlock = require('greenlock-express').init({
+    packageRoot: __dirname,
+    configDir:   './greenlock.d',
+    maintainerEmail: 'ops@example.com',
+    cluster: false
+});
+greenlock.serve(require('./classes/Safecloud/Jets').expressApp());
+```
+
+Greenlock handles ACME HTTP-01 (or DNS-01) challenges, cert issuance, and renewal automatically.  No nginx or certbot cron needed.  The Jet must be reachable on port 80 for HTTP-01 challenges, or a DNS API plugin must be configured for DNS-01.
+
+A lighter alternative is `acme-client` called directly at startup:
+
+```js
+const acme      = require('acme-client');
+const fs        = require('fs');
+const accountKey = fs.readFileSync('./acme-account.key');
+const client = new acme.Client({
+    directoryUrl: acme.directory.letsencrypt.production,
+    accountKey
+});
+// ... obtain cert, write to disk, restart TLS server or use SNICallback
+```
+
+Both approaches are well-suited to single-Jet deployments or small clusters where each Jet manages its own domain.
+
+#### Pattern B: nginx reverse proxy in front of the Jet
+
+For operators who already run nginx (e.g., on a shared server or for load balancing multiple Jets), let nginx handle TLS and proxy to the Jet's plain HTTP port (default `3000`):
+
+```nginx
+# /etc/nginx/sites-enabled/jet.example.com
+
+server {
+    listen 80;
+    server_name jet.example.com;
+    # Redirect all HTTP to HTTPS
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name jet.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/jet.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/jet.example.com/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+
+    # Pass all traffic to the Jet
+    location / {
+        proxy_pass         http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+
+        # WebSocket upgrade (socket.io uses long-polling + upgrade)
+        proxy_set_header Upgrade    $http_upgrade;
+        proxy_set_header Connection "upgrade";
+
+        # Forwarded-for headers so the Jet sees the real client IP
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # Larger body limit for WASM upload / chunk put
+        client_max_body_size 64m;
+
+        # Long timeouts for streaming / long-poll
+        proxy_read_timeout  300s;
+        proxy_send_timeout  300s;
+    }
+}
+```
+
+Then configure `certbot` for renewal:
+
+```bash
+certbot --nginx -d jet.example.com
+# Adds renewal hook automatically; verify with:
+certbot renew --dry-run
+```
+
+In this pattern the Jet's config omits `tls` entirely (it listens on plain HTTP):
+
+```json
+{
+  "Safecloud": {
+    "jets": {
+      "listen": { "port": 3000 }
+    }
+  }
+}
+```
+
+**Multiple Jets behind nginx (load-balancing / failover)**
+
+nginx can round-robin across multiple Jets on the same machine or across machines:
+
+```nginx
+upstream safecloud_jets {
+    least_conn;
+    server 127.0.0.1:3000;
+    server 127.0.0.1:3001;
+    server 10.0.0.5:3000 backup;
+}
+
+server {
+    ...
+    location / {
+        proxy_pass http://safecloud_jets;
+        # sticky sessions needed for socket.io long-poll:
+        # ip_hash;  ← or use cookie-based sticky with nginx-plus
+    }
+}
+```
+
+> **Socket.io note**: long-poll transport requires sticky sessions (same backend for the lifetime of a polling connection).  Use `ip_hash` or configure socket.io to prefer WebSocket transport (`transports: ['websocket']`) to avoid stickiness requirements.
+
+#### Pattern C: DNS pointing directly to the Jet
+
+For the simplest single-Jet setup, point a DNS A record at the server running the Jet, and use Pattern A (TLS in the Jet) or Pattern B (nginx on the same host):
+
+```
+; DNS zone for example.com
+jet.example.com.   300  IN  A     203.0.113.42
+```
+
+For redundancy across multiple Jet operators (each running their own public IP), use round-robin A records or a GeoDNS service:
+
+```
+; Multiple Jets — any can serve requests
+safecloud.example.com.  300  IN  A  203.0.113.42
+safecloud.example.com.  300  IN  A  198.51.100.7
+safecloud.example.com.  300  IN  A  192.0.2.99
+```
+
+Safecloud's content-addressed chunk store means any Jet can serve any CID — there is no session state that ties a viewer to a particular Jet.  DNS round-robin works well for chunk delivery; for the socket.io control plane, clients connect to any Jet and the Jet's gossip layer keeps SafecloudDB tracks in sync.
+
+**CNAME for managed/CDN setups**
+
+If the Jet is behind a CDN or managed proxy that provides its own hostname:
+
+```
+jet.example.com.  300  IN  CNAME  myjet.cdn-provider.net.
+```
+
+Set `X-Forwarded-Proto: https` in the CDN/proxy config so the Jet knows clients are connecting over TLS.
+
+### 28.5 Port and firewall checklist
+
+| Port | Purpose | Required? |
+|---|---|---|
+| `80/tcp` | HTTP (redirect to HTTPS; ACME HTTP-01 challenge) | Yes for ACME HTTP-01 |
+| `443/tcp` | HTTPS (nginx or direct TLS) | Yes for public access |
+| `3000/tcp` (or configured) | Jet plain HTTP (localhost only in proxy setups) | Internal only |
+
+In the nginx pattern, the Jet's port should be firewalled from public access (only nginx reaches it):
+
+```bash
+# Allow nginx to reach Jet (loopback — no rule needed)
+# Block direct access from the internet:
+ufw deny in 3000
+```
+
+### 28.6 Configuration reference
+
+All Jet HTTP/TLS settings live under the `Safecloud.jets.listen` config key:
+
+```json
+{
+  "Safecloud": {
+    "jets": {
+      "listen": {
+        "port": 443,
+        "tls": {
+          "cert":    "/path/to/fullchain.pem",
+          "key":     "/path/to/privkey.pem",
+          "ca":      "/path/to/chain.pem",
+          "dhparam": "/path/to/dhparam.pem"
+        }
+      },
+      "wasm": {
+        "checkpointIndexPath": "/var/lib/safecloud/checkpoints.json"
+      }
+    }
+  }
+}
+```
+
+`tls` fields map 1:1 to Node.js `https.createServer()` options.  Omit `tls` entirely when the Jet is behind a TLS-terminating proxy.
+
+---
+
 ## Testing
 
 ```bash
 npm run test:everything
 ```
 
-Runs all unit, integration, and on-chain tests (**425 assertions**, no
-browser needed):
+Runs all unit, integration, and on-chain tests (no browser needed). Current suite coverage:
 
-- Cryptographic key derivation, signing, and verification across Node,
-  browser-algorithm reproductions, and real Solidity contracts
-- The watermark payment model: partial micropayment accumulation, replay
-  prevention, expired/insufficient/tamper rejection, nonce-collision recovery
-- Bloom filter convergence, Prolly tree synchronization, EMA-based Drop
-  reliability demotion
-- Policy settlement (90/10 creator/infra split enforced on-chain in a single
-  transaction)
+**Core Safecloud (~425 tests)**
+- Cryptographic key derivation, signing, and verification across Node, browser-algorithm reproductions, and real Solidity contracts
+- The watermark payment model: partial micropayment accumulation, replay prevention, expired/insufficient/tamper rejection, nonce-collision recovery
+- Bloom filter convergence, Prolly tree synchronization, EMA-based Drop reliability demotion
+- Policy settlement (90/10 creator/infra split enforced on-chain in a single transaction)
 - Bounded-map eviction and CID-index persistence across restarts
+
+**TEE Attestation — `tests/attestation/` (71 tests)**
+- Per-provider happy path (valid document, correct scannerCID extracted) for all six providers: Nitro, GCP, Azure, OCI, SEV-SNP, TDX
+- Invalid hardware signature rejection for each provider
+- Tampered `scannerCID` claim detection
+- Expired certificate / token rejection
+- Debug-mode enclave rejection (`allowDebug: false`)
+- `AttestationPolicy` provider allow-list enforcement and `toJSON`/`fromJSON` round-trip
+
+**PQClaim — `tests/pq_claim.test.js` (16 tests)**
+- `PQClaim.sign()` / `PQClaim.verify()` round-trip
+- Wrong `scannerCID` rejection
+- Tampered `scannerCID` after signing (signature mismatch)
+- Expired claim, future-issued claim
+- Wrong `trustedKey`, correct `trustedKey`
+- Bit-flipped `pqSig` bytes
+- `AttestationPolicy` integration: with/without `requirePQClaim`, wrong CID, wrong trusted key, TEE failure still fails even with valid PQ claim
+- `toJSON`/`fromJSON` round-trip preserving `requirePQClaim` and `pqTrustedKey`; omitted when false
+
+Run individual suites:
+
+```bash
+node tests/attestation/run_all.js      # 71 TEE attestation tests
+node tests/pq_claim.test.js            # 16 PQClaim tests
+node tests/jet_module.test.js          # 10 Jets.js integration tests
+node tests/safedb_checkpoint.test.js   # 17 WasmRunner checkpoint/gossip tests
+```
 
 A separate headless-browser E2E suite (`qbix-e2e-tests/`) runs against real
 Chromium via Playwright:
@@ -2105,3 +2929,204 @@ Chromium via Playwright:
   lifecycle)
 
 Requires: Playwright with Chromium, ffmpeg, openssl.
+
+---
+
+## 29. Author upload pipeline — one-click publish (Safecloud 3.3)
+
+Safecloud 3.3 adds a complete browser-side author pipeline. Authors drag a
+file into a dashboard, fill in optional metadata, and click **Publish** — the
+file arrives on the Drop network content-addressed, and the author receives
+an `<iframe>` embed snippet to paste anywhere.
+
+No server-side author tooling is required. The Jet proxies chunks to its
+connected Drops. Authors can be anyone with access to a Jet URL.
+
+### 29.1 Author dashboard (`/Safecloud/player/author.html`)
+
+Served at the same static path as the embed player. Open it in a browser:
+
+```
+https://<your-jet-host>/Safecloud/player/author.html
+```
+
+Features:
+
+- **Drag-and-drop file selection** — any format, any size (chunks are
+  streamed in 256 KB pieces).
+- **Metadata fields** — title, description, comma-separated tags. All
+  optional; the manifest carries them.
+- **AES-256-GCM encryption** — checkbox enables per-upload encryption. A
+  fresh 256-bit key is generated in the browser via `SubtleCrypto`. The key
+  is split: the first half travels in the share URL fragment (never sent to
+  the server), the second half is POSTed to the Jet for storage. Sharing the
+  full URL (query + fragment) with a viewer gives them both halves.
+- **Live upload progress** — chunk progress bar, phase labels (chunking →
+  uploading → done).
+- **Root CID + embed snippet** — displayed on completion with one-click copy
+  buttons.
+- **Storage price estimate** — queries `GET /Safecloud/drop/price` before
+  upload and shows the estimated cost (usually 0 on operator-subsidised Jets).
+
+### 29.2 `safecloud-upload.js` — standalone browser library
+
+```html
+<script src="/Safecloud/player/safecloud-upload.js"></script>
+```
+
+```javascript
+const up = new SafecloudUpload({ jetUrl: 'https://jet.example.com' });
+
+up.on('progress', ({ phase, pct }) => {
+  console.log(phase, pct + '%');
+  // phases: 'chunking', 'encrypting', 'uploading', 'done'
+});
+
+const { rootCid, embedUrl, urlFragment } = await up.upload(file, {
+  title:       'My Podcast',
+  description: 'Episode 42',
+  tags:        ['music', 'podcast'],
+  price:       '0',       // wei per chunk view ('0' = free)
+  encrypt:     false      // true = AES-256-GCM split-key
+});
+
+console.log('Root CID:', rootCid);
+console.log('Embed URL:', embedUrl);
+// For encrypted uploads, embedUrl already includes #key=<userHalf>
+```
+
+No Q.js or Qbix framework dependency. Works in any modern browser with the
+Web Crypto API (`SubtleCrypto`).
+
+**CID scheme** (matches Jet / WasmRunner):
+```
+cid = 'bafy' + SHA-256(chunk_bytes).hex().slice(0, 52)
+```
+
+### 29.3 Jet HTTP endpoints
+
+#### `POST /Safecloud/author/upload`
+
+Receives a batch of content-addressed chunks from the browser and proxies
+them to a connected Drop.
+
+```
+POST https://<jet>/Safecloud/author/upload
+Content-Type: application/json
+
+{
+  "chunks": [
+    { "cid": "bafy…", "data": "<base64 bytes>" },
+    …
+  ],
+  "fragment": {                     // optional — encrypted uploads only
+    "rootCid": "bafy…",
+    "value":   "<hex key half>"
+  }
+}
+
+→ 200 { "uploaded": <N> }
+→ 503 { "error": "No Drops available" }
+```
+
+CORS enabled (`Access-Control-Allow-Origin: *`). Jet body limit raised to
+8 MB (covers ~20 × 256 KB base64-encoded chunks per request).
+
+#### `GET /Safecloud/drop/price?bytes=N`
+
+Returns the storage cost estimate for an N-byte upload.
+
+```
+→ 200 {
+    "pricePerByte":  "0",
+    "bytes":         1048576,
+    "estimatedWei":  "0",
+    "estimatedEth":  "0.00000000",
+    "currency":      "wei",
+    "free":          true
+  }
+```
+
+Configurable via `Safecloud.author.uploadPricePerByte` (defaults to `'0'`).
+CORS enabled.
+
+#### `POST /safecloud/fragment`
+
+HTTP counterpart to the socket.io `Safecloud/content/registerFragment` event.
+Browser-only upload clients (no socket connection) use this to register the
+server-side entropy half for encrypted uploads.
+
+```
+POST https://<jet>/safecloud/fragment
+Content-Type: application/json
+
+{ "rootCid": "bafy…", "fragment": "<hex key half>" }
+
+→ 200 { "registered": true }
+```
+
+The existing `GET /safecloud/fragment?rootCid=…` endpoint retrieves the
+fragment for the player (rate-limited to 3 requests per IP per CID per hour,
+unchanged from 3.2).
+
+### 29.4 Manifest format
+
+The manifest is itself a content-addressed JSON blob (treated as a chunk).
+Its CID is the **root CID** that identifies the upload everywhere.
+
+```json
+{
+  "v":           1,
+  "type":        "safecloud-content",
+  "title":       "My Podcast",
+  "description": "Episode 42",
+  "tags":        ["music", "podcast"],
+  "mimeType":    "audio/mpeg",
+  "size":        12345678,
+  "chunkSize":   262144,
+  "chunks":      ["bafy…", "bafy…", "…"],
+  "encrypted":   false,
+  "price":       "0",
+  "createdAt":   1700000000
+}
+```
+
+### 29.5 Sharing encrypted content
+
+When the author enables encryption, `safecloud-upload.js` produces an embed
+URL of the form:
+
+```
+https://<jet>/Safecloud/player/embed.html
+    ?rootCid=bafy…
+    &jetUrl=https%3A%2F%2Fjet.example.com
+    &sf=1
+    #key=<first-32-hex-chars-of-AES-key>
+```
+
+The `sf=1` query param tells the player to fetch the server-held second half
+from `GET /safecloud/fragment?rootCid=…`. The two halves reconstruct the
+full 256-bit key. The URL fragment is never sent to the server by the HTTP
+spec, so only the viewer who holds the full URL can decrypt.
+
+> **Important:** save the share URL immediately after upload. If the URL
+> fragment (`#key=…`) is lost the content cannot be decrypted — the Jet
+> holds only the second half.
+
+### 29.6 Embed player improvements (3.3)
+
+The embed player (`embed.html` + `player.js`) received the following polish:
+
+- **Loading spinner** — a CSS `@keyframes` spinner appears during all loading
+  phases (initialising, connecting, fetching, buffering). It disappears when
+  video begins playing.
+- **Buffering state** — a `waiting` / `playing` event pair shows/hides a
+  "Buffering…" overlay during network stalls.
+- **Descriptive error messages** — errors now include actionable text (e.g.
+  "No content specified — add ?rootCid=bafy… to the URL", "Share the full
+  URL including the #… fragment").
+- **Mobile layout** — larger spinner and readable status text at viewport
+  widths below 480 px via a `@media` query.
+- **Status helper functions** — `setLoading(msg)` and `setError(msg)` reduce
+  repetition; `setStatus('')` hides the overlay cleanly.
+

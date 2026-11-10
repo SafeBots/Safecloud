@@ -1,33 +1,61 @@
 {
   "name": "safecloud",
-  "version": "1.0.0",
+  "version": "3.7.0",
   "description": "Safecloud Jet server — distributed encrypted storage network",
   "main": "classes/Safecloud.js",
+  "bin": {
+    "safecloud-jet": "bin/jet.js"
+  },
   "dependencies": {
+    "@noble/post-quantum": "^0.7.1",
+    "@noble/secp256k1": "^2.1.0",
+    "better-sqlite3": "^13.0.3",
+    "crypto-js": "^4.2.0",
     "ethers": "^6.17.0",
     "express": "^4.18.0",
     "hypercore-crypto": "^3.4.0",
     "hyperswarm": "^4.17.0",
     "jsonc-parser": "^3.3.1",
-    "socket.io": "^4.6.0"
+    "node-sql-parser": "^4.18.0",
+    "socket.io": "^4.6.0",
+    "yjs": "^13.6.21"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=22.0.0"
   },
   "license": "AGPL-3.0-only",
   "scripts": {
     "test": "NODE_PATH=test/shims node test/validateManifest.test.js && NODE_PATH=test/shims node test/delegation.test.js && NODE_PATH=test/shims node test/recipientsHash.test.js",
-    "jet": "node demo/jet.js",
-    "test:integration": "node tests/eip712.test.js && node tests/policy_and_sponsor.test.js && node tests/jet_module.test.js && node tests/e2e.test.js && node tests/transport.test.js && node tests/drop_storage.test.js && node tests/adversarial.test.js && node tests/tree_math.test.js && node tests/splitkey.test.js && node tests/pricing_and_encoding.test.js && node tests/drop_identity.test.js && node tests/flow_full_circuit.test.js && node tests/flow_sponsored.test.js && node tests/flow_multidrop.test.js && node tests/http_routes.test.js && node tests/robustness.test.js && node tests/http_hostile.test.js && node tests/chunk_assembly.test.js && node tests/socket_handlers.test.js && node tests/socket_dos.test.js && node tests/router.test.js && node tests/operator_setup.test.js",
+    "jet": "node bin/jet.js",
+    "jet:legacy": "node demo/jet.js",
+    "build:bundle": "esbuild bin/jet.js --bundle --platform=node --format=cjs --outfile=bin/jet-bundle.cjs --external:fsevents --external:bufferutil --external:utf-8-validate --external:Q \"--external:Q/*\" --external:@aws-sdk/client-s3",
+    "build:sea": "npm run build:bundle && node --experimental-sea-config sea-config.json",
+    "test:integration": "node tests/eip712.test.js && node tests/policy_and_sponsor.test.js && node tests/jet_module.test.js && node tests/e2e.test.js && node tests/transport.test.js && node tests/drop_storage.test.js && node tests/adversarial.test.js && node tests/tree_math.test.js && node tests/splitkey.test.js && node tests/pricing_and_encoding.test.js && node tests/drop_identity.test.js && node tests/flow_full_circuit.test.js && node tests/flow_sponsored.test.js && node tests/flow_multidrop.test.js && node tests/http_routes.test.js && node tests/robustness.test.js && node tests/http_hostile.test.js && node tests/chunk_assembly.test.js && node tests/socket_handlers.test.js && node tests/socket_dos.test.js && node tests/router.test.js && node tests/adaptive_streamer.test.js && node tests/operator_setup.test.js && node tests/ipfs.test.js",
     "test:all": "npm test && npm run test:integration",
     "test:evm": "node tests/evm/compile.js && node tests/evm/onchain.test.js",
-    "test:everything": "npm run test:all && npm run test:evm"
+    "test:everything": "npm run test:all && npm run test:evm",
+    "test:streaming": "node tests/playwright_streaming_test.js",
+    "test:e2e": "node tests/playwright_e2e_test.js",
+    "test:db": "node tests/db/run_all.js"
   },
   "devDependencies": {
+    "@tiptap/core": "^3.32.3",
+    "@tiptap/extension-collaboration": "^3.32.3",
+    "@tiptap/pm": "^3.32.3",
+    "@tiptap/starter-kit": "^3.32.3",
+    "codemirror": "^5.65.21",
+    "esbuild": "^0.24.0",
     "fake-indexeddb": "^6.0.0",
     "ganache": "^7.9.2",
+    "jest": "^30.5.2",
+    "jspreadsheet-ce": "^4.14.0",
+    "jsuites": "^6.6.1",
+    "marked": "^18.1.3",
+    "mysql2": "^3.24.6",
+    "postject": "^1.0.0-alpha.6",
+    "pptxgenjs": "^4.0.1",
     "socket.io": "^4.7.5",
-    "socket.io-client": "^4.7.5",
+    "socket.io-client": "^4.8.4",
     "solc": "^0.8.26"
   }
 }

@@ -524,6 +524,23 @@ Q.Safecloud.Jets.onDropSlashed = new Q.Event();
 /** Fired when the Jet publishes its payment/network info. @event onInfo @param {Object} info */
 Q.Safecloud.Jets.onInfo = new Q.Event();
 
+/** Fired when a peer Jet is connected for striping. @event onPeerJoined @param {Object} { url, evmAddress } */
+Q.Safecloud.Jets.onPeerJoined = new Q.Event();
+
+/** Fired when a peer Jet leaves the pool. @event onPeerLeft @param {Object} { url } */
+Q.Safecloud.Jets.onPeerLeft = new Q.Event();
+
+/** Fired when the Jet pushes a swarm peer list update. @event onPeersUpdate */
+Q.Safecloud.Jets.onPeersUpdate = new Q.Event();
+
+/**
+ * Set to true to disable multi-Jet striping. When falsy (default),
+ * the client will discover and connect to swarm peers for parallel
+ * chunk fetching after the primary Jet connection succeeds.
+ * @property {Boolean} noStriping
+ */
+Q.Safecloud.Jets.noStriping = null;
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Q.Safecloud.Drops  — browser IndexedDB storage layer

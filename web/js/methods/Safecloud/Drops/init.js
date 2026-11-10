@@ -80,11 +80,28 @@ Q.exports(function (Q, _) {
                     return _replayLog(db).then(function () {
 
                         // If wipe detected, register first then announce reset
+                        // ── Serving policy ────────────────────────────────
+                        // Advertised to the Jet so the Router can filter
+                        // Drops by connection quality and operator preference.
+                        // See AdaptiveStreamer.md §5 for the full spec.
+                        var servingPolicy = options.servingPolicy || {};
+                        var defaultServeWhen = Q.Config.get(
+                            ['Safecloud', 'drop', 'serveWhen'], 'wifi-only');
+                        _._state.servingPolicy = {
+                            serveWhen:     servingPolicy.serveWhen || defaultServeWhen,
+                            maxConcurrent: servingPolicy.maxConcurrent
+                                || Q.Config.get(['Safecloud', 'drop', 'maxConcurrent'], 4),
+                            minBatteryPct: servingPolicy.minBatteryPct
+                                || Q.Config.get(['Safecloud', 'drop', 'minBatteryPct'], 20)
+                        };
+
                         var registerPromise = Q.Safecloud.Jets.dropRegister({
-                            evmAddress:  _._state.evmAddress,
-                            delegation:  delegation,
-                            publicKey:   _._state.sessionKeyPub,
-                            storage:     { GB: Q.Config.get(['Safecloud', 'drop', 'storageGB'], 10) }
+                            evmAddress:     _._state.evmAddress,
+                            delegation:     delegation,
+                            publicKey:      _._state.sessionKeyPub,
+                            storage:        { GB: Q.Config.get(['Safecloud', 'drop', 'storageGB'], 10) },
+                            servingPolicy:  _._state.servingPolicy,
+                            connectionInfo: _getConnectionInfo()
                             // prollyRoot and bloomFilter fetched fresh by dropRegister
                         });
 
@@ -92,6 +109,10 @@ Q.exports(function (Q, _) {
                             _._state.dropId    = ack && ack.dropId;
                             _._state._initTime = Date.now();
                             sessionStorage.setItem(SESSION_KEY, _._state.prollyRoot || 'null');
+
+                            // Start monitoring connection changes so the
+                            // Drop pauses/resumes serving automatically.
+                            _startConnectionMonitor();
 
                             var cold = (ack && ack.cold) || !_._state.prollyRoot;
 
@@ -608,6 +629,139 @@ Q.exports(function (Q, _) {
             { name: 'ECDSA', namedCurve: 'P-256' },
             false, ['sign']
         );
+    }
+
+    // ── Connection monitoring & serving policy enforcement ────────────
+
+    /**
+     * Snapshot the browser's current connection info.
+     * Returns a plain object safe for JSON (sent in dropRegister).
+     */
+    function _getConnectionInfo() {
+        var conn = navigator.connection || navigator.mozConnection
+            || navigator.webkitConnection;
+        if (!conn) {
+            return { type: 'unknown', effectiveType: 'unknown', downlink: null, saveData: false };
+        }
+        return {
+            type:          conn.type          || 'unknown',
+            effectiveType: conn.effectiveType || 'unknown',
+            downlink:      conn.downlink      || null,
+            saveData:      !!conn.saveData
+        };
+    }
+
+    /**
+     * Decide whether this Drop should be serving right now given its
+     * configured servingPolicy and the current connection + battery state.
+     *
+     * Returns true when serving is allowed.
+     */
+    function _shouldServe(policy) {
+        if (!policy) { return true; }
+
+        // ── Battery check (applies to all modes) ─────────────────────
+        // navigator.getBattery() returns a Promise; _shouldServe is
+        // synchronous, so we rely on a cached value updated by the
+        // battery listener (see _startConnectionMonitor).
+        if (_._state._batteryLevel != null
+            && !_._state._batteryCharging
+            && _._state._batteryLevel < (policy.minBatteryPct || 20) / 100) {
+            return false;
+        }
+
+        // ── Connection-type check ────────────────────────────────────
+        var conn = navigator.connection || navigator.mozConnection
+            || navigator.webkitConnection;
+        var serveWhen = policy.serveWhen || 'wifi-only';
+
+        if (serveWhen === 'always') { return true; }
+
+        if (serveWhen === 'plugged-only') {
+            return !!_._state._batteryCharging;
+        }
+
+        // 'wifi-only' (default): allow wifi and ethernet, deny cellular
+        if (!conn) { return true; } // no API → assume good connection
+        var type = conn.type || 'unknown';
+        if (type === 'cellular') { return false; }
+        if (conn.saveData) { return false; }
+        return true;
+    }
+
+    /**
+     * Start monitoring connection and battery changes. Sends
+     * Safecloud/drop/pause and Safecloud/drop/resume to the Jet when
+     * the serving-eligible state flips.
+     */
+    function _startConnectionMonitor() {
+        var wasServing = true;
+
+        function _evaluate() {
+            var nowServing = _shouldServe(_._state.servingPolicy);
+            if (nowServing === wasServing) { return; }
+            wasServing = nowServing;
+
+            if (!_._state.dropId) { return; } // not registered yet
+
+            if (nowServing) {
+                Q.Safecloud.Jets.emit('Safecloud/drop/resume', {
+                    dropId:         _._state.dropId,
+                    connectionInfo: _getConnectionInfo()
+                });
+            } else {
+                Q.Safecloud.Jets.emit('Safecloud/drop/pause', {
+                    dropId: _._state.dropId,
+                    reason: _pauseReason()
+                });
+            }
+        }
+
+        // Network Information API
+        var conn = navigator.connection || navigator.mozConnection
+            || navigator.webkitConnection;
+        if (conn && conn.addEventListener) {
+            conn.addEventListener('change', _evaluate);
+        }
+
+        // Battery API (async init, then event-driven)
+        if (navigator.getBattery) {
+            navigator.getBattery().then(function (battery) {
+                _._state._batteryLevel    = battery.level;
+                _._state._batteryCharging = battery.charging;
+                battery.addEventListener('levelchange', function () {
+                    _._state._batteryLevel = battery.level;
+                    _evaluate();
+                });
+                battery.addEventListener('chargingchange', function () {
+                    _._state._batteryCharging = battery.charging;
+                    _evaluate();
+                });
+                _evaluate(); // initial check with battery data
+            }).catch(function () { /* Battery API unavailable */ });
+        }
+    }
+
+    /**
+     * Human-readable reason for the pause, sent to the Jet for logging.
+     */
+    function _pauseReason() {
+        var policy = _._state.servingPolicy || {};
+        var conn = navigator.connection || {};
+        if (conn.type === 'cellular') {
+            return 'connection switched to cellular (policy: '
+                + (policy.serveWhen || 'wifi-only') + ')';
+        }
+        if (conn.saveData) { return 'data saver enabled'; }
+        if (_._state._batteryLevel != null
+            && !_._state._batteryCharging
+            && _._state._batteryLevel < (policy.minBatteryPct || 20) / 100) {
+            return 'battery below ' + (policy.minBatteryPct || 20) + '%';
+        }
+        if (policy.serveWhen === 'plugged-only' && !_._state._batteryCharging) {
+            return 'device unplugged (policy: plugged-only)';
+        }
+        return 'serving policy violation';
     }
 
 });

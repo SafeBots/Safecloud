@@ -39,7 +39,7 @@ Q.exports(function (Q, _) {
         });
     }
 
-    return function Q_Safecloud_Client_grant(manifest, rootKey, options, callback) {
+    function Q_Safecloud_Client_grant(manifest, rootKey, options, callback) {
         if (typeof options === 'function') { callback = options; options = {}; }
         options = options || {};
 
@@ -128,7 +128,7 @@ Q.exports(function (Q, _) {
 
         if (!callback) { return _promise; }
         _promise.catch(function (err) { callback(err); });
-    };
+    }
 
     // ── Index track grant ─────────────────────────────────────────────────────
 
@@ -231,6 +231,98 @@ Q.exports(function (Q, _) {
         _p.catch(function (err) { callback(err); });
     }
 
+    // ── Time-range grant (Innovation 3 — Temporal Trees) ─────────────────────
+
+    /**
+     * grant.timeRange(chatRoot, options, callback)
+     *
+     * INNOVATION 3 — Temporal Trees:
+     *   Produce one topic grant per time-path covering the given date range.
+     *   The grant allows the holder to decrypt only messages from days within
+     *   [startDate, endDate] (inclusive) at the chosen granularity.
+     *
+     * chatRoot   — Uint8Array — the chat-level encryption root (derived from
+     *               the manifest root key).
+     * options:
+     *   startDate    {Date|string}  required
+     *   endDate      {Date|string}  required
+     *   granularity  {string}       'day'|'week'|'month'|'quarter'|'year'
+     *                               default 'day'
+     *   readLevel    {string}       default 'content'
+     *   exp          {number}       optional expiry (unix seconds)
+     *   format       {string}       default 'ES256'
+     * callback(err, {
+     *   startDate, endDate, granularity,
+     *   timePaths: Array<string[]>,
+     *   grants: Array<{ timePath, secret, statement, proof, readLevel }>
+     * })
+     */
+    Q_Safecloud_Client_grant.timeRange = function (chatRoot, options, callback) {
+        if (typeof options === 'function') { callback = options; options = {}; }
+        options = options || {};
+
+        var startDate   = options.startDate instanceof Date
+            ? options.startDate : new Date(options.startDate);
+        var endDate     = options.endDate instanceof Date
+            ? options.endDate   : new Date(options.endDate);
+        var granularity = options.granularity || 'day';
+        var readLevel   = options.readLevel   || 'content';
+        var exp         = options.exp         || null;
+
+        if (isNaN(startDate)) { return callback(new Error('grant.timeRange: invalid startDate')); }
+        if (isNaN(endDate))   { return callback(new Error('grant.timeRange: invalid endDate')); }
+        if (endDate < startDate) {
+            return callback(new Error('grant.timeRange: endDate must be >= startDate'));
+        }
+
+        var chatRootBytes = (typeof chatRoot === 'string')
+            ? Q.Data.fromBase64(chatRoot) : chatRoot;
+
+        var timePaths = _.timePathsForRange(startDate, endDate, granularity);
+
+        if (timePaths.length === 0) {
+            return callback(new Error('grant.timeRange: no time paths for given range'));
+        }
+
+        var readLevelNum = _.levelFromLabel('read', readLevel);
+
+        var grantPromises = timePaths.map(function (timePath) {
+            var ctxObj = { timePath: timePath, readLevel: readLevelNum };
+            if (exp) { ctxObj.exp = exp; }
+            var tipContext = JSON.stringify(ctxObj);
+
+            return _.deriveByTimePath(chatRootBytes, timePath, tipContext)
+                .then(function (del) {
+                    var proof = del.proof;
+                    if (proof && proof.signature && ArrayBuffer.isView(proof.signature)) {
+                        proof = {
+                            signature: Q.Data.toBase64(proof.signature),
+                            publicKey: Q.Data.toBase64(proof.publicKey)
+                        };
+                    }
+                    return {
+                        timePath:  timePath,
+                        secret:    Q.Data.toBase64(del.secret),
+                        statement: del.statement,
+                        proof:     proof,
+                        readLevel: readLevel
+                    };
+                });
+        });
+
+        Promise.all(grantPromises)
+            .then(function (grants) {
+                callback(null, {
+                    startDate:   startDate,
+                    endDate:     endDate,
+                    granularity: granularity,
+                    timePaths:   timePaths,
+                    grants:      grants
+                });
+            })
+            .catch(function (err) { callback(err); });
+    };
+
     /**
      * Find the minimal set of link paths whose union covers [chunkStart, chunkEnd).
      * Uses a greedy approach: take the largest subtree that fits within the range.
@@ -270,4 +362,6 @@ Q.exports(function (Q, _) {
         collect(['track', 'data'], 0, totalLeaves, 0);
         return paths.length > 0 ? paths : [['track', 'data']];
     }
+
+    return Q_Safecloud_Client_grant;
 });

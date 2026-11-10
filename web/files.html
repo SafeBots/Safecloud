@@ -1,0 +1,1040 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Safecloud Files</title>
+<style>
+:root {
+  --bg:       #0f1117;
+  --surface:  #1a1d27;
+  --surface2: #21263a;
+  --border:   #2a2d3a;
+  --text:     #e2e8f0;
+  --muted:    #64748b;
+  --accent:   #6366f1;
+  --accent2:  #22d3ee;
+  --success:  #22c55e;
+  --warn:     #f59e0b;
+  --error:    #ef4444;
+  --radius:   8px;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+body { background: var(--bg); color: var(--text); display: flex; flex-direction: column; }
+
+/* ── Header ── */
+header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 16px; background: var(--surface);
+  border-bottom: 1px solid var(--border); flex-shrink: 0;
+}
+header h1 { font-size: .95rem; font-weight: 600; }
+header h1 span { color: var(--accent); }
+.badge { font-size: .65rem; padding: 2px 7px; border-radius: 20px; font-weight: 600; letter-spacing: .05em; }
+.badge-green  { background: rgba(34,197,94,.15);  color: var(--success); }
+.badge-yellow { background: rgba(245,158,11,.15); color: var(--warn); }
+.badge-red    { background: rgba(239,68,68,.15);  color: var(--error); }
+
+/* ── Config bar ── */
+#config-bar {
+  display: flex; align-items: center; gap: 7px; flex-wrap: wrap;
+  padding: 7px 14px; background: var(--surface);
+  border-bottom: 1px solid var(--border); flex-shrink: 0; font-size: .75rem;
+}
+#config-bar label { color: var(--muted); white-space: nowrap; }
+#config-bar input {
+  background: var(--bg); border: 1px solid var(--border); color: var(--text);
+  border-radius: 4px; padding: 3px 7px; font-size: .75rem; width: 130px;
+}
+#config-bar input[type=password] { width: 110px; }
+#config-bar input#cfg-jet { width: 170px; }
+.btn { border: none; color: #fff; border-radius: 4px; padding: 4px 12px; font-size: .75rem; cursor: pointer; font-weight: 600; }
+.btn-primary { background: var(--accent); }
+.btn-danger  { background: var(--error); }
+.btn-muted   { background: var(--muted); }
+.btn-sm      { padding: 3px 9px; font-size: .72rem; }
+.btn:hover   { opacity: .85; }
+
+/* ── Layout ── */
+#layout { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+
+/* ── Sidebar ── */
+aside {
+  width: 210px; flex-shrink: 0; display: flex; flex-direction: column;
+  background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto;
+}
+.sidebar-top {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 12px 8px; border-bottom: 1px solid var(--border);
+}
+.sidebar-top span { font-size: .72rem; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .07em; }
+#folder-list { flex: 1; padding: 6px 0; overflow-y: auto; }
+.folder-item {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 12px; cursor: pointer; font-size: .82rem; color: var(--text);
+  border-radius: 0; user-select: none; transition: background .1s;
+}
+.folder-item:hover   { background: rgba(255,255,255,.04); }
+.folder-item.selected { background: rgba(99,102,241,.18); color: var(--accent); font-weight: 600; }
+.folder-item.child   { padding-left: 28px; color: var(--muted); font-size: .78rem; }
+.folder-item.child.selected { color: var(--accent); }
+.folder-icon { font-size: 1rem; flex-shrink: 0; }
+.folder-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Main area ── */
+main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+/* ── Breadcrumb ── */
+#breadcrumb {
+  display: flex; align-items: center; gap: 5px;
+  padding: 7px 16px; background: var(--surface);
+  border-bottom: 1px solid var(--border); font-size: .82rem; flex-shrink: 0;
+}
+.bc-crumb { color: var(--muted); cursor: pointer; }
+.bc-crumb:hover { color: var(--text); }
+.bc-crumb.active { color: var(--text); font-weight: 600; cursor: default; }
+.bc-sep { color: var(--muted); }
+
+/* ── File toolbar ── */
+#file-toolbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 14px; background: var(--surface);
+  border-bottom: 1px solid var(--border); flex-shrink: 0; flex-wrap: wrap;
+}
+#file-toolbar .sep { width: 1px; height: 18px; background: var(--border); margin: 0 2px; }
+#sel-count { font-size: .72rem; color: var(--muted); margin-left: auto; }
+
+/* ── Drop zone / file grid ── */
+#drop-zone {
+  flex: 1; overflow-y: auto; padding: 16px;
+  position: relative;
+}
+#drop-zone.drag-over { background: rgba(99,102,241,.07); }
+#drop-zone.drag-over::after {
+  content: 'Drop files to upload';
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 1.2rem; color: var(--accent); border: 2px dashed var(--accent);
+  border-radius: var(--radius); pointer-events: none; background: rgba(99,102,241,.05);
+}
+
+#file-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+}
+
+.file-card {
+  background: var(--surface); border: 1.5px solid var(--border);
+  border-radius: var(--radius); padding: 12px 10px 10px;
+  cursor: pointer; user-select: none; transition: border-color .15s, background .15s;
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  min-height: 100px;
+}
+.file-card:hover    { background: var(--surface2); border-color: #3a3f55; }
+.file-card.selected { border-color: var(--accent); background: rgba(99,102,241,.12); }
+.file-card.is-folder .card-icon { color: #60a5fa; }
+.card-icon { font-size: 2rem; line-height: 1; }
+.card-name {
+  font-size: .75rem; font-weight: 500; color: var(--text);
+  text-align: center; word-break: break-word;
+  overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  max-width: 100%;
+}
+.card-meta { font-size: .65rem; color: var(--muted); text-align: center; }
+
+#empty-hint {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  text-align: center; color: var(--muted); font-size: .88rem; pointer-events: none;
+}
+#empty-hint .big-icon { font-size: 3rem; display: block; margin-bottom: 8px; opacity: .4; }
+
+/* ── Status bar ── */
+#status-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 14px; background: var(--surface);
+  border-top: 1px solid var(--border); font-size: .7rem; flex-shrink: 0;
+}
+#status-log { flex: 1; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ── Upload progress overlay ── */
+#upload-progress {
+  position: fixed; bottom: 40px; right: 20px; z-index: 100;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 12px 16px; min-width: 220px;
+  font-size: .8rem; display: none;
+}
+#upload-progress .up-title { font-weight: 600; margin-bottom: 5px; }
+#upload-progress .up-bar-bg { height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+#upload-progress .up-bar    { height: 4px; background: var(--accent); border-radius: 2px; transition: width .2s; }
+
+/* ── Mobile ── */
+@media (max-width: 600px) {
+  aside { width: 160px; }
+  #file-grid { grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 7px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Safecloud <span>Files</span></h1>
+  <span class="badge badge-yellow" id="conn-badge">Disconnected</span>
+  <span style="margin-left:auto;font-size:.65rem;color:var(--muted)">
+    <span id="folder-count">0</span> folders &nbsp;·&nbsp;
+    <span id="file-count">0</span> files
+  </span>
+</header>
+
+<div id="config-bar">
+  <label>Jet</label>
+  <input id="cfg-jet"       value="http://localhost:8080" />
+  <label>Publisher</label>
+  <input id="cfg-publisher" value="alice" style="width:90px" />
+  <label>Password</label>
+  <input id="cfg-pass"      type="password" value="safecloud" placeholder="encryption key" />
+  <button class="btn btn-muted btn-sm"   id="btn-create-streams">Create Streams</button>
+  <button class="btn btn-primary btn-sm" id="btn-connect">Connect</button>
+  <button class="btn btn-danger  btn-sm" id="btn-disconnect" style="display:none">Disconnect</button>
+</div>
+
+<div id="layout">
+
+  <!-- Sidebar: folder tree -->
+  <aside>
+    <div class="sidebar-top">
+      <span>Folders</span>
+      <button class="btn btn-muted btn-sm" id="btn-new-folder" title="New folder">+ Folder</button>
+    </div>
+    <div id="folder-list">
+      <div class="folder-item" style="color:var(--muted);font-size:.75rem;padding:12px 14px">Connect to browse</div>
+    </div>
+  </aside>
+
+  <!-- Main content area -->
+  <main>
+
+    <!-- Breadcrumb -->
+    <div id="breadcrumb">
+      <span class="bc-crumb active">Files</span>
+    </div>
+
+    <!-- File toolbar -->
+    <div id="file-toolbar">
+      <label class="btn btn-muted btn-sm" for="file-input" style="display:inline-block;cursor:pointer">⬆ Upload</label>
+      <input type="file" id="file-input" multiple hidden />
+      <button class="btn btn-muted btn-sm" id="btn-download" title="Download selected">⬇ Download</button>
+      <div class="sep"></div>
+      <button class="btn btn-muted btn-sm" id="btn-rename" title="Rename selected">✏ Rename</button>
+      <button class="btn btn-danger  btn-sm" id="btn-delete" title="Delete selected">🗑 Delete</button>
+      <span id="sel-count"></span>
+    </div>
+
+    <!-- Drop zone + file grid -->
+    <div id="drop-zone">
+      <div id="file-grid"></div>
+      <div id="empty-hint">
+        <span class="big-icon">📂</span>
+        Drop files here or click <strong>⬆ Upload</strong>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<!-- Status bar -->
+<div id="status-bar">
+  <div id="status-log">Not connected</div>
+</div>
+
+<!-- Upload progress toast -->
+<div id="upload-progress">
+  <div class="up-title">Uploading…</div>
+  <div class="up-bar-bg"><div class="up-bar" id="up-bar" style="width:0%"></div></div>
+  <div id="up-label" style="margin-top:5px;color:var(--muted)"></div>
+</div>
+
+<!-- Scripts (no CDN) -->
+<script src="./js/socket.io.min.js"></script>
+<script src="./js/yjs.min.js"></script>
+<script src="./js/SafecloudYjsProvider.js"></script>
+
+<script>
+'use strict';
+
+/* ═══════════════════════════════════════════════════════
+   HELPERS
+═══════════════════════════════════════════════════════ */
+
+function cfg(id) { return (document.getElementById(id) || {}).value || ''; }
+
+function uid() {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function fmtSize(n) {
+  if (!n) return '';
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+  return (n / 1073741824).toFixed(2) + ' GB';
+}
+
+function fmtDate(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+var FILE_ICONS = {
+  'image/':       '🖼',
+  'video/':       '🎬',
+  'audio/':       '🎵',
+  'text/':        '📄',
+  'application/pdf': '📋',
+  'application/zip': '🗜',
+  'application/x-zip': '🗜',
+  'application/vnd.openxmlformats-officedocument.wordprocessing': '📝',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml': '📊',
+  'application/vnd.openxmlformats-officedocument.presentationml': '📊',
+  'application/json': '{ }',
+  'default': '📄'
+};
+function fileIcon(type) {
+  if (!type) return FILE_ICONS.default;
+  for (var k in FILE_ICONS) {
+    if (k !== 'default' && type.startsWith(k)) return FILE_ICONS[k];
+  }
+  return FILE_ICONS.default;
+}
+
+function statusLog(msg, level) {
+  var el = document.getElementById('status-log');
+  if (el) {
+    el.textContent = '[' + new Date().toISOString().slice(11, 19) + '] ' + msg;
+    el.style.color = level === 'error' ? '#ef4444'
+                   : level === 'ok'    ? '#22c55e'
+                   : level === 'warn'  ? '#f59e0b'
+                   : '#94a3b8';
+  }
+}
+
+function setBadge(label, cls) {
+  var el = document.getElementById('conn-badge');
+  if (el) { el.textContent = label; el.className = 'badge ' + cls; }
+}
+
+function updateCounts() {
+  var fc = 0, filec = 0;
+  if (state.yfolders) state.yfolders.forEach(function() { fc++; });
+  if (state.yfiles)   state.yfiles.forEach(function(v) { if (!v._deleted) filec++; });
+  document.getElementById('folder-count').textContent = fc;
+  document.getElementById('file-count').textContent   = filec;
+}
+
+/* ═══════════════════════════════════════════════════════
+   INDEXEDDB (local chunk storage — simulates Drops)
+═══════════════════════════════════════════════════════ */
+
+var _idb = null;
+
+function openIDB() {
+  if (_idb) return Promise.resolve(_idb);
+  return new Promise(function (res, rej) {
+    var req = indexedDB.open('safecloud-files', 1);
+    req.onupgradeneeded = function (e) {
+      e.target.result.createObjectStore('chunks', { keyPath: 'cid' });
+    };
+    req.onsuccess = function (e) { _idb = e.target.result; res(_idb); };
+    req.onerror   = function ()  { rej(req.error); };
+  });
+}
+
+function idbPut(record) {
+  return openIDB().then(function (db) {
+    return new Promise(function (res, rej) {
+      var req = db.transaction('chunks', 'readwrite').objectStore('chunks').put(record);
+      req.onsuccess = function () { res(); };
+      req.onerror   = function () { rej(req.error); };
+    });
+  });
+}
+
+function idbGet(cid) {
+  return openIDB().then(function (db) {
+    return new Promise(function (res, rej) {
+      var req = db.transaction('chunks', 'readonly').objectStore('chunks').get(cid);
+      req.onsuccess = function (e) { res(e.target.result || null); };
+      req.onerror   = function ()  { rej(req.error); };
+    });
+  });
+}
+
+/* ═══════════════════════════════════════════════════════
+   CRYPTO  (browser-native AES-256-GCM via SubtleCrypto)
+═══════════════════════════════════════════════════════ */
+
+var _aesKey = null;
+
+async function deriveKey(password) {
+  var enc = new TextEncoder();
+  var raw = await crypto.subtle.importKey(
+    'raw', enc.encode(password || 'safecloud'), 'PBKDF2', false, ['deriveKey']
+  );
+  _aesKey = await crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt: enc.encode('safecloud-files-v1'), iterations: 100000, hash: 'SHA-256' },
+    raw,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+  return _aesKey;
+}
+
+async function hashBuf(buf) {
+  var digest = await crypto.subtle.digest('SHA-256', buf);
+  var hex = Array.from(new Uint8Array(digest))
+    .map(function (b) { return b.toString(16).padStart(2, '0'); }).join('');
+  return 'sha256:' + hex;
+}
+
+async function encryptBuf(key, buf) {
+  var iv = crypto.getRandomValues(new Uint8Array(12));
+  var ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, buf);
+  return { iv: iv, data: new Uint8Array(ciphertext) };
+}
+
+async function decryptBuf(key, iv, data) {
+  return crypto.subtle.decrypt({ name: 'AES-GCM', iv: iv }, key, data);
+}
+
+/* ═══════════════════════════════════════════════════════
+   YJS / SAFECLOUD PROVIDER
+═══════════════════════════════════════════════════════ */
+
+function makeStubCrypto() {
+  return {
+    encryptUpdate: function (u8) {
+      // base64-encode the binary Yjs update (dev-mode: no real encryption)
+      return Promise.resolve(
+        'data:application/octet-stream;base64,' + btoa(String.fromCharCode.apply(null, u8))
+      );
+    },
+    decryptUpdate: function (cid) {
+      var b64 = cid.split(',')[1] || '';
+      var bin = atob(b64);
+      var arr = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+      return Promise.resolve(arr);
+    }
+  };
+}
+
+function makeProvider(ydoc, userId, streamName) {
+  var sc = makeStubCrypto();
+  return new SafecloudYjsProvider(ydoc, {
+    yjs: Y, io: io,
+    jetUrl:        cfg('cfg-jet'),
+    publisherId:   cfg('cfg-publisher'),
+    streamName:    streamName,
+    userId:        userId,
+    encryptUpdate: sc.encryptUpdate,
+    decryptUpdate: sc.decryptUpdate,
+    debounceMs:    300
+  });
+}
+
+function createStream(name) {
+  return fetch(cfg('cfg-jet') + '/Streams/stream', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({
+      publisherId: cfg('cfg-publisher'),
+      name:        name,
+      type:        'Safecloud/files',
+      attributes:  { encrypted: false }
+    })
+  }).then(function (r) { return r.json(); })
+    .catch(function () {});   // stream may already exist — ignore
+}
+
+/* ═══════════════════════════════════════════════════════
+   APPLICATION STATE
+═══════════════════════════════════════════════════════ */
+
+var state = {
+  connected:       false,
+  indexDoc:        null,
+  indexProvider:   null,
+  yfolders:        null,       // Y.Map('folders') in indexDoc
+  currentFolderId: 'root',
+  folderDoc:       null,
+  folderProvider:  null,
+  yfiles:          null,       // Y.Map('files') in folderDoc
+  selectedItems:   {}          // { fileId: true }
+};
+
+/* ═══════════════════════════════════════════════════════
+   RENDERING: SIDEBAR
+═══════════════════════════════════════════════════════ */
+
+function renderSidebar() {
+  var list = document.getElementById('folder-list');
+  list.innerHTML = '';
+
+  if (!state.yfolders) {
+    var ph = document.createElement('div');
+    ph.className = 'folder-item';
+    ph.style.cssText = 'color:var(--muted);font-size:.75rem;padding:12px 14px';
+    ph.textContent = 'Connect to browse';
+    list.appendChild(ph);
+    return;
+  }
+
+  // Build a flat sorted map, root first then children alphabetical
+  var all = {};
+  state.yfolders.forEach(function (v, k) { all[k] = v; });
+
+  function addFolderItem(fid, f, isChild) {
+    var item = document.createElement('div');
+    item.className = 'folder-item' + (isChild ? ' child' : '') +
+                     (state.currentFolderId === fid ? ' selected' : '');
+    item.dataset.fid = fid;
+    var icon = (f.parent == null) ? '🏠' : '📁';
+    item.innerHTML =
+      '<span class="folder-icon">' + icon + '</span>' +
+      '<span class="folder-name">' + (f.name || fid) + '</span>';
+    item.addEventListener('click', function () { openFolder(fid); });
+    list.appendChild(item);
+  }
+
+  // Root folders first (parent === null or undefined)
+  var roots = [], children = {};
+  Object.keys(all).sort().forEach(function (fid) {
+    var f = all[fid];
+    if (!f.parent) {
+      roots.push(fid);
+    } else {
+      if (!children[f.parent]) children[f.parent] = [];
+      children[f.parent].push(fid);
+    }
+  });
+
+  // Sort roots: 'root' first, then alphabetical
+  roots.sort(function (a, b) {
+    if (a === 'root') return -1;
+    if (b === 'root') return 1;
+    return (all[a].name || '').toLowerCase() < (all[b].name || '').toLowerCase() ? -1 : 1;
+  });
+
+  roots.forEach(function (fid) {
+    addFolderItem(fid, all[fid], false);
+    var kids = (children[fid] || []).sort(function (a, b) {
+      return (all[a].name || '').toLowerCase() < (all[b].name || '').toLowerCase() ? -1 : 1;
+    });
+    kids.forEach(function (cid) {
+      if (all[cid]) addFolderItem(cid, all[cid], true);
+    });
+  });
+
+  updateCounts();
+}
+
+/* ═══════════════════════════════════════════════════════
+   RENDERING: BREADCRUMB
+═══════════════════════════════════════════════════════ */
+
+function renderBreadcrumb() {
+  var el = document.getElementById('breadcrumb');
+  el.innerHTML = '';
+
+  if (!state.yfolders) {
+    el.innerHTML = '<span class="bc-crumb active">Files</span>';
+    return;
+  }
+
+  // Build path chain
+  var chain = [];
+  var fid = state.currentFolderId;
+  var visited = {};
+  while (fid && !visited[fid]) {
+    visited[fid] = true;
+    var f = state.yfolders.get(fid);
+    if (!f) break;
+    chain.unshift({ id: fid, name: f.name || fid });
+    fid = f.parent;
+  }
+
+  chain.forEach(function (c, i) {
+    if (i > 0) {
+      var sep = document.createElement('span');
+      sep.className = 'bc-sep';
+      sep.textContent = ' › ';
+      el.appendChild(sep);
+    }
+    var crumb = document.createElement('span');
+    crumb.className = 'bc-crumb' + (i === chain.length - 1 ? ' active' : '');
+    crumb.textContent = c.name;
+    if (i < chain.length - 1) {
+      crumb.dataset.fid = c.id;
+      crumb.addEventListener('click', function () { openFolder(c.id); });
+    }
+    el.appendChild(crumb);
+  });
+}
+
+/* ═══════════════════════════════════════════════════════
+   RENDERING: FILE GRID
+═══════════════════════════════════════════════════════ */
+
+function renderGrid() {
+  var grid  = document.getElementById('file-grid');
+  var empty = document.getElementById('empty-hint');
+  grid.innerHTML = '';
+
+  // Sub-folders inside current folder
+  var subfolders = [];
+  if (state.yfolders) {
+    state.yfolders.forEach(function (v, k) {
+      if (v.parent === state.currentFolderId) {
+        subfolders.push({ id: k, name: v.name, created: v.created });
+      }
+    });
+    subfolders.sort(function (a, b) {
+      return (a.name || '').toLowerCase() < (b.name || '').toLowerCase() ? -1 : 1;
+    });
+  }
+
+  // Files in current folder
+  var files = [];
+  if (state.yfiles) {
+    state.yfiles.forEach(function (v, k) {
+      if (!v._deleted) files.push({ id: k, name: v.name, size: v.size, type: v.type, cid: v.cid, created: v.created, by: v.by });
+    });
+    files.sort(function (a, b) { return (b.created || 0) - (a.created || 0); });
+  }
+
+  if (subfolders.length === 0 && files.length === 0) {
+    empty.style.display = '';
+    updateCounts();
+    return;
+  }
+  empty.style.display = 'none';
+
+  subfolders.forEach(function (f) {
+    grid.appendChild(makeCard(f.id, '📁', f.name || 'Folder', '', fmtDate(f.created), true));
+  });
+  files.forEach(function (f) {
+    grid.appendChild(makeCard(f.id, fileIcon(f.type), f.name, fmtSize(f.size), fmtDate(f.created), false));
+  });
+
+  // Update selection count
+  var selCount = Object.keys(state.selectedItems).length;
+  document.getElementById('sel-count').textContent = selCount ? selCount + ' selected' : '';
+  updateCounts();
+}
+
+function makeCard(id, icon, name, meta1, meta2, isFolder) {
+  var card = document.createElement('div');
+  card.className = 'file-card' +
+    (isFolder ? ' is-folder' : '') +
+    (state.selectedItems[id] ? ' selected' : '');
+  card.dataset.id = id;
+
+  card.innerHTML =
+    '<div class="card-icon">' + icon + '</div>' +
+    '<div class="card-name" title="' + (name || '') + '">' + (name || '(unnamed)') + '</div>' +
+    (meta1 ? '<div class="card-meta">' + meta1 + '</div>' : '') +
+    (meta2 ? '<div class="card-meta">' + meta2 + '</div>' : '');
+
+  card.addEventListener('click', function (e) {
+    if (isFolder) { openFolder(id); return; }
+    // Single click = select/deselect
+    if (!e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      if (Object.keys(state.selectedItems).length === 1 && state.selectedItems[id]) {
+        state.selectedItems = {};
+      } else {
+        state.selectedItems = {};
+        state.selectedItems[id] = true;
+      }
+    } else {
+      if (state.selectedItems[id]) delete state.selectedItems[id];
+      else state.selectedItems[id] = true;
+    }
+    document.querySelectorAll('.file-card').forEach(function (c) {
+      c.classList.toggle('selected', !!state.selectedItems[c.dataset.id]);
+    });
+    var selCount = Object.keys(state.selectedItems).length;
+    document.getElementById('sel-count').textContent = selCount ? selCount + ' selected' : '';
+  });
+
+  card.addEventListener('dblclick', function () {
+    if (!isFolder) downloadFile(id);
+  });
+
+  return card;
+}
+
+/* ═══════════════════════════════════════════════════════
+   FOLDER OPERATIONS
+═══════════════════════════════════════════════════════ */
+
+function openFolder(folderId) {
+  if (!state.connected) { statusLog('Not connected', 'warn'); return; }
+
+  // Tear down previous folder connection
+  if (state.folderProvider) {
+    try { state.folderProvider.disconnect(); } catch (e) {}
+    state.folderProvider = null;
+    state.folderDoc      = null;
+    state.yfiles         = null;
+  }
+
+  state.currentFolderId = folderId;
+  state.selectedItems   = {};
+  renderSidebar();
+  renderBreadcrumb();
+  renderGrid();
+
+  var userId     = cfg('cfg-publisher');
+  var streamName = 'docs/files-' + folderId;
+
+  createStream(streamName).then(function () {
+    var ydoc   = new Y.Doc();
+    var yfiles = ydoc.getMap('files');
+    var p      = makeProvider(ydoc, userId, streamName);
+
+    // Wire socket events (p._socket is set synchronously by origConnect)
+    var origConnect = p.connect.bind(p);
+    p.connect = function () {
+      origConnect();
+      if (p._socket) {
+        p._socket.on('connect', function () {
+          statusLog('Folder connected: ' + streamName, 'ok');
+        });
+        p._socket.on('disconnect', function () {
+          statusLog('Folder disconnected', 'warn');
+        });
+      }
+      return p;
+    };
+
+    yfiles.observe(function () { renderGrid(); });
+
+    state.folderDoc      = ydoc;
+    state.folderProvider = p;
+    state.yfiles         = yfiles;
+
+    p.connect();
+    statusLog('Connecting to ' + streamName + '…');
+  }).catch(function (e) {
+    statusLog('Folder stream error: ' + (e && e.message || ''), 'error');
+  });
+}
+
+function createFolder() {
+  if (!state.yfolders) { statusLog('Not connected', 'warn'); return; }
+  var name = prompt('New folder name:');
+  if (!name || !name.trim()) return;
+  var fid   = uid();
+  var entry = {
+    name:    name.trim(),
+    parent:  state.currentFolderId,
+    created: Date.now(),
+    by:      cfg('cfg-publisher')
+  };
+  state.yfolders.set(fid, entry);
+  renderSidebar();
+  renderGrid();
+  statusLog('Created folder: ' + name.trim(), 'ok');
+}
+
+/* ═══════════════════════════════════════════════════════
+   FILE OPERATIONS
+═══════════════════════════════════════════════════════ */
+
+function showUploadProgress(label, pct) {
+  var el = document.getElementById('upload-progress');
+  el.style.display = pct >= 100 ? 'none' : '';
+  document.getElementById('up-bar').style.width   = pct + '%';
+  document.getElementById('up-label').textContent = label;
+}
+
+async function uploadFiles(fileList) {
+  if (!state.yfiles) { statusLog('Open a folder first', 'warn'); return; }
+
+  // Ensure AES key
+  if (!_aesKey) await deriveKey(cfg('cfg-pass') || 'safecloud');
+
+  var total = fileList.length;
+  for (var i = 0; i < total; i++) {
+    var file = fileList[i];
+    var label = file.name + ' (' + fmtSize(file.size) + ')';
+    showUploadProgress(label, Math.round((i / total) * 90));
+    statusLog('Uploading: ' + label);
+    try {
+      var buf  = await file.arrayBuffer();
+      var cid  = await hashBuf(buf);
+      var enc  = await encryptBuf(_aesKey, buf);
+      await idbPut({ cid: cid, iv: enc.iv, data: enc.data });
+
+      var fid   = uid();
+      var entry = {
+        name:    file.name,
+        type:    file.type || 'application/octet-stream',
+        size:    file.size,
+        cid:     cid,
+        created: Date.now(),
+        by:      cfg('cfg-publisher')
+      };
+      state.yfiles.set(fid, entry);
+      statusLog('Uploaded: ' + file.name, 'ok');
+    } catch (e) {
+      statusLog('Upload failed: ' + file.name + ' — ' + (e.message || e), 'error');
+    }
+  }
+  showUploadProgress('', 100);
+}
+
+async function downloadFile(fileId) {
+  if (!state.yfiles) return;
+  var meta = state.yfiles.get(fileId);
+  if (!meta || !meta.cid) { statusLog('File has no CID', 'error'); return; }
+
+  if (!_aesKey) await deriveKey(cfg('cfg-pass') || 'safecloud');
+
+  statusLog('Downloading: ' + meta.name);
+  try {
+    var chunk = await idbGet(meta.cid);
+    if (!chunk) {
+      statusLog('Chunk not found in local storage: ' + meta.cid, 'error');
+      return;
+    }
+    var buf  = await decryptBuf(_aesKey, chunk.iv, chunk.data);
+    var blob = new Blob([buf], { type: meta.type || 'application/octet-stream' });
+    var a    = document.createElement('a');
+    a.href     = URL.createObjectURL(blob);
+    a.download = meta.name;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); document.body.removeChild(a); }, 2000);
+    statusLog('Downloaded: ' + meta.name, 'ok');
+  } catch (e) {
+    statusLog('Download error: ' + (e.message || e), 'error');
+  }
+}
+
+function deleteSelected() {
+  var ids = Object.keys(state.selectedItems);
+  if (ids.length === 0) { statusLog('Nothing selected', 'warn'); return; }
+  if (!confirm('Delete ' + ids.length + ' item(s)? This cannot be undone.')) return;
+
+  ids.forEach(function (id) {
+    // Is it a file?
+    if (state.yfiles && state.yfiles.has(id)) {
+      var meta = state.yfiles.get(id);
+      state.yfiles.set(id, Object.assign({}, meta, { _deleted: true }));
+    }
+    // Is it a folder?
+    if (state.yfolders && state.yfolders.has(id)) {
+      state.yfolders.delete(id);
+    }
+  });
+
+  state.selectedItems = {};
+  renderGrid();
+  renderSidebar();
+  statusLog('Deleted ' + ids.length + ' item(s)', 'ok');
+}
+
+function renameSelected() {
+  var ids = Object.keys(state.selectedItems);
+  if (ids.length !== 1) { statusLog('Select exactly one item to rename', 'warn'); return; }
+  var id = ids[0];
+
+  if (state.yfiles && state.yfiles.has(id)) {
+    var meta = state.yfiles.get(id);
+    var name = prompt('Rename to:', meta.name);
+    if (!name || !name.trim()) return;
+    state.yfiles.set(id, Object.assign({}, meta, { name: name.trim() }));
+    statusLog('Renamed to: ' + name.trim(), 'ok');
+  } else if (state.yfolders && state.yfolders.has(id)) {
+    var f    = state.yfolders.get(id);
+    var name2 = prompt('Rename folder to:', f.name);
+    if (!name2 || !name2.trim()) return;
+    state.yfolders.set(id, Object.assign({}, f, { name: name2.trim() }));
+    renderSidebar();
+    statusLog('Folder renamed to: ' + name2.trim(), 'ok');
+  }
+
+  state.selectedItems = {};
+  renderGrid();
+}
+
+/* ═══════════════════════════════════════════════════════
+   CONNECT / DISCONNECT
+═══════════════════════════════════════════════════════ */
+
+function disconnect() {
+  if (state.folderProvider) try { state.folderProvider.disconnect(); } catch (e) {}
+  if (state.indexProvider)  try { state.indexProvider.disconnect();  } catch (e) {}
+  state.connected     = false;
+  state.indexProvider = null;
+  state.indexDoc      = null;
+  state.yfolders      = null;
+  state.folderProvider = null;
+  state.folderDoc      = null;
+  state.yfiles         = null;
+  state.selectedItems  = {};
+  setBadge('Disconnected', 'badge-yellow');
+  statusLog('Disconnected');
+  renderSidebar();
+  renderBreadcrumb();
+  renderGrid();
+  document.getElementById('btn-disconnect').style.display = 'none';
+  document.getElementById('btn-connect').textContent = 'Connect';
+}
+
+async function connect() {
+  disconnect();
+  setBadge('Connecting…', 'badge-yellow');
+
+  // Prime the AES key
+  await deriveKey(cfg('cfg-pass') || 'safecloud');
+
+  var userId      = cfg('cfg-publisher');
+  var indexStream = 'docs/files-index';
+
+  // Create the index stream (idempotent)
+  await createStream(indexStream);
+
+  var ydoc     = new Y.Doc();
+  var yfolders = ydoc.getMap('folders');
+  var p        = makeProvider(ydoc, userId, indexStream);
+
+  var origConnect = p.connect.bind(p);
+  p.connect = function () {
+    origConnect();
+    if (p._socket) {
+      p._socket.on('connect', function () {
+        state.connected = true;
+        setBadge('Connected', 'badge-green');
+        document.getElementById('btn-disconnect').style.display = '';
+        document.getElementById('btn-connect').textContent = 'Reconnect';
+        statusLog('Connected — index stream ready', 'ok');
+
+        // Seed root folders on first connect if empty
+        setTimeout(function () {
+          if (!yfolders.has('root')) {
+            yfolders.set('root', { name: 'Home', parent: null, created: Date.now(), by: userId });
+            yfolders.set('docs-' + uid().slice(0, 5), { name: 'Documents', parent: 'root', created: Date.now(), by: userId });
+            yfolders.set('media-' + uid().slice(0, 5), { name: 'Media', parent: 'root', created: Date.now(), by: userId });
+          }
+          renderSidebar();
+          openFolder(state.currentFolderId || 'root');
+        }, 500);
+      });
+
+      p._socket.on('disconnect', function () {
+        if (state.connected) {
+          state.connected = false;
+          setBadge('Offline', 'badge-red');
+          statusLog('Index stream disconnected', 'warn');
+        }
+      });
+    }
+    return p;
+  };
+
+  yfolders.observe(function () {
+    renderSidebar();
+    renderBreadcrumb();
+  });
+
+  state.indexDoc      = ydoc;
+  state.indexProvider = p;
+  state.yfolders      = yfolders;
+
+  p.connect();
+  statusLog('Connecting to ' + indexStream + '…');
+}
+
+/* ═══════════════════════════════════════════════════════
+   DRAG & DROP
+═══════════════════════════════════════════════════════ */
+
+var dropZone = document.getElementById('drop-zone');
+
+dropZone.addEventListener('dragover', function (e) {
+  e.preventDefault();
+  e.stopPropagation();
+  dropZone.classList.add('drag-over');
+});
+
+dropZone.addEventListener('dragleave', function (e) {
+  if (!dropZone.contains(e.relatedTarget)) {
+    dropZone.classList.remove('drag-over');
+  }
+});
+
+dropZone.addEventListener('drop', function (e) {
+  e.preventDefault();
+  e.stopPropagation();
+  dropZone.classList.remove('drag-over');
+  if (e.dataTransfer && e.dataTransfer.files.length) {
+    uploadFiles(e.dataTransfer.files);
+  }
+});
+
+/* ═══════════════════════════════════════════════════════
+   BUTTON WIRING
+═══════════════════════════════════════════════════════ */
+
+document.getElementById('btn-connect').addEventListener('click', connect);
+document.getElementById('btn-disconnect').addEventListener('click', disconnect);
+
+document.getElementById('btn-new-folder').addEventListener('click', createFolder);
+
+var fileInput = document.getElementById('file-input');
+fileInput.addEventListener('change', function () {
+  if (fileInput.files.length) uploadFiles(fileInput.files);
+  fileInput.value = '';
+});
+
+document.getElementById('btn-download').addEventListener('click', function () {
+  var ids = Object.keys(state.selectedItems);
+  if (ids.length === 0) { statusLog('Select a file to download', 'warn'); return; }
+  ids.forEach(function (id) {
+    if (state.yfiles && state.yfiles.has(id)) downloadFile(id);
+  });
+});
+
+document.getElementById('btn-delete').addEventListener('click', deleteSelected);
+document.getElementById('btn-rename').addEventListener('click', renameSelected);
+
+document.getElementById('btn-create-streams').addEventListener('click', async function () {
+  setBadge('Creating…', 'badge-yellow');
+  await createStream('docs/files-index');
+  statusLog('Index stream created (or already exists)', 'ok');
+  setBadge('Ready', 'badge-green');
+});
+
+/* ═══════════════════════════════════════════════════════
+   KEYBOARD SHORTCUTS
+═══════════════════════════════════════════════════════ */
+document.addEventListener('keydown', function (e) {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'Delete' || e.key === 'Backspace') deleteSelected();
+  if (e.key === 'F2') renameSelected();
+  if (e.key === 'Escape') { state.selectedItems = {}; renderGrid(); }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'a') {
+    e.preventDefault();
+    if (state.yfiles) {
+      state.yfiles.forEach(function (v, k) { if (!v._deleted) state.selectedItems[k] = true; });
+    }
+    renderGrid();
+  }
+});
+</script>
+</body>
+</html>

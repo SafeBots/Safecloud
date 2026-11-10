@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Safecloud Suite — Collaborative Editors</title>
+
+<!-- CodeMirror 5 (markdown) — local bundles -->
+<link rel="stylesheet" href="./js/codemirror.css">
+<link rel="stylesheet" href="./js/dracula.css">
+<!-- Univer CSS is bundled inline in univer-bundle.js (injected at runtime) -->
+
+<style>
+:root {
+  --bg:       #0f1117;
+  --surface:  #1a1d27;
+  --border:   #2a2d3a;
+  --text:     #e2e8f0;
+  --muted:    #64748b;
+  --accent:   #6366f1;
+  --accent2:  #22d3ee;
+  --success:  #22c55e;
+  --warn:     #f59e0b;
+  --error:    #ef4444;
+  --editor-bg:#111827;
+  --radius:   8px;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { overflow-x: hidden; max-width: 100vw; }
+body { background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+
+/* ── Header ── */
+header { display: flex; align-items: center; gap: 10px; padding: 10px 18px; border-bottom: 1px solid var(--border); background: var(--surface); flex-shrink: 0; }
+header h1 { font-size: .95rem; font-weight: 600; }
+header h1 span { color: var(--accent); }
+.badge { font-size: .65rem; padding: 2px 7px; border-radius: 20px; font-weight: 600; letter-spacing: .05em; }
+.badge-green  { background: rgba(34,197,94,.15);  color: var(--success); }
+.badge-yellow { background: rgba(245,158,11,.15); color: var(--warn); }
+.badge-red    { background: rgba(239,68,68,.15);  color: var(--error); }
+
+/* ── Tab bar ── */
+#tab-bar { display: flex; gap: 2px; padding: 6px 14px 0; background: var(--surface); border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.tab { background: transparent; border: none; border-bottom: 2px solid transparent; color: var(--muted); padding: 6px 14px 8px; font-size: .82rem; cursor: pointer; border-radius: 4px 4px 0 0; transition: color .15s; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+/* ── Config bar ── */
+#config-bar { display: flex; align-items: center; gap: 7px; padding: 7px 16px; background: var(--surface); border-top: 1px solid var(--border); font-size: .75rem; flex-shrink: 0; flex-wrap: wrap; }
+#config-bar label { color: var(--muted); white-space: nowrap; }
+#config-bar input { background: var(--editor-bg); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 3px 7px; font-size: .75rem; width: 150px; }
+#config-bar input#cfg-jet { width: 170px; }
+.btn { border: none; color: #fff; border-radius: 4px; padding: 4px 13px; font-size: .75rem; cursor: pointer; font-weight: 600; }
+.btn-primary { background: var(--accent); }
+.btn-danger  { background: var(--error); }
+.btn-muted   { background: var(--muted); }
+.btn:hover   { opacity: .85; }
+
+/* ── Two-pane layout ── */
+.panes { display: flex; flex: 1; min-height: 0; }
+.pane  { flex: 1; display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); }
+.pane:last-child { border-right: none; }
+.pane-header { display: flex; align-items: center; gap: 8px; padding: 7px 13px; background: var(--surface); border-bottom: 1px solid var(--border); font-size: .78rem; color: var(--muted); flex-shrink: 0; }
+.pane-header strong { color: var(--text); }
+
+/* ── Toolbar (Docs/Markdown) ── */
+.toolbar { display: flex; gap: 3px; padding: 5px 9px; background: var(--surface); border-bottom: 1px solid var(--border); flex-wrap: wrap; flex-shrink: 0; min-height: 34px; }
+.toolbar button { background: transparent; border: 1px solid var(--border); color: var(--text); border-radius: 3px; padding: 2px 7px; font-size: .72rem; cursor: pointer; }
+.toolbar button:hover, .toolbar button.is-active { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+/* ── Editor wrap ── */
+.editor-wrap { flex: 1; overflow: auto; background: var(--editor-bg); position: relative; }
+.ProseMirror { outline: none; min-height: 300px; padding: 20px 22px; font-size: 1rem; line-height: 1.7; color: var(--text); }
+.ProseMirror p.is-editor-empty:first-child::before { content: attr(data-placeholder); color: var(--muted); pointer-events: none; float: left; height: 0; }
+.ProseMirror h1, .ProseMirror h2 { margin: .6em 0 .3em; }
+.ProseMirror ul, .ProseMirror ol { padding-left: 1.4em; }
+.ProseMirror code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: .9em; }
+.ProseMirror blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--muted); }
+
+/* ── Sheets (Univer container) ── */
+.sheets-wrap { flex: 1; overflow: hidden; background: #1a1d27; display: flex; flex-direction: column; }
+.univer-container { flex: 1; min-height: 0; position: relative; }
+/* Univer dark-mode overrides to match Safecloud palette */
+.univer-container .univer-toolbar-wrapper { background: var(--surface) !important; border-bottom: 1px solid var(--border) !important; }
+.univer-container .univer-formula-bar { background: var(--surface) !important; border-bottom: 1px solid var(--border) !important; }
+
+/* ── Markdown split pane ── */
+.md-split { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+.md-source { flex: 1; display: flex; flex-direction: column; border-right: 1px solid var(--border); overflow: hidden; }
+.md-preview { flex: 1; overflow: auto; padding: 20px 24px; background: var(--editor-bg); font-size: .95rem; line-height: 1.75; color: var(--text); }
+.md-label { background: var(--surface); padding: 4px 12px; font-size: .68rem; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--border); flex-shrink: 0; }
+.CodeMirror { flex: 1; height: 100%; font-family: 'Fira Code', 'Courier New', monospace !important; font-size: 13px !important; }
+.CodeMirror-scroll { height: 100%; }
+.md-preview h1 { font-size: 1.6em; border-bottom: 1px solid var(--border); padding-bottom: .3em; margin-bottom: .6em; }
+.md-preview h2 { font-size: 1.25em; margin: 1em 0 .4em; }
+.md-preview h3 { font-size: 1.05em; margin: .8em 0 .3em; }
+.md-preview p  { margin-bottom: .8em; }
+.md-preview code { background: rgba(255,255,255,.08); padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: .88em; color: var(--accent2); }
+.md-preview pre { background: #0a0c10; border: 1px solid var(--border); border-radius: 6px; padding: 14px; margin: .8em 0; overflow-x: auto; }
+.md-preview pre code { background: none; color: var(--text); }
+.md-preview ul, .md-preview ol { padding-left: 1.4em; margin-bottom: .8em; }
+.md-preview blockquote { border-left: 3px solid var(--accent); padding-left: 12px; color: var(--muted); margin: .8em 0; }
+.md-preview a { color: var(--accent2); }
+.md-preview strong { color: #fff; }
+.md-preview table { border-collapse: collapse; width: 100%; margin: .8em 0; }
+.md-preview th, .md-preview td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+.md-preview th { background: var(--surface); }
+
+/* ── Awareness + log ── */
+.awareness-bar { padding: 4px 12px; background: var(--surface); border-top: 1px solid var(--border); font-size: .7rem; color: var(--muted); display: flex; gap: 8px; flex-shrink: 0; min-height: 24px; flex-wrap: wrap; }
+.cursor-pill { display: inline-flex; align-items: center; gap: 3px; padding: 1px 6px; border-radius: 10px; font-size: .64rem; font-weight: 600; }
+.log-panel { height: 120px; overflow-y: auto; background: #0a0c10; border-top: 1px solid var(--border); padding: 6px 10px; font-family: 'Fira Code', 'Courier New', monospace; font-size: .68rem; color: var(--muted); flex-shrink: 0; }
+.log-line { margin-bottom: 2px; }
+.log-line.info  { color: var(--accent2); }
+.log-line.ok    { color: var(--success); }
+.log-line.warn  { color: var(--warn); }
+.log-line.error { color: var(--error); }
+
+/* ── Slides ── */
+.slides-layout { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.slides-body   { flex: 1; display: flex; min-height: 0; overflow: hidden; }
+.slide-list    { width: 160px; flex-shrink: 0; border-right: 1px solid var(--border); overflow-y: auto; background: var(--bg); padding: 6px 4px; display: flex; flex-direction: column; gap: 4px; }
+.slide-thumb   { background: #1a2035; border: 2px solid transparent; border-radius: 4px; padding: 8px 6px; cursor: pointer; min-height: 68px; }
+.slide-thumb.selected { border-color: var(--accent); }
+.slide-thumb .thumb-num { font-size: .58rem; color: var(--muted); margin-bottom: 2px; }
+.slide-thumb .thumb-title { font-size: .67rem; color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slide-thumb .thumb-body  { font-size: .58rem; color: var(--muted); margin-top: 2px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.slide-main   { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.slide-canvas-wrap { flex: 1; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--editor-bg); overflow: auto; }
+.slide-canvas { width: 600px; height: 338px; flex-shrink: 0; border-radius: 8px; border: 1px solid var(--border); display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 36px; gap: 14px; overflow: hidden; }
+.slide-canvas.type-title   { background: linear-gradient(135deg,#1e1b4b,#312e81); }
+.slide-canvas.type-content { background: #111827; }
+.slide-canvas.type-blank   { background: #0f1117; }
+.canvas-title { font-size: 1.9rem; font-weight: 700; color: #fff; text-align: center; line-height: 1.25; }
+.canvas-body  { font-size: .95rem; color: rgba(255,255,255,.8); text-align: center; line-height: 1.65; white-space: pre-wrap; }
+.slide-editor { background: var(--surface); border-top: 1px solid var(--border); padding: 10px 14px; display: grid; grid-template-columns: auto 1fr; gap: 5px 10px; align-items: start; flex-shrink: 0; }
+.slide-editor label { font-size: .68rem; color: var(--muted); padding-top: 6px; }
+.slide-editor input, .slide-editor textarea, .slide-editor select { background: var(--editor-bg); border: 1px solid var(--border); color: var(--text); border-radius: 4px; padding: 4px 8px; font-size: .78rem; width: 100%; }
+.slide-editor textarea { resize: vertical; min-height: 48px; font-family: inherit; }
+
+/* ── Mobile ── */
+@media (max-width: 680px) {
+  .pane:last-child { display: none; }
+  .md-source { flex: none; height: 50%; }
+  .md-preview { flex: none; height: 50%; }
+  .slide-list { width: 100px; }
+  .slide-canvas { width: 100%; height: auto; min-height: 200px; }
+  #config-bar input { width: 120px; }
+  #config-bar input#cfg-jet { width: 140px; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Safecloud <span>Suite</span></h1>
+  <span class="badge badge-yellow" id="conn-badge">Disconnected</span>
+  <span style="font-size:.65rem;color:var(--muted);margin-left:auto">
+    ordinal A:<span id="last-ordinal-a" style="color:var(--accent2)">—</span>
+    / B:<span id="last-ordinal-b" style="color:var(--accent2)">—</span>
+  </span>
+</header>
+
+<!-- Editor type tabs -->
+<div id="tab-bar">
+  <button class="tab active" data-mode="docs">📝 Docs</button>
+  <button class="tab" data-mode="sheets">📊 Sheets</button>
+  <button class="tab" data-mode="markdown">◻ Markdown</button>
+  <button class="tab" data-mode="slides">🎞 Slides</button>
+</div>
+
+<!-- Two-pane layout -->
+<div class="panes">
+  <!-- Pane A (Client A) -->
+  <div class="pane">
+    <div class="pane-header">
+      <strong>Client A</strong>
+      <span class="badge badge-yellow" id="badge-a">—</span>
+      <span style="margin-left:auto;font-size:.65rem" id="user-a-label">alice</span>
+    </div>
+    <div class="toolbar" id="toolbar-a"></div>
+    <div class="editor-wrap" id="editor-a" style="display:flex;flex-direction:column;"></div>
+    <div class="awareness-bar" id="awareness-a"></div>
+    <div class="log-panel" id="log-a"></div>
+  </div>
+
+  <!-- Pane B (Client B) -->
+  <div class="pane">
+    <div class="pane-header">
+      <strong>Client B</strong>
+      <span class="badge badge-yellow" id="badge-b">—</span>
+      <span style="margin-left:auto;font-size:.65rem" id="user-b-label">bob</span>
+    </div>
+    <div class="toolbar" id="toolbar-b"></div>
+    <div class="editor-wrap" id="editor-b" style="display:flex;flex-direction:column;"></div>
+    <div class="awareness-bar" id="awareness-b"></div>
+    <div class="log-panel" id="log-b"></div>
+  </div>
+</div>
+
+<!-- Config bar -->
+<div id="config-bar">
+  <label>Jet</label>
+  <input id="cfg-jet"       value="http://localhost:8080" />
+  <label>Publisher</label>
+  <input id="cfg-publisher" value="alice" style="width:90px" />
+  <label>Stream</label>
+  <input id="cfg-stream"    value="docs/main" style="width:110px" />
+  <button class="btn btn-muted"   id="btn-create">Create Streams</button>
+  <button class="btn btn-primary" id="btn-connect">Connect</button>
+  <button class="btn btn-danger"  id="btn-disconnect" style="display:none">Disconnect</button>
+</div>
+
+<!-- ─────────────── CDN Dependencies ─────────────── -->
+<script src="./js/socket.io.min.js"></script>
+<script src="./js/yjs.min.js"></script>
+
+<!-- Local bundles (all CDN replaced) -->
+<!-- Univer Docs + Sheets bundle (replaces TipTap + Jspreadsheet) -->
+<script src="./js/univer-bundle.js"></script>
+<script src="./js/codemirror.min.js"></script>
+<script src="./js/marked.min.js"></script>
+<script src="./js/pptxgenjs.min.js"></script>
+
+<!-- SafecloudYjsProvider -->
+<script src="./js/SafecloudYjsProvider.js"></script>
+
+<script>
+'use strict';
+
+/* ─── Dev-mode crypto stubs ───────────────────────────────────────────────── */
+function makeStubCrypto() {
+    return {
+        encryptUpdate: function (u8) {
+            return Promise.resolve('data:application/octet-stream;base64,' + btoa(String.fromCharCode.apply(null, u8)));
+        },
+        decryptUpdate: function (cid) {
+            var b64 = cid.split(',')[1] || '';
+            var bin = atob(b64);
+            var arr = new Uint8Array(bin.length);
+            for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+            return Promise.resolve(arr);
+        }
+    };
+}
+
+/* ─── Helpers ──────────────────────────────────────────────────────────────── */
+function cfg(id) { return document.getElementById(id).value.trim(); }
+
+function log(panelId, msg, level) {
+    var el = document.getElementById(panelId);
+    if (!el) return;
+    var div = document.createElement('div');
+    div.className = 'log-line ' + (level || '');
+    div.textContent = '[' + new Date().toISOString().slice(11, 23) + '] ' + msg;
+    el.appendChild(div);
+    el.scrollTop = el.scrollHeight;
+}
+
+function setBadge(id, label, cls) {
+    var el = document.getElementById(id);
+    if (el) { el.textContent = label; el.className = 'badge ' + cls; }
+}
+
+var CURSOR_COLORS = ['#6366f1','#22d3ee','#f59e0b','#22c55e','#f43f5e','#a78bfa'];
+var _colorIdx = 0, _colorMap = {};
+function getColor(uid) {
+    if (!_colorMap[uid]) _colorMap[uid] = CURSOR_COLORS[_colorIdx++ % CURSOR_COLORS.length];
+    return _colorMap[uid];
+}
+
+function updateAwarenessBar(barId, provider) {
+    var bar = document.getElementById(barId);
+    if (!bar) return;
+    bar.innerHTML = '';
+    Object.keys(provider.awareness.states).forEach(function (cid) {
+        var s = provider.awareness.states[cid];
+        var color = getColor(s.userId || cid);
+        var pill = document.createElement('span');
+        pill.className = 'cursor-pill';
+        pill.style.cssText = 'background:' + color + '33;color:' + color;
+        pill.textContent = '● ' + (s.userId || ('client-' + cid));
+        bar.appendChild(pill);
+    });
+}
+
+function makeProvider(ydoc, userId, streamSuffix, logId, lastOrdinalId, badgeId) {
+    var streamName = cfg('cfg-stream') + (streamSuffix || '');
+    var crypto = makeStubCrypto();
+    var p = new SafecloudYjsProvider(ydoc, {
+        yjs: Y, io: io,
+        jetUrl:       cfg('cfg-jet'),
+        publisherId:  cfg('cfg-publisher'),
+        streamName:   streamName,
+        userId:       userId,
+        encryptUpdate: crypto.encryptUpdate,
+        decryptUpdate: crypto.decryptUpdate,
+        debounceMs:   300
+    });
+
+    var origConnect = p.connect.bind(p);
+    p.connect = function () {
+        origConnect();
+        if (p._socket) {
+            p._socket.on('connect', function () {
+                setBadge(badgeId, 'Connected', 'badge-green');
+                log(logId, 'socket connected → ' + streamName, 'ok');
+                document.getElementById('conn-badge').textContent = 'Connected';
+                document.getElementById('conn-badge').className = 'badge badge-green';
+            });
+            p._socket.on('disconnect', function () {
+                setBadge(badgeId, 'Offline', 'badge-red');
+                log(logId, 'socket disconnected', 'warn');
+            });
+            p._socket.on('Streams/message', function (d) {
+                if (d && d.publisherId === cfg('cfg-publisher') && d.streamName === streamName) {
+                    document.getElementById(lastOrdinalId).textContent = d.ordinal;
+                    log(logId, '← ord:' + d.ordinal + ' epoch:' + (d.epoch||'?') + ' ' + (d.type||''), 'info');
+                }
+            });
+        }
+        return p;
+    };
+    return p;
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   MODE 1 — DOCS (Univer Docs + Y.Map snapshot)
+═══════════════════════════════════════════════════════════════════════ */
+function setupDocs(paneId, userId, logId, badgeId, lastOrdinalId, awarenessId, toolbarId) {
+    var wrap = document.getElementById(paneId);
+    wrap.innerHTML = '';
+    wrap.style.overflow = 'hidden';
+    wrap.style.display = 'flex';
+    wrap.style.flexDirection = 'column';
+
+    // Univer needs a fixed-id container element inside the pane
+    var containerId = paneId + '-univer-docs';
+    var inner = document.createElement('div');
+    inner.id = containerId;
+    inner.className = 'univer-container';
+    wrap.appendChild(inner);
+
+    var ydoc = new Y.Doc();
+    var p = makeProvider(ydoc, userId, '', logId, lastOrdinalId, badgeId);
+    p.onAwarenessChange = function () { updateAwarenessBar(awarenessId, p); };
+
+    var toolbarEl = document.getElementById(toolbarId);
+    toolbarEl.innerHTML = '<span style="font-size:.7rem;color:var(--muted);padding:4px 8px">Univer Docs — use the built-in toolbar above</span>';
+
+    if (typeof UniverBundle === 'undefined' || !UniverBundle.createUniverDocs) {
+        wrap.innerHTML = '<div style="padding:20px;color:var(--error)">Univer bundle not loaded</div>';
+        log(logId, 'UniverBundle not available', 'error');
+        return { provider: p, editor: null };
+    }
+
+    var result;
+    try {
+        result = UniverBundle.createUniverDocs(containerId, ydoc, {
+            logFn: function(msg, level) { log(logId, msg, level); }
+        });
+    } catch(e) {
+        log(logId, 'Univer Docs error: ' + e.message, 'error');
+        return { provider: p, editor: null };
+    }
+
+    log(logId, 'Docs editor ready (' + userId + ')', 'ok');
+    return {
+        provider: p,
+        editor: result ? result.univerAPI : null,
+        _univerResult: result
+    };
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   MODE 2 — SHEETS (Univer Sheets + Y.Map cell-level sync)
+═══════════════════════════════════════════════════════════════════════ */
+function setupSheets(paneId, userId, logId, badgeId, lastOrdinalId, awarenessId, toolbarId) {
+    var wrap = document.getElementById(paneId);
+    wrap.innerHTML = '';
+    wrap.className = 'sheets-wrap';
+
+    // Univer needs a fixed-id container element inside the pane
+    var containerId = paneId + '-univer-sheets';
+    var inner = document.createElement('div');
+    inner.id = containerId;
+    inner.className = 'univer-container';
+    wrap.appendChild(inner);
+
+    var ydoc = new Y.Doc();
+    var p = makeProvider(ydoc, userId, '-sheets', logId, lastOrdinalId, badgeId);
+    p.onAwarenessChange = function () { updateAwarenessBar(awarenessId, p); };
+
+    var toolbarEl = document.getElementById(toolbarId);
+    toolbarEl.innerHTML = '<span style="font-size:.7rem;color:var(--muted);padding:4px 8px">Univer Sheets — use the built-in ribbon toolbar above</span>';
+
+    if (typeof UniverBundle === 'undefined' || !UniverBundle.createUniverSheets) {
+        wrap.innerHTML = '<div style="padding:20px;color:var(--error)">Univer bundle not loaded</div>';
+        log(logId, 'UniverBundle not available', 'error');
+        return { provider: p, editor: null };
+    }
+
+    var result;
+    try {
+        result = UniverBundle.createUniverSheets(containerId, ydoc, {
+            logFn: function(msg, level) { log(logId, msg, level); }
+        });
+    } catch(e) {
+        log(logId, 'Univer Sheets error: ' + e.message, 'error');
+        return { provider: p, editor: null };
+    }
+
+    log(logId, 'Sheets editor ready (' + userId + ')', 'ok');
+    return {
+        provider: p,
+        editor: result ? result.univerAPI : null,
+        _univerResult: result
+    };
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   MODE 3 — MARKDOWN (CodeMirror 5 + Y.Text + live preview)
+═══════════════════════════════════════════════════════════════════════ */
+function buildMarkdownToolbar(container, cm) {
+    container.innerHTML = '';
+    var btns = [
+        { label: 'B',   wrap: ['**','**'] },
+        { label: 'I',   wrap: ['_','_'] },
+        { label: 'H1',  line: '# ' },
+        { label: 'H2',  line: '## ' },
+        { label: '• List', line: '- ' },
+        { label: '1. List', line: '1. ' },
+        { label: '❝',   line: '> ' },
+        { label: '`',   wrap: ['`','`'] },
+        { label: '```', block: true }
+    ];
+    btns.forEach(function (b) {
+        var btn = document.createElement('button');
+        btn.textContent = b.label;
+        btn.addEventListener('click', function () {
+            if (!cm) return;
+            var sel = cm.getSelection();
+            if (b.wrap) {
+                cm.replaceSelection(b.wrap[0] + (sel || 'text') + b.wrap[1]);
+            } else if (b.block) {
+                cm.replaceSelection('\n```\n' + (sel || 'code') + '\n```\n');
+            } else if (b.line) {
+                var cursor = cm.getCursor();
+                cm.setCursor({ line: cursor.line, ch: 0 });
+                cm.replaceSelection(b.line);
+            }
+            cm.focus();
+        });
+        container.appendChild(btn);
+    });
+}
+
+function setupMarkdown(paneId, userId, logId, badgeId, lastOrdinalId, awarenessId, toolbarId) {
+    var wrap = document.getElementById(paneId);
+    wrap.innerHTML = '';
+    wrap.style.overflowY = 'hidden';
+
+    var ydoc  = new Y.Doc();
+    var ytext = ydoc.getText('content');
+    var p = makeProvider(ydoc, userId, '-md', logId, lastOrdinalId, badgeId);
+    p.onAwarenessChange = function () { updateAwarenessBar(awarenessId, p); };
+
+    // Layout: source | preview
+    var mdSplit = document.createElement('div');
+    mdSplit.className = 'md-split';
+    wrap.appendChild(mdSplit);
+
+    var srcPane = document.createElement('div');
+    srcPane.className = 'md-source';
+    mdSplit.appendChild(srcPane);
+
+    var srcLabel = document.createElement('div');
+    srcLabel.className = 'md-label';
+    srcLabel.textContent = 'Source · Markdown';
+    srcPane.appendChild(srcLabel);
+
+    var cmEl = document.createElement('textarea');
+    srcPane.appendChild(cmEl);
+
+    var previewPane = document.createElement('div');
+    previewPane.className = 'md-preview';
+    mdSplit.appendChild(previewPane);
+
+    var previewLabel = document.createElement('div');
+    previewLabel.className = 'md-label';
+    previewLabel.textContent = 'Preview · Live';
+    previewPane.before(previewLabel);
+    mdSplit.insertBefore(previewLabel, previewPane);
+
+    function updatePreview(src) {
+        try { previewPane.innerHTML = marked.parse(src || ''); } catch(e) {}
+    }
+
+    var cm;
+    if (typeof CodeMirror !== 'undefined') {
+        cm = CodeMirror.fromTextArea(cmEl, {
+            mode: 'markdown',
+            theme: 'dracula',
+            lineNumbers: true,
+            lineWrapping: true,
+            value: ''
+        });
+        cm.setSize('100%', '100%');
+    }
+
+    var _applying = false;
+
+    // Local CM changes → Y.Text
+    if (cm) {
+        cm.on('change', function (instance, change) {
+            if (_applying || change.origin === 'setValue') return;
+            var doc     = instance.getDoc();
+            var fromIdx = doc.indexFromPos(change.from);
+            var removed = change.removed.join('\n');
+            var inserted = change.text.join('\n');
+            ydoc.transact(function () {
+                if (removed.length) ytext.delete(fromIdx, removed.length);
+                if (inserted.length) ytext.insert(fromIdx, inserted);
+            });
+            updatePreview(instance.getValue());
+        });
+    }
+
+    // Remote Y.Text changes → CM
+    ytext.observe(function (event) {
+        if (event.transaction.local) return;
+        _applying = true;
+        var index = 0;
+        event.changes.delta.forEach(function (op) {
+            if (op.retain) {
+                index += op.retain;
+            } else if (op.insert && cm) {
+                var pos = cm.getDoc().posFromIndex(index);
+                cm.replaceRange(op.insert, pos);
+                index += op.insert.length;
+            } else if (op.delete && cm) {
+                var from = cm.getDoc().posFromIndex(index);
+                var to   = cm.getDoc().posFromIndex(index + op.delete);
+                cm.replaceRange('', from, to);
+            }
+        });
+        _applying = false;
+        if (cm) updatePreview(cm.getValue());
+        log(logId, '← remote text update', 'info');
+    });
+
+    if (cm) {
+        buildMarkdownToolbar(document.getElementById(toolbarId), cm);
+        log(logId, 'Markdown editor ready (' + userId + ')', 'ok');
+    }
+    return { provider: p, editor: cm };
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   MODE 4 — SLIDES (Y.Array of Y.Map + presenter + PPTX export)
+═══════════════════════════════════════════════════════════════════════ */
+function setupSlides(paneId, userId, logId, badgeId, lastOrdinalId, awarenessId, toolbarId) {
+    var wrap = document.getElementById(paneId);
+    wrap.innerHTML = '';
+    wrap.style.overflow = 'hidden';
+
+    var ydoc    = new Y.Doc();
+    var yslides = ydoc.getArray('slides');
+    var p = makeProvider(ydoc, userId, '-slides', logId, lastOrdinalId, badgeId);
+    p.onAwarenessChange = function () { updateAwarenessBar(awarenessId, p); };
+
+    var selectedIdx = 0;
+
+    // ── DOM ──
+    var layout = document.createElement('div');
+    layout.className = 'slides-layout';
+    wrap.appendChild(layout);
+
+    var body = document.createElement('div');
+    body.className = 'slides-body';
+    layout.appendChild(body);
+
+    var slideList = document.createElement('div');
+    slideList.className = 'slide-list';
+    body.appendChild(slideList);
+
+    var slideMain = document.createElement('div');
+    slideMain.className = 'slide-main';
+    body.appendChild(slideMain);
+
+    var canvasWrap = document.createElement('div');
+    canvasWrap.className = 'slide-canvas-wrap';
+    slideMain.appendChild(canvasWrap);
+
+    var canvas = document.createElement('div');
+    canvas.className = 'slide-canvas type-content';
+    canvasWrap.appendChild(canvas);
+
+    var slideEditor = document.createElement('div');
+    slideEditor.className = 'slide-editor';
+    slideMain.appendChild(slideEditor);
+
+    // Editor form fields
+    var typeLabel = document.createElement('label'); typeLabel.textContent = 'Type';
+    var typeSelect = document.createElement('select');
+    ['title','content','blank'].forEach(function(t) {
+        var o = document.createElement('option'); o.value = t;
+        o.textContent = t.charAt(0).toUpperCase() + t.slice(1);
+        typeSelect.appendChild(o);
+    });
+    var titleLabel = document.createElement('label'); titleLabel.textContent = 'Title';
+    var titleInput = document.createElement('input'); titleInput.placeholder = 'Slide title…';
+    var bodyLabel = document.createElement('label'); bodyLabel.textContent = 'Body';
+    var bodyTA = document.createElement('textarea'); bodyTA.placeholder = 'Body / bullets…'; bodyTA.rows = 3;
+    var notesLabel = document.createElement('label'); notesLabel.textContent = 'Notes';
+    var notesTA = document.createElement('textarea'); notesTA.placeholder = 'Speaker notes…'; notesTA.rows = 2;
+
+    slideEditor.appendChild(typeLabel);  slideEditor.appendChild(typeSelect);
+    slideEditor.appendChild(titleLabel); slideEditor.appendChild(titleInput);
+    slideEditor.appendChild(bodyLabel);  slideEditor.appendChild(bodyTA);
+    slideEditor.appendChild(notesLabel); slideEditor.appendChild(notesTA);
+
+    var _editLock = false;
+
+    function getCurrentSlide() {
+        return (yslides.length > 0 && selectedIdx < yslides.length) ? yslides.get(selectedIdx) : null;
+    }
+
+    function renderCanvas(yslide) {
+        canvas.innerHTML = '';
+        canvas.style.background = '';
+        if (!yslide) {
+            canvas.className = 'slide-canvas type-content';
+            var msg = document.createElement('div');
+            msg.style.cssText = 'color:var(--muted);font-size:.85rem';
+            msg.textContent = 'No slides — click + Slide in the toolbar';
+            canvas.appendChild(msg);
+            return;
+        }
+        var type = yslide.get('type') || 'content';
+        canvas.className = 'slide-canvas type-' + type;
+        var bg = yslide.get('bg');
+        if (bg) canvas.style.background = bg;
+
+        var t = yslide.get('title') || '';
+        var b = yslide.get('body')  || '';
+        if (t) {
+            var el = document.createElement('div');
+            el.className = 'canvas-title'; el.textContent = t;
+            canvas.appendChild(el);
+        }
+        if (b) {
+            var el2 = document.createElement('div');
+            el2.className = 'canvas-body'; el2.textContent = b;
+            canvas.appendChild(el2);
+        }
+    }
+
+    function renderList() {
+        slideList.innerHTML = '';
+        for (var i = 0; i < yslides.length; i++) {
+            (function(idx) {
+                var s = yslides.get(idx);
+                var thumb = document.createElement('div');
+                thumb.className = 'slide-thumb' + (idx === selectedIdx ? ' selected' : '');
+                var num = document.createElement('div');   num.className = 'thumb-num';   num.textContent = idx + 1;
+                var tit = document.createElement('div');   tit.className = 'thumb-title'; tit.textContent = s.get('title') || '(untitled)';
+                var bod = document.createElement('div');   bod.className = 'thumb-body';  bod.textContent = s.get('body') || '';
+                thumb.appendChild(num); thumb.appendChild(tit); thumb.appendChild(bod);
+                thumb.addEventListener('click', function () { selectedIdx = idx; renderAll(); });
+                slideList.appendChild(thumb);
+            })(i);
+        }
+    }
+
+    function renderFields() {
+        _editLock = true;
+        var s = getCurrentSlide();
+        if (s) {
+            typeSelect.value = s.get('type')  || 'content';
+            titleInput.value = s.get('title') || '';
+            bodyTA.value     = s.get('body')  || '';
+            notesTA.value    = s.get('notes') || '';
+        } else {
+            typeSelect.value = 'content'; titleInput.value = ''; bodyTA.value = ''; notesTA.value = '';
+        }
+        _editLock = false;
+    }
+
+    function renderAll() { renderList(); renderCanvas(getCurrentSlide()); renderFields(); }
+
+    function fieldSet(key, val) {
+        if (_editLock) return;
+        var s = getCurrentSlide(); if (!s) return;
+        ydoc.transact(function () { s.set(key, val); });
+    }
+    typeSelect.addEventListener('change', function () { fieldSet('type',  typeSelect.value); renderCanvas(getCurrentSlide()); });
+    titleInput.addEventListener('input',  function () { fieldSet('title', titleInput.value); });
+    bodyTA.addEventListener('input',      function () { fieldSet('body',  bodyTA.value); });
+    notesTA.addEventListener('input',     function () { fieldSet('notes', notesTA.value); });
+
+    // Observe Y.Map fields on each slide
+    function watchSlide(yslide) {
+        yslide.observe(function (event) {
+            if (event.transaction.local) return;
+            renderAll();
+        });
+    }
+
+    // Y.Array observe: slides added / removed / moved
+    yslides.observe(function () {
+        if (selectedIdx >= yslides.length) selectedIdx = Math.max(0, yslides.length - 1);
+        renderAll();
+        log(logId, '← slides sync (' + yslides.length + ')', 'info');
+    });
+
+    // ── Presenter overlay ──
+    function openPresenter(startIdx) {
+        var slides = [];
+        for (var i = 0; i < yslides.length; i++) {
+            var s = yslides.get(i);
+            slides.push({ title: s.get('title')||'', body: s.get('body')||'', type: s.get('type')||'content' });
+        }
+        var cur = startIdx || 0;
+        var ov = document.createElement('div');
+        ov.style.cssText = 'position:fixed;inset:0;background:#000;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;gap:20px';
+
+        var sc = document.createElement('div');
+        sc.style.cssText = 'width:960px;max-width:94vw;aspect-ratio:16/9;border-radius:10px;display:flex;flex-direction:column;justify-content:center;align-items:center;padding:60px;gap:20px;overflow:hidden';
+
+        var ctrl = document.createElement('div');
+        ctrl.style.cssText = 'display:flex;gap:14px;align-items:center';
+
+        var prev = document.createElement('button'); prev.textContent = '← Prev'; prev.className = 'btn btn-muted';
+        var cnt  = document.createElement('span');   cnt.style.cssText = 'color:#aaa;font-size:.85rem;min-width:60px;text-align:center';
+        var next = document.createElement('button'); next.textContent = 'Next →'; next.className = 'btn btn-primary';
+        var close = document.createElement('button'); close.textContent = '✕ Exit'; close.className = 'btn btn-danger'; close.style.marginLeft = '28px';
+
+        ctrl.appendChild(prev); ctrl.appendChild(cnt); ctrl.appendChild(next); ctrl.appendChild(close);
+        ov.appendChild(sc); ov.appendChild(ctrl);
+        document.body.appendChild(ov);
+
+        function draw() {
+            var s = slides[cur] || {};
+            sc.innerHTML = '';
+            sc.style.background = s.type === 'title' ? 'linear-gradient(135deg,#1e1b4b,#312e81)' : (s.type === 'blank' ? '#0f1117' : '#111827');
+            if (s.title) { var t = document.createElement('div'); t.style.cssText = 'font-size:3rem;font-weight:700;color:#fff;text-align:center;line-height:1.2'; t.textContent = s.title; sc.appendChild(t); }
+            if (s.body)  { var b = document.createElement('div'); b.style.cssText = 'font-size:1.4rem;color:rgba(255,255,255,.8);text-align:center;line-height:1.6;white-space:pre-wrap'; b.textContent = s.body; sc.appendChild(b); }
+            cnt.textContent = (cur + 1) + ' / ' + slides.length;
+        }
+        prev.onclick  = function () { if (cur > 0) { cur--; draw(); } };
+        next.onclick  = function () { if (cur < slides.length - 1) { cur++; draw(); } };
+        function kd(e) {
+            if (e.key==='ArrowRight'||e.key==='ArrowDown')  { cur = Math.min(slides.length-1, cur+1); draw(); }
+            if (e.key==='ArrowLeft' ||e.key==='ArrowUp')    { cur = Math.max(0, cur-1); draw(); }
+            if (e.key==='Escape') { document.removeEventListener('keydown', kd); close.click(); }
+        }
+        document.addEventListener('keydown', kd);
+        close.onclick = function () { document.removeEventListener('keydown', kd); document.body.removeChild(ov); };
+        draw();
+    }
+
+    // ── PPTX export ──
+    function exportPPTX() {
+        if (typeof PptxGenJS === 'undefined') { log(logId, 'PptxGenJS not loaded', 'error'); return; }
+        var pptx = new PptxGenJS();
+        pptx.layout = 'LAYOUT_16x9';
+        for (var i = 0; i < yslides.length; i++) {
+            var s    = yslides.get(i);
+            var slide = pptx.addSlide();
+            var type  = s.get('type') || 'content';
+            var title = s.get('title') || '';
+            var body  = s.get('body')  || '';
+            var notes = s.get('notes') || '';
+            slide.background = { color: type === 'title' ? '1e1b4b' : '111827' };
+            if (title) slide.addText(title, { x:0.5, y: type==='title'?1.5:0.4, w:'90%', h:1.2, fontSize: type==='title'?40:28, bold:true, color:'FFFFFF', align:'center' });
+            if (body)  slide.addText(body,  { x:0.5, y: type==='title'?3.1:1.9, w:'90%', h:2.4, fontSize:18, color:'CCCCFF', align:'center' });
+            if (notes) slide.addNotes(notes);
+        }
+        pptx.writeFile({ fileName: 'safecloud-slides.pptx' });
+        log(logId, 'PPTX exported (' + yslides.length + ' slides)', 'ok');
+    }
+
+    // ── Toolbar ──
+    function buildSlidesToolbar(container) {
+        container.innerHTML = '';
+        function btn(label, title, fn) {
+            var b = document.createElement('button'); b.textContent = label; b.title = title;
+            b.addEventListener('click', fn); container.appendChild(b); return b;
+        }
+        btn('+ Slide', 'Add slide after selected', function () {
+            var ns = new Y.Map();
+            ns.set('title', 'New Slide'); ns.set('body', ''); ns.set('notes', ''); ns.set('type', 'content');
+            var at = Math.min(selectedIdx + 1, yslides.length);
+            ydoc.transact(function () { yslides.insert(at, [ns]); });
+            watchSlide(ns);
+            selectedIdx = at; renderAll();
+        });
+        btn('🗑 Del', 'Delete selected slide', function () {
+            if (yslides.length === 0) return;
+            ydoc.transact(function () { yslides.delete(selectedIdx, 1); });
+            if (selectedIdx >= yslides.length) selectedIdx = Math.max(0, yslides.length - 1);
+            renderAll();
+        });
+        btn('⬆', 'Move slide up', function () {
+            if (selectedIdx === 0 || yslides.length < 2) return;
+            var s = yslides.get(selectedIdx);
+            ydoc.transact(function () { yslides.delete(selectedIdx, 1); yslides.insert(selectedIdx - 1, [s]); });
+            selectedIdx--; renderAll();
+        });
+        btn('⬇', 'Move slide down', function () {
+            if (selectedIdx >= yslides.length - 1) return;
+            var s = yslides.get(selectedIdx);
+            ydoc.transact(function () { yslides.delete(selectedIdx, 1); yslides.insert(selectedIdx + 1, [s]); });
+            selectedIdx++; renderAll();
+        });
+        btn('📋 Dupe', 'Duplicate selected slide', function () {
+            var s = getCurrentSlide(); if (!s) return;
+            var copy = new Y.Map();
+            s.forEach(function (v, k) { copy.set(k, v); });
+            var at = selectedIdx + 1;
+            ydoc.transact(function () { yslides.insert(at, [copy]); });
+            watchSlide(copy); selectedIdx = at; renderAll();
+        });
+        btn('▶ Present', 'Fullscreen presenter view', function () { openPresenter(selectedIdx); });
+        btn('💾 PPTX', 'Export as PowerPoint', exportPPTX);
+    }
+
+    buildSlidesToolbar(document.getElementById(toolbarId));
+
+    // Seed a title slide if the deck is empty (after provider connects)
+    setTimeout(function () {
+        if (yslides.length === 0) {
+            var title = new Y.Map();
+            title.set('title', 'Safecloud Slides');
+            title.set('body',  'Collaborative • Encrypted • Real-time');
+            title.set('type',  'title');
+            title.set('notes', 'Title slide — edit below');
+            var content = new Y.Map();
+            content.set('title', 'Agenda');
+            content.set('body',  '• Topic 1\n• Topic 2\n• Topic 3');
+            content.set('type',  'content');
+            content.set('notes', '');
+            ydoc.transact(function () { yslides.insert(0, [title, content]); });
+            watchSlide(title); watchSlide(content);
+        } else {
+            for (var i = 0; i < yslides.length; i++) watchSlide(yslides.get(i));
+        }
+        renderAll();
+    }, 500);
+
+    return { provider: p, editor: null };
+}
+
+/* ════════════════════════════════════════════════════════════════════
+   TAB SWITCHING & BOOTSTRAP
+═══════════════════════════════════════════════════════════════════════ */
+var _currentMode    = 'docs';
+var _providers      = [];
+var _editors        = [];
+var _univerResults  = [];
+var _inited         = false;
+
+function teardown() {
+    _providers.forEach(function (p) { try { p.disconnect(); } catch(e){} });
+    _providers = [];
+    // Destroy editors — Univer instances are in _univerResults, others in _editors
+    _univerResults.forEach(function (r) { if (r && typeof r.destroy === 'function') try { r.destroy(); } catch(e){} });
+    _univerResults = [];
+    _editors.forEach(function (e) { if (e && typeof e.destroy === 'function') try { e.destroy(); } catch(e2){} });
+    _editors = [];
+    ['a','b'].forEach(function (side) {
+        document.getElementById('editor-' + side).innerHTML = '';
+        document.getElementById('log-' + side).innerHTML   = '';
+        document.getElementById('awareness-' + side).innerHTML = '';
+        document.getElementById('toolbar-' + side).innerHTML = '';
+        setBadge('badge-' + side, '—', 'badge-yellow');
+    });
+    _inited = false;
+}
+
+function connect() {
+    teardown();
+
+    var mode = _currentMode;
+    var setupFn = { docs: setupDocs, sheets: setupSheets, markdown: setupMarkdown, slides: setupSlides }[mode];
+
+    var resA = setupFn('editor-a', 'alice', 'log-a', 'badge-a', 'last-ordinal-a', 'awareness-a', 'toolbar-a');
+    var resB = setupFn('editor-b', 'bob',   'log-b', 'badge-b', 'last-ordinal-b', 'awareness-b', 'toolbar-b');
+
+    var pA = resA.provider, pB = resB.provider;
+    _providers     = [pA, pB];
+    _editors       = [resA.editor, resB.editor];
+    _univerResults = [resA._univerResult, resB._univerResult].filter(Boolean);
+
+    // Cross-awareness: each provider update reflects in both bars
+    pA.onAwarenessChange = function () { updateAwarenessBar('awareness-a', pA); updateAwarenessBar('awareness-b', pB); };
+    pB.onAwarenessChange = function () { updateAwarenessBar('awareness-b', pB); updateAwarenessBar('awareness-a', pA); };
+
+    pA.connect();
+    pB.connect();
+
+    document.getElementById('btn-disconnect').style.display = '';
+    document.getElementById('btn-connect').textContent = 'Reconnect';
+    _inited = true;
+}
+
+document.getElementById('btn-connect').addEventListener('click', connect);
+
+document.getElementById('btn-disconnect').addEventListener('click', function () {
+    _providers.forEach(function (p) { try { p.disconnect(); } catch(e){} });
+    setBadge('badge-a', 'Disconnected', 'badge-yellow');
+    setBadge('badge-b', 'Disconnected', 'badge-yellow');
+    document.getElementById('conn-badge').textContent = 'Disconnected';
+    document.getElementById('conn-badge').className = 'badge badge-yellow';
+    document.getElementById('btn-disconnect').style.display = 'none';
+});
+
+document.getElementById('btn-create').addEventListener('click', function () {
+    var jet = cfg('cfg-jet');
+    var pub = cfg('cfg-publisher');
+    var base = cfg('cfg-stream');
+    var streams = [
+        { name: base,             type: 'Safecloud/docs' },
+        { name: base + '-sheets', type: 'Safecloud/docs' },
+        { name: base + '-md',     type: 'Safecloud/docs' },
+        { name: base + '-slides', type: 'Safecloud/docs' }
+    ];
+    var created = 0;
+    streams.forEach(function (s) {
+        fetch(jet + '/Streams/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ publisherId: pub, name: s.name, type: s.type, attributes: { encrypted: false } })
+        }).then(function (r) { return r.json(); }).then(function () {
+            created++;
+            if (created === streams.length) alert('Streams created: ' + streams.map(function(s){ return s.name; }).join(', '));
+        }).catch(function (e) { alert('Error: ' + e.message); });
+    });
+});
+
+// Tab switching
+document.querySelectorAll('.tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+        document.querySelectorAll('.tab').forEach(function (t) { t.classList.remove('active'); });
+        tab.classList.add('active');
+        _currentMode = tab.dataset.mode;
+        if (_inited) connect(); // reconnect in new mode
+    });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Safecloud 2.9 — Browser Tests</title>
+<style>
+html,body{overflow-x:hidden;max-width:100vw}
+*{box-sizing:border-box}
+body{font-family:system-ui,sans-serif;margin:0;padding:16px;background:#1a1a2e;color:#e0e0e0}
+h1{font-size:1.4em;margin:0 0 12px}
+.section{font-weight:bold;margin:12px 0 4px;color:#7ec8e3}
+.pass{color:#4caf50}.pass::before{content:'✓ '}
+.fail{color:#f44336}.fail::before{content:'✗ FAIL: '}
+#summary{margin-top:16px;font-weight:bold;font-size:1.1em;padding:8px;border-radius:4px}
+#summary.ok{background:#1b5e20;color:#a5d6a7}
+#summary.bad{background:#b71c1c;color:#ef9a9a}
+pre{font-size:0.85em;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<h1>Safecloud 2.9 Data Structures — Browser Tests</h1>
+<div id="log"></div>
+<div id="summary"></div>
+
+<script src="browser_tests.bundle.js"></script>
+<script>
+(function() {
+"use strict";
+
+var log = document.getElementById('log');
+var pass = 0, fail = 0;
+
+function heading(s) {
+    var el = document.createElement('div');
+    el.className = 'section';
+    el.textContent = s;
+    log.appendChild(el);
+}
+
+function check(name, condition) {
+    var el = document.createElement('div');
+    if (condition) {
+        pass++;
+        el.className = 'pass';
+        el.textContent = name;
+    } else {
+        fail++;
+        el.className = 'fail';
+        el.textContent = name;
+    }
+    log.appendChild(el);
+}
+
+var SD = window.SafecloudData;
+var TreeStore = SD.TreeStore;
+var Directory = SD.Directory;
+var Feed = SD.Feed;
+var Repo = SD.Repo;
+var Database = SD.Database;
+var NameResolver = SD.NameResolver;
+
+// ── TreeStore KV ──
+heading('TreeStore — KV mode');
+(function() {
+    var store = new TreeStore();
+    var t = store.createTree('kv', { mode: 'kv' });
+    var id = t.treeId;
+
+    store.put(id, 'a', 10);
+    store.put(id, 'b', 20);
+    store.put(id, 'c', 30);
+
+    check('put/get works', store.get(id, 'b').value === 20);
+    check('get missing returns null', store.get(id, 'z') === null);
+
+    var all = store.range(id, {});
+    check('range returns all', all.length === 3);
+    check('range is sorted', all[0].key === 'a' && all[2].key === 'c');
+
+    store.delete(id, 'b');
+    check('delete works', store.get(id, 'b') === null);
+
+    var cid1 = store.root(id);
+    store.put(id, 'd', 40);
+    var cid2 = store.root(id);
+    check('root CID changes on mutation', cid1 !== cid2);
+    check('CID starts with bafy', cid1.startsWith('bafy'));
+})();
+
+// ── TreeStore Append ──
+heading('TreeStore — Append mode');
+(function() {
+    var store = new TreeStore();
+    var id = store.createTree('log', { mode: 'append' }).treeId;
+
+    store.append(id, 'first');
+    store.append(id, 'second');
+
+    check('get by index', store.get(id, 0).value === 'first');
+    check('length', store.length(id) === 2);
+
+    var received = [];
+    var unsub = store.subscribe(id, function(e) { received.push(e); });
+    store.append(id, 'third');
+    check('subscribe works', received.length === 1 && received[0].value === 'third');
+    unsub();
+    store.append(id, 'fourth');
+    check('unsubscribe works', received.length === 1);
+})();
+
+// ── Checkpoint / Hydrate ──
+heading('TreeStore — Checkpoint / Hydrate');
+(function() {
+    var chunks = new TreeStore.ChunkStore();
+    var s1 = new TreeStore(chunks);
+
+    var id1 = s1.createTree('ck', { mode: 'kv' }).treeId;
+    s1.put(id1, 'x', 100);
+    var rootCid = s1.checkpoint(id1);
+    check('checkpoint returns CID', rootCid.startsWith('bafy'));
+
+    var s2 = new TreeStore(chunks);
+    var id2 = s2.hydrate(rootCid).treeId;
+    check('hydrate restores data', s2.get(id2, 'x').value === 100);
+
+    var threw = false;
+    try { s2.hydrate('bad_cid'); } catch(e) { threw = true; }
+    check('bad CID throws', threw);
+})();
+
+// ── Diff ──
+heading('TreeStore — Diff');
+(function() {
+    var chunks = new TreeStore.ChunkStore();
+    var store = new TreeStore(chunks);
+    var id = store.createTree('diff', { mode: 'kv' }).treeId;
+
+    store.put(id, 'a', 1);
+    store.put(id, 'b', 2);
+    var cidA = store.checkpoint(id);
+
+    store.put(id, 'b', 99);
+    store.put(id, 'c', 3);
+    var cidB = store.checkpoint(id);
+
+    var changes = store.diff(cidA, cidB);
+    check('diff detects modification', changes.some(function(c) { return c.key === 'b' && c.after === 99; }));
+    check('diff detects addition', changes.some(function(c) { return c.key === 'c' && c.before === null; }));
+    check('diff skips unchanged', !changes.some(function(c) { return c.key === 'a'; }));
+    check('same CID returns empty', store.diff(cidA, cidA).length === 0);
+})();
+
+// ── Directory ──
+heading('Directory');
+(function() {
+    var store = new TreeStore();
+    var dir = new Directory(store);
+
+    var r = dir.store({
+        'index.html': { content: '<h1>Hi</h1>', type: 'text/html' },
+        'style.css': { content: 'body{}', type: 'text/css' }
+    });
+    check('store returns rootCid', r.rootCid.startsWith('bafy'));
+
+    var fetched = dir.fetch(r.rootCid);
+    check('fetch recovers files', Object.keys(fetched.files).length === 2);
+
+    var content = dir.getFile(r.rootCid, 'index.html');
+    var contentStr = (typeof content === 'string') ? content : new TextDecoder().decode(content);
+    check('getFile returns content', contentStr === '<h1>Hi</h1>');
+    check('getFile missing returns null', dir.getFile(r.rootCid, 'nope') === null);
+})();
+
+// ── Feed ──
+heading('Feed');
+(function() {
+    var store = new TreeStore();
+    var feed = new Feed(store, 'events');
+
+    check('new feed length 0', feed.length === 0);
+    feed.append({ type: 'a' });
+    feed.append({ type: 'b' });
+    check('feed length', feed.length === 2);
+    check('feed get', feed.get(0).type === 'a');
+
+    var rootCid = feed.checkpoint();
+    var restored = Feed.fromCheckpoint(store, rootCid);
+    check('checkpoint/restore', restored.length === 2 && restored.get(1).type === 'b');
+})();
+
+// ── Repo ──
+heading('Repo');
+(function() {
+    var store = new TreeStore();
+    var repo = new Repo(store, 'site', { author: 'dev' });
+
+    repo.add('index.html', '<h1>v1</h1>');
+    var c1 = repo.commit('initial');
+    check('commit returns index', c1.commitIndex === 0);
+
+    repo.add('index.html', '<h1>v2</h1>');
+    var c2 = repo.commit('update');
+    check('treeCid changes', c1.treeCid !== c2.treeCid);
+
+    var history = repo.log();
+    check('log has 2 commits', history.length === 2);
+
+    var diffs = repo.diff(c1.treeCid, c2.treeCid);
+    check('diff shows change', diffs.some(function(d) { return d.path === 'index.html' && d.type === 'modified'; }));
+
+    // Branching
+    repo.branch('feat');
+    repo.checkout('feat');
+    repo.add('feat.html', 'feature');
+    repo.commit('feat work');
+
+    repo.checkout('main');
+    check('checkout restores main', repo.getFile('index.html') === '<h1>v2</h1>');
+    check('main lacks feat file', repo.getFile('feat.html') === null);
+
+    var mr = repo.merge('feat');
+    check('merge brings feat file', repo.getFile('feat.html') === 'feature');
+    check('merge commit has 2 parents', repo.log({ limit: 1 })[0].parents.length === 2);
+
+    // Manual merge with conflicts
+    var store2 = new TreeStore();
+    var repo2 = new Repo(store2, 'conflict');
+    repo2.add('f.txt', 'original');
+    repo2.commit('init');
+    repo2.branch('dev');
+
+    repo2.add('f.txt', 'main-ver');
+    repo2.commit('main edit');
+
+    repo2.checkout('dev');
+    repo2.add('f.txt', 'dev-ver');
+    repo2.commit('dev edit');
+
+    repo2.checkout('main');
+    var result = repo2.merge('dev', { strategy: 'manual' });
+    check('manual merge finds conflicts', result.conflicts.length > 0);
+    check('conflict has correct values', result.conflicts[0].ours === 'main-ver' && result.conflicts[0].theirs === 'dev-ver');
+})();
+
+// ── Database ──
+heading('Database');
+(function() {
+    var store = new TreeStore();
+    var db = new Database(store, 'users', {
+        fields: { name: 'string', role: 'string' },
+        indexes: ['role']
+    });
+
+    db.put('u1', { name: 'Alice', role: 'admin' });
+    db.put('u2', { name: 'Bob', role: 'member' });
+    db.put('u3', { name: 'Carol', role: 'admin' });
+
+    check('get works', db.get('u1').name === 'Alice');
+    check('count', db.count() === 3);
+
+    var admins = db.query('role', { eq: 'admin' });
+    check('query by index', admins.length === 2);
+
+    db.put('u2', { name: 'Bob', role: 'admin' });
+    check('index updates on change', db.query('role', { eq: 'admin' }).length === 3);
+    check('old index cleaned', db.query('role', { eq: 'member' }).length === 0);
+
+    db.delete('u3');
+    check('delete works', db.get('u3') === null);
+
+    var c1 = db.commit('snapshot');
+    db.put('u4', { name: 'Dave', role: 'member' });
+    var c2 = db.commit('added dave');
+    check('commit/log', db.log().length === 2);
+
+    db.rollback(0);
+    check('rollback', db.get('u4') === null && db.get('u1').name === 'Alice');
+})();
+
+// ── NameResolver ──
+heading('NameResolver');
+(function() {
+    var store = new TreeStore();
+    var nr = new NameResolver(store, { owner: 'alice' });
+
+    nr.update('site', 'cid_v1');
+    check('resolve', nr.resolve('site').target === 'cid_v1');
+
+    nr.update('site', 'cid_v2');
+    check('update bumps seq', nr.resolve('site').seq === 2);
+
+    nr.update('app', 'cid_app');
+    check('list', nr.list().length === 2);
+
+    nr.remove('app');
+    check('remove', nr.resolve('app') === null);
+
+    var rootCid = nr.checkpoint();
+    var restored = NameResolver.fromCheckpoint(store, rootCid);
+    check('checkpoint/restore', restored.resolve('site').target === 'cid_v2');
+})();
+
+// ── Integration ──
+heading('Integration — cross-structure');
+(function() {
+    var store = new TreeStore();
+    var repo = new Repo(store, 'web');
+    repo.add('index.html', '<h1>v1</h1>');
+    repo.commit('init');
+
+    var dir = new Directory(store);
+    var d = dir.store({ 'index.html': { content: '<h1>v1</h1>', type: 'text/html' } });
+
+    var names = new NameResolver(store);
+    names.update('mysite', d.rootCid);
+
+    var feed = new Feed(store, 'deploys');
+    feed.append({ action: 'deploy', cid: d.rootCid });
+
+    var db = new Database(store, 'deploys-db', { indexes: ['status'] });
+    db.put('d1', { site: 'mysite', status: 'live', cid: d.rootCid });
+
+    check('name resolves', names.resolve('mysite').target === d.rootCid);
+    check('dir fetchable', Object.keys(dir.fetch(d.rootCid).files).length === 1);
+    check('feed has event', feed.get(0).action === 'deploy');
+    check('db queryable', db.query('status', { eq: 'live' }).length === 1);
+})();
+
+// ── Summary ──
+var summaryEl = document.getElementById('summary');
+summaryEl.textContent = pass + ' passed, ' + fail + ' failed';
+summaryEl.className = fail === 0 ? 'ok' : 'bad';
+
+// Expose results for Playwright
+window.__testResults = { pass: pass, fail: fail };
+
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Safecloud Embed Bridge</title>
+<style>
+  /* Nothing visible — this page lives in a 1px hidden iframe */
+  *{margin:0;padding:0}
+  body{background:transparent;overflow:hidden}
+</style>
+</head>
+<body>
+
+<!--
+  embed-bridge.html — Same-origin socket.io bridge for safecloud-embed.js
+  =========================================================================
+  This page is loaded inside a hidden sandboxed iframe by safecloud-embed.js.
+  It runs on the same origin as the Jet, so it can:
+    • Connect to socket.io on the Jet
+    • POST to /Streams/message via fetch (same-origin, no CORS needed)
+    • Relay messages to/from the outer page via postMessage
+
+  Protocol (postMessage):
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │ Outer → Bridge (via iframe.contentWindow.postMessage)               │
+  │   safecloud:init   { scBridgeId, publisherId, streamName,           │
+  │                      token?, historyLimit? }                        │
+  │   safecloud:post   { scBridgeId, msgType, content, extra }          │
+  ├─────────────────────────────────────────────────────────────────────┤
+  │ Bridge → Outer (via window.parent.postMessage)                      │
+  │   safecloud:ready   { scBridgeId }                                  │
+  │   safecloud:history { scBridgeId, messages[] }                      │
+  │   safecloud:message { scBridgeId, message }                         │
+  │   safecloud:error   { scBridgeId, error }                           │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  Security:
+  • Inbound: only messages where scBridgeId matches are accepted.
+  • Outbound: replies go to window.parent with targetOrigin = parentOrigin
+    (captured from the first safecloud:init event.origin).
+  • The iframe sandbox ("allow-scripts allow-same-origin") limits what the
+    outer page's script can do to this bridge even if the outer page is
+    compromised; and the bridge only accepts the init that arrives first.
+-->
+
+<!-- socket.io client — served by this same Jet, no CDN needed -->
+<script src="/socket.io/socket.io.js"></script>
+<script>
+(function () {
+    'use strict';
+
+    // ── State ──────────────────────────────────────────────────────────────────
+    var _bridgeId     = null;
+    var _parentOrigin = null;
+    var _socket       = null;
+    var _publisherId  = '';
+    var _streamName   = '';
+    var _token        = null;
+    var _inited       = false;
+
+    // Notify the shim we may have already loaded before its listener attached
+    // (belt-and-suspenders: also handled by the iframe 'load' event in the shim)
+    if (window.parent && window.parent !== window) {
+        try { window.parent.postMessage({ type: 'safecloud:needsInit' }, '*'); } catch (e) {}
+    }
+
+    // ── postMessage helpers ────────────────────────────────────────────────────
+    function _toParent(msg) {
+        if (!_parentOrigin) return;
+        try { window.parent.postMessage(msg, _parentOrigin); } catch (e) {}
+    }
+
+    function _reply(type, extra) {
+        var msg = { type: type, scBridgeId: _bridgeId };
+        if (extra) {
+            Object.keys(extra).forEach(function (k) { msg[k] = extra[k]; });
+        }
+        _toParent(msg);
+    }
+
+    // ── Fetch history ──────────────────────────────────────────────────────────
+    function _fetchHistory(limit) {
+        var url = '/Streams/messages?publisherId=' + encodeURIComponent(_publisherId) +
+                  '&streamName=' + encodeURIComponent(_streamName) +
+                  '&limit=' + (limit || 50);
+        var hdrs = { 'Accept': 'application/json' };
+        if (_token) hdrs['Authorization'] = 'Bearer ' + _token;
+
+        fetch(url, { headers: hdrs })
+            .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+            .then(function (data) {
+                // messages is an object keyed by ordinal — convert to sorted array
+                var raw  = (data && data.slots && data.slots.messages) || {};
+                var msgs = Object.keys(raw)
+                    .map(function (k) { return raw[k]; })
+                    .sort(function (a, b) { return a.ordinal - b.ordinal; });
+                _reply('safecloud:history', { messages: msgs });
+                // Signal ready after history is delivered
+                _reply('safecloud:ready');
+            })
+            .catch(function (err) {
+                // Even on error, signal ready so the outer page isn't stuck
+                console.warn('[embed-bridge] history fetch failed:', err);
+                _reply('safecloud:history', { messages: [] });
+                _reply('safecloud:ready');
+            });
+    }
+
+    // ── socket.io connection ───────────────────────────────────────────────────
+    function _connect() {
+        if (_socket) { _socket.disconnect(); _socket = null; }
+
+        var ioOpts = {
+            transports: ['websocket', 'polling'],
+            reconnection: true,
+            reconnectionDelay: 1000,
+            reconnectionDelayMax: 10000
+        };
+        if (_token) {
+            ioOpts.auth = { token: _token };
+        }
+
+        // Connect to the Jet's own socket.io (same origin)
+        _socket = io(window.location.origin, ioOpts);
+
+        _socket.on('connect', function () {
+            // Subscribe to the stream room
+            _socket.emit('Streams/subscribe', {
+                publisherId: _publisherId,
+                streamName:  _streamName,
+                token:       _token
+            });
+            // Now fetch history (we subscribe first to avoid missing messages
+            // that arrive between fetch completion and socket subscribe)
+        });
+
+        _socket.on('connect_error', function (err) {
+            _reply('safecloud:error', { error: 'socket connect error: ' + (err && err.message || String(err)) });
+        });
+
+        // Real-time messages relayed to outer page
+        _socket.on('Streams/message', function (msg) {
+            // Filter to our stream only (server should room-filter, but be safe)
+            if (msg && msg.publisherId === _publisherId && msg.streamName === _streamName) {
+                _reply('safecloud:message', { message: msg });
+            }
+        });
+
+        // Also relay ephemeral (non-persisted) events
+        _socket.on('Streams/ephemeral', function (msg) {
+            if (msg && msg.publisherId === _publisherId && msg.streamName === _streamName) {
+                _reply('safecloud:ephemeral', { message: msg });
+            }
+        });
+    }
+
+    // ── Clean disconnect ───────────────────────────────────────────────────────
+    function _disconnect() {
+        if (_socket) {
+            _socket.emit('Streams/unsubscribe', {
+                publisherId: _publisherId,
+                streamName:  _streamName
+            });
+            _socket.disconnect();
+            _socket = null;
+        }
+    }
+
+    // ── Handle safecloud:post from outer page ──────────────────────────────────
+    function _handlePost(d) {
+        var body = {
+            publisherId: _publisherId,
+            streamName:  _streamName,
+            type:        d.msgType  || 'text',
+            content:     d.content  || '',
+            byUserId:    d.byUserId || ''
+        };
+        // Merge any extra fields
+        if (d.extra && typeof d.extra === 'object') {
+            Object.keys(d.extra).forEach(function (k) { body[k] = d.extra[k]; });
+        }
+
+        var hdrs = { 'Content-Type': 'application/json', 'Accept': 'application/json' };
+        if (_token) hdrs['Authorization'] = 'Bearer ' + _token;
+
+        fetch('/Streams/message', {
+            method:  'POST',
+            headers: hdrs,
+            body:    JSON.stringify(body)
+        })
+        .then(function (r) { return r.ok ? r.json() : r.json().then(function(e){ return Promise.reject(e); }); })
+        .then(function (data) {
+            // Success — the socket.io push will deliver the message back
+            // to the outer page via 'Streams/message', so no extra reply needed.
+        })
+        .catch(function (err) {
+            var msg = (err && err.errors && err.errors[0] && err.errors[0].message) || String(err);
+            _reply('safecloud:error', { error: 'post failed: ' + msg });
+        });
+    }
+
+    // ── Init sequence ──────────────────────────────────────────────────────────
+    function _init(ev) {
+        if (_inited) return;  // accept only the first init
+        _inited       = true;
+        _bridgeId     = ev.data.scBridgeId;
+        _parentOrigin = ev.origin;
+        _publisherId  = ev.data.publisherId || '';
+        _streamName   = ev.data.streamName  || '';
+        _token        = ev.data.token       || null;
+        var histLimit = ev.data.historyLimit || 50;
+
+        _connect();
+
+        // Fetch history once socket connect fires (or immediately if already up)
+        if (_socket.connected) {
+            _fetchHistory(histLimit);
+        } else {
+            _socket.once('connect', function () { _fetchHistory(histLimit); });
+        }
+    }
+
+    // ── Inbound message router ─────────────────────────────────────────────────
+    window.addEventListener('message', function (ev) {
+        // Must come from parent frame
+        if (ev.source !== window.parent) return;
+        var d = ev.data;
+        if (!d || typeof d.type !== 'string') return;
+
+        switch (d.type) {
+            case 'safecloud:init':
+                _init(ev);
+                break;
+
+            case 'safecloud:post':
+                if (!_inited || d.scBridgeId !== _bridgeId) return;
+                _handlePost(d);
+                break;
+
+            case 'safecloud:ephemeral':
+                if (!_inited || d.scBridgeId !== _bridgeId || !_socket) return;
+                _socket.emit('Streams/ephemeral', {
+                    publisherId: _publisherId,
+                    streamName:  _streamName,
+                    type:        d.msgType || '',
+                    content:     d.content || ''
+                });
+                break;
+
+            case 'safecloud:disconnect':
+                if (!_inited || d.scBridgeId !== _bridgeId) return;
+                _disconnect();
+                break;
+        }
+    });
+
+})();
+</script>
+</body>
+</html>
